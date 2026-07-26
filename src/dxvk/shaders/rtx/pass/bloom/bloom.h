@@ -31,6 +31,8 @@
 #define BLOOM_DUSKLIGHT_DOWNSAMPLE_INPUT  0
 #define BLOOM_DUSKLIGHT_DOWNSAMPLE_OUTPUT 1
 
+#define BLOOM_DUSKLIGHT_PREPASS_COLOR_INPUT_OUTPUT 0
+
 #define BLOOM_UPSAMPLE_INPUT    0
 #define BLOOM_UPSAMPLE_OUTPUT   1
 
@@ -67,6 +69,17 @@ struct BloomDusklightDownsampleArgs {
   uint   isInitial;
 };
 
+struct BloomDusklightPrepassArgs {
+  uint2  imageSize;
+  // Tint of the mono overlay.
+  vec3   monoColor;
+  // Blend factor toward the mono version of the image. Zero disables the overlay.
+  float  monoAmount;
+  // Non-zero to use BT.709 luminance for the greyscale; zero replicates the red channel the
+  // way the game's TEV swap tables did.
+  uint   useLuminance;
+};
+
 struct BloomUpsampleArgs {
   float2 inputSizeInverse;
   uint2  upsampledOutputSize;
@@ -83,6 +96,9 @@ struct BloomCompositeArgs {
   vec3   tint;
   // When non-zero, bloom is attenuated by how bright the destination already is.
   uint   screenBlend;
+  // Weight the base image keeps under the bloom. The game's composite scales the framebuffer
+  // by its blend alpha while adding bloom on top; twilight uses this to dim the scene.
+  float  baseWeight;
 };
 
 #endif  // BLOOM_H

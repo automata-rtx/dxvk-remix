@@ -28,6 +28,7 @@
 
 #include <rtx_shaders/bloom_downsample.h>
 #include <rtx_shaders/bloom_dusklight_downsample.h>
+#include <rtx_shaders/bloom_dusklight_prepass.h>
 #include <rtx_shaders/bloom_upsample.h>
 #include <rtx_shaders/bloom_composite.h>
 #include "rtx_imgui.h"
@@ -64,6 +65,19 @@ namespace dxvk {
     };
 
     PREWARM_SHADER_PIPELINE(BloomDusklightDownsampleShader);
+
+    class BloomDusklightPrepassShader : public ManagedShader
+    {
+      SHADER_SOURCE(BloomDusklightPrepassShader, VK_SHADER_STAGE_COMPUTE_BIT, bloom_dusklight_prepass)
+
+      PUSH_CONSTANTS(BloomDusklightPrepassArgs)
+
+      BEGIN_PARAMETER()
+        RW_TEXTURE2D(BLOOM_DUSKLIGHT_PREPASS_COLOR_INPUT_OUTPUT)
+      END_PARAMETER()
+    };
+
+    PREWARM_SHADER_PIPELINE(BloomDusklightPrepassShader);
 
     class BloomUpsampleShader : public ManagedShader
     {
@@ -110,13 +124,26 @@ namespace dxvk {
 
     if (dusklight()) {
       ImGui::Indent();
-      RemixGui::DragFloat("Threshold##bloomDusklight", &dusklightThresholdObject(), 0.01f, 0.f, 100.f, "%.2f");
-      RemixGui::DragFloat("Blur Size##bloomDusklight", &dusklightBlurSizeObject(), 1.f, 0.f, 255.f, "%.0f");
-      RemixGui::DragFloat("Blur Ratio##bloomDusklight", &dusklightBlurRatioObject(), 1.f, 0.f, 255.f, "%.0f");
+      RemixGui::Checkbox("Follow Game##bloomDusklight", &dusklightFollowGameObject());
+
+      const bool feedActive = dusklightFollowGame() && DusklightEnv::enable();
+      if (feedActive) {
+        ImGui::TextWrapped("Driven by the game's environment feed (rtx.dusklight.env.*).");
+        RemixGui::DragFloat("Threshold Scale##bloomDusklight", &dusklightThresholdScaleObject(), 0.01f, 0.f, 10.f, "%.2f");
+      } else {
+        RemixGui::DragFloat("Threshold##bloomDusklight", &dusklightThresholdObject(), 0.01f, 0.f, 100.f, "%.2f");
+        RemixGui::DragFloat("Blur Size##bloomDusklight", &dusklightBlurSizeObject(), 1.f, 0.f, 255.f, "%.0f");
+        RemixGui::DragFloat("Blur Ratio##bloomDusklight", &dusklightBlurRatioObject(), 1.f, 0.f, 255.f, "%.0f");
+        RemixGui::ColorEdit3("Tint##bloomDusklight", &dusklightTintObject());
+        RemixGui::Checkbox("Screen Blend##bloomDusklight", &dusklightScreenBlendObject());
+        RemixGui::DragFloat("Base Weight##bloomDusklight", &dusklightBaseWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
+        RemixGui::ColorEdit3("Mono Color##bloomDusklight", &dusklightMonoColorObject());
+        RemixGui::DragFloat("Mono Amount##bloomDusklight", &dusklightMonoAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
+      }
+
+      RemixGui::Checkbox("Mono Uses Luminance##bloomDusklight", &dusklightMonoUseLuminanceObject());
       RemixGui::DragFloat("Level Falloff##bloomDusklight", &dusklightFalloffObject(), 0.01f, 0.01f, 1.f, "%.2f");
       RemixGui::DragFloat("Saturation Point##bloomDusklight", &dusklightSaturationPointObject(), 0.05f, 0.f, 100.f, "%.2f");
-      RemixGui::ColorEdit3("Tint##bloomDusklight", &dusklightTintObject());
-      RemixGui::Checkbox("Screen Blend##bloomDusklight", &dusklightScreenBlendObject());
       ImGui::Unindent();
     } else {
       RemixGui::DragFloat("Threshold##bloom", &luminanceThresholdObject(), 0.05f, 0.f, 100.f, "%.2f");
@@ -127,13 +154,57 @@ namespace dxvk {
     ImGui::Unindent();
   }
 
-  void DxvkBloom::dispatch(Rc<RtxContext> ctx, 
-                           Rc<DxvkSampler> linearSampler, 
+  DxvkBloom::EffectiveDusklightParams DxvkBloom::resolveDusklightParams() const {
+    EffectiveDusklightParams p = {};
+
+    p.followingGame = dusklight() && dusklightFollowGame() && DusklightEnv::enable();
+
+    if (p.followingGame) {
+      p.pyramidEnabled = DusklightEnv::bloomEnable();
+      p.threshold = std::max(DusklightEnv::bloomThreshold(), 0.0f) * dusklightThresholdScale();
+      p.blurSize = DusklightEnv::bloomBlurSize();
+      p.blurRatio = DusklightEnv::bloomBlurRatio();
+      p.tint = DusklightEnv::bloomTint();
+      p.screenBlend = DusklightEnv::bloomScreenBlend();
+      p.baseWeight = std::clamp(DusklightEnv::bloomBaseWeight(), 0.0f, 1.0f);
+      p.monoColor = DusklightEnv::monoColor();
+      p.monoAmount = std::clamp(DusklightEnv::monoAmount(), 0.0f, 1.0f);
+    } else {
+      p.pyramidEnabled = true;
+      p.threshold = dusklightThreshold();
+      p.blurSize = dusklightBlurSize();
+      p.blurRatio = dusklightBlurRatio();
+      p.tint = dusklightTint();
+      p.screenBlend = dusklightScreenBlend();
+      p.baseWeight = std::clamp(dusklightBaseWeight(), 0.0f, 1.0f);
+      p.monoColor = dusklightMonoColor();
+      p.monoAmount = std::clamp(dusklightMonoAmount(), 0.0f, 1.0f);
+    }
+
+    return p;
+  }
+
+  void DxvkBloom::dispatch(Rc<RtxContext> ctx,
+                           Rc<DxvkSampler> linearSampler,
                            const Resources::Resource& inOutColorBuffer) {
     ScopedGpuProfileZone(ctx, "Bloom");
     ctx->setFramePassStage(RtxFramePassStage::Bloom);
 
     ctx->setPushConstantBank(DxvkPushConstantBank::RTX);
+
+    const EffectiveDusklightParams dl = resolveDusklightParams();
+
+    if (dusklight() && dl.monoAmount > 0.0f) {
+      // The game applies the mono overlay before gathering bloom, so the pyramid below sees
+      // the overlaid image.
+      dispatchDusklightPrepass(ctx, inOutColorBuffer, dl.monoColor, dl.monoAmount);
+    }
+
+    const bool pyramidActive = enable() && burnIntensity() > 0.0f && (!dusklight() || dl.pyramidEnabled);
+
+    if (!pyramidActive) {
+      return;
+    }
 
     const Resources::Resource* res[] = {
       &inOutColorBuffer,
@@ -173,7 +244,7 @@ namespace dxvk {
       const float fullHeight = static_cast<float>(std::max(fullSize.height, 1u));
       const float aspect = fullWidth / fullHeight;
 
-      const float blurScale = std::max(dusklightBlurSize(), 0.0f) * (kSourceFramebufferHeight / fullHeight) * kBlurSizeToUv;
+      const float blurScale = std::max(dl.blurSize, 0.0f) * (kSourceFramebufferHeight / fullHeight) * kBlurSizeToUv;
       const Vector2 ringRadius(blurScale * (kSourceFramebufferAspect / aspect), blurScale);
 
       // Dusklight spreads the total brightness evenly over its blur passes so that each one
@@ -182,7 +253,7 @@ namespace dxvk {
       // it is. Every step past the first blurs; the first only thresholds, and picks up the gain
       // itself only when the pyramid is too shallow to have any blur passes at all.
       const int blurPassCount = std::max(bloomDepth - 1, 1);
-      const float totalGain = std::max(dusklightBlurRatio(), 0.0f) * 16.0f / 255.0f;
+      const float totalGain = std::max(dl.blurRatio, 0.0f) * 16.0f / 255.0f;
       const float gainPerPass = std::pow(totalGain, 1.0f / static_cast<float>(blurPassCount));
       const float initialGain = bloomDepth > 1 ? 1.0f : gainPerPass;
 
@@ -190,7 +261,7 @@ namespace dxvk {
         const bool initial = (i == 0);
 
         dispatchDusklightDownsampleStep(ctx, linearSampler, *res[i], *res[i + 1], ringRadius,
-                                        initial ? initialGain : gainPerPass, initial);
+                                        initial ? initialGain : gainPerPass, initial, dl.threshold);
       }
 
       // Each level is folded into the one above it with a weight that falls off geometrically
@@ -204,7 +275,13 @@ namespace dxvk {
       }
     }
 
-    dispatchComposite(ctx, linearSampler, inOutColorBuffer, m_bloomBuffer[0]);
+    if (dusklight()) {
+      dispatchComposite(ctx, linearSampler, inOutColorBuffer, m_bloomBuffer[0],
+                        dl.tint, dl.screenBlend, dl.baseWeight);
+    } else {
+      dispatchComposite(ctx, linearSampler, inOutColorBuffer, m_bloomBuffer[0],
+                        Vector3(1.0f, 1.0f, 1.0f), false, 1.0f);
+    }
   }
 
   void DxvkBloom::dispatchDownsampleStep(
@@ -235,6 +312,29 @@ namespace dxvk {
     ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
   }
 
+  void DxvkBloom::dispatchDusklightPrepass(
+    Rc<DxvkContext> ctx,
+    const Resources::Resource& inOutColorBuffer,
+    const Vector3& monoColor,
+    float monoAmount) {
+    ScopedGpuProfileZone(ctx, "Bloom Dusklight Prepass");
+
+    const VkExtent3D imageSize = inOutColorBuffer.image->info().extent;
+
+    BloomDusklightPrepassArgs pushArgs = {};
+    pushArgs.imageSize = { imageSize.width, imageSize.height };
+    pushArgs.monoColor = monoColor;
+    pushArgs.monoAmount = monoAmount;
+    pushArgs.useLuminance = dusklightMonoUseLuminance() ? 1u : 0u;
+    ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
+
+    const VkExtent3D workgroups = util::computeBlockCount(imageSize, VkExtent3D{ 16, 16, 1 });
+
+    ctx->bindResourceView(BLOOM_DUSKLIGHT_PREPASS_COLOR_INPUT_OUTPUT, inOutColorBuffer.view, nullptr);
+    ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, BloomDusklightPrepassShader::getShader());
+    ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
+  }
+
   void DxvkBloom::dispatchDusklightDownsampleStep(
     Rc<DxvkContext> ctx,
     const Rc<DxvkSampler>& linearSampler,
@@ -242,7 +342,8 @@ namespace dxvk {
     const Resources::Resource& outputBuffer,
     const Vector2& ringRadius,
     float gain,
-    bool initial) {
+    bool initial,
+    float thresholdValue) {
     ScopedGpuProfileZone(ctx, "Bloom Dusklight Downsample");
 
     const VkExtent3D inputSize = inputBuffer.image->info().extent;
@@ -254,7 +355,7 @@ namespace dxvk {
     pushArgs.downsampledOutputSize = { outputSize.width, outputSize.height };
     pushArgs.downsampledOutputSizeInverse = { 1.0f / float(outputSize.width), 1.0f / float(outputSize.height) };
     pushArgs.ringRadius = { ringRadius.x, ringRadius.y };
-    pushArgs.threshold = initial ? std::max(dusklightThreshold(), 0.0f) : -1.0f;
+    pushArgs.threshold = initial ? std::max(thresholdValue, 0.0f) : -1.0f;
     pushArgs.gain = gain;
     pushArgs.saturationPoint = std::max(dusklightSaturationPoint(), 0.0f);
     pushArgs.isInitial = initial ? 1u : 0u;
@@ -302,7 +403,10 @@ namespace dxvk {
     Rc<DxvkContext> ctx,
     const Rc<DxvkSampler> &linearSampler,
     const Resources::Resource& inOutColorBuffer,
-    const Resources::Resource& bloomBuffer)
+    const Resources::Resource& bloomBuffer,
+    const Vector3& tint,
+    bool screenBlend,
+    float baseWeight)
   {
     ScopedGpuProfileZone(ctx, "Composite");
 
@@ -313,8 +417,9 @@ namespace dxvk {
     pushArgs.imageSize = { outputSize.width, outputSize.height };
     pushArgs.imageSizeInverse = { 1.f / float(outputSize.width), 1.f / float(outputSize.height) };
     pushArgs.intensity = 0.01f * std::max(burnIntensity(), 0.0f);
-    pushArgs.tint = dusklight() ? dusklightTint() : Vector3(1.0f, 1.0f, 1.0f);
-    pushArgs.screenBlend = (dusklight() && dusklightScreenBlend()) ? 1u : 0u;
+    pushArgs.tint = tint;
+    pushArgs.screenBlend = screenBlend ? 1u : 0u;
+    pushArgs.baseWeight = baseWeight;
     ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 
     VkExtent3D workgroups = util::computeBlockCount(outputSize, VkExtent3D{ 16 , 16, 1 });
@@ -349,6 +454,16 @@ namespace dxvk {
   }
 
   bool DxvkBloom::isEnabled() const {
-    return enable() && burnIntensity() > 0.f;
+    if (!enable()) {
+      return false;
+    }
+
+    if (burnIntensity() > 0.f) {
+      return true;
+    }
+
+    // The mono overlay runs even when the bloom pyramid contributes nothing, matching the
+    // game, where the overlay draws regardless of whether bloom gathers this frame.
+    return dusklight() && resolveDusklightParams().monoAmount > 0.0f;
   }
 }
