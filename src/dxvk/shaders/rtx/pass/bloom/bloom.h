@@ -28,11 +28,20 @@
 #define BLOOM_DOWNSAMPLE_INPUT  0
 #define BLOOM_DOWNSAMPLE_OUTPUT 1
 
+#define BLOOM_DUSKLIGHT_DOWNSAMPLE_INPUT  0
+#define BLOOM_DUSKLIGHT_DOWNSAMPLE_OUTPUT 1
+
+#define BLOOM_DUSKLIGHT_PREPASS_COLOR_INPUT_OUTPUT 0
+
 #define BLOOM_UPSAMPLE_INPUT    0
 #define BLOOM_UPSAMPLE_OUTPUT   1
 
 #define BLOOM_COMPOSITE_COLOR_INPUT_OUTPUT 0
 #define BLOOM_COMPOSITE_BLOOM              1
+
+// Number of taps in the Dusklight ring blur. The original effect spends all eight of the
+// hardware's texture coordinate generators on a single ring, with no center tap.
+#define BLOOM_DUSKLIGHT_RING_TAP_COUNT 8
 
 // Push constants
 
@@ -43,16 +52,53 @@ struct BloomDownsampleArgs {
   float  threshold;
 };
 
+struct BloomDusklightDownsampleArgs {
+  float2 inputSizeInverse;
+  uint2  downsampledOutputSize;
+  float2 downsampledOutputSizeInverse;
+  // Ring blur radius in normalized screen UV. The horizontal component is scaled so the ring
+  // keeps the shape it had on the game's original framebuffer regardless of the display aspect.
+  float2 ringRadius;
+  // Threshold subtracted from every channel on the first step. Negative disables thresholding.
+  float  threshold;
+  // Brightness multiplier applied by this step.
+  float  gain;
+  // Value this step's result saturates at. Zero or less leaves the result unclamped.
+  float  saturationPoint;
+  // Non-zero on the first step, which thresholds the input instead of ring blurring it.
+  uint   isInitial;
+};
+
+struct BloomDusklightPrepassArgs {
+  uint2  imageSize;
+  // Tint of the mono overlay.
+  vec3   monoColor;
+  // Blend factor toward the mono version of the image. Zero disables the overlay.
+  float  monoAmount;
+  // Non-zero to use BT.709 luminance for the greyscale; zero replicates the red channel the
+  // way the game's TEV swap tables did.
+  uint   useLuminance;
+};
+
 struct BloomUpsampleArgs {
   float2 inputSizeInverse;
   uint2  upsampledOutputSize;
   float2 upsampledOutputSizeInverse;
+  // Weight this level contributes with when it is added to the level above it.
+  float  weight;
 };
 
 struct BloomCompositeArgs {
   uint2  imageSize;
   float2 imageSizeInverse;
   float  intensity;
+  // Per channel tint applied to the bloom before it is added to the image.
+  vec3   tint;
+  // When non-zero, bloom is attenuated by how bright the destination already is.
+  uint   screenBlend;
+  // Weight the base image keeps under the bloom. The game's composite scales the framebuffer
+  // by its blend alpha while adding bloom on top; twilight uses this to dim the scene.
+  float  baseWeight;
 };
 
 #endif  // BLOOM_H

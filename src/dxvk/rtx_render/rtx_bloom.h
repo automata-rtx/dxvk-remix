@@ -24,6 +24,7 @@
 #include "dxvk_include.h"
 #include "dxvk_context.h"
 #include "rtx_resources.h"
+#include "rtx_dusklight_env.h"
 
 namespace dxvk {
 
@@ -48,6 +49,29 @@ namespace dxvk {
     void showImguiSettings();
 
   private:
+    // Values the bloom actually runs with this dispatch: the manual options, or the game's
+    // kankyo feed when rtx.bloom.dusklightFollowGame is active.
+    struct EffectiveDusklightParams {
+      bool  followingGame;
+      bool  pyramidEnabled;
+      float threshold;
+      float blurSize;
+      float blurRatio;
+      Vector3 tint;
+      bool  screenBlend;
+      float baseWeight;
+      Vector3 monoColor;
+      float monoAmount;
+    };
+
+    EffectiveDusklightParams resolveDusklightParams() const;
+
+    void dispatchDusklightPrepass(
+      Rc<DxvkContext> ctx,
+      const Resources::Resource& inOutColorBuffer,
+      const Vector3& monoColor,
+      float monoAmount);
+
     void dispatchDownsampleStep(
       Rc<DxvkContext> ctx,
       const Rc<DxvkSampler>& linearSampler,
@@ -55,17 +79,31 @@ namespace dxvk {
       const Resources::Resource& outputBuffer,
       bool initial);
 
+    void dispatchDusklightDownsampleStep(
+      Rc<DxvkContext> ctx,
+      const Rc<DxvkSampler>& linearSampler,
+      const Resources::Resource& inputBuffer,
+      const Resources::Resource& outputBuffer,
+      const Vector2& ringRadius,
+      float gain,
+      bool initial,
+      float thresholdValue);
+
     void dispatchUpsampleStep(
       Rc<DxvkContext> ctx,
       const Rc<DxvkSampler>& linearSampler,
       const Resources::Resource& inputBuffer,
-      const Resources::Resource& outputBuffer);
+      const Resources::Resource& outputBuffer,
+      float weight);
 
     void dispatchComposite(
       Rc<DxvkContext> ctx,
       const Rc<DxvkSampler> &linearSampler,
       const Resources::Resource& inOutColorBuffer,
-      const Resources::Resource& bloomBuffer);
+      const Resources::Resource& bloomBuffer,
+      const Vector3& tint,
+      bool screenBlend,
+      float baseWeight);
 
     virtual void createTargetResource(Rc<DxvkContext>& ctx, const VkExtent3D& targetExtent) override;
     virtual void releaseTargetResource() override;
@@ -88,6 +126,88 @@ namespace dxvk {
                     "Number of downsampling steps to perform [1..8]. A higher value produces a wider blooming radius.",
                     args.minValue = 1,
                     args.maxValue = MaxBloomSteps);
+
+    // Dusklight bloom.
+    //
+    // A port of the pyramid Dusklight uses for its 'improved' bloom, for games whose original
+    // bloom looked like this and whose art was built around it. The differences that matter are
+    // all in this group: a threshold that is subtracted per channel instead of weighted by
+    // luminance, an explicit ring blur at every level of the pyramid, a per-level gain that is
+    // allowed to saturate, and levels that are weighted geometrically on the way back up rather
+    // than summed at full strength.
+    //
+    // The defaults reproduce Dusklight's own defaults. blurSize/blurRatio deliberately keep the
+    // game's 0..255 parameter range so values can be carried straight over from it.
+
+    RTX_OPTION("rtx.bloom", bool, dusklight, false,
+               "Replaces the bloom pyramid with a port of Dusklight's 'improved' bloom.\n"
+               "Blurs an eight tap ring at every level of the pyramid, thresholds by subtracting from each channel rather than by weighting with luminance, "
+               "and weights the levels geometrically as they are combined back together. Produces a softer and wider halo with saturated, washed out cores, "
+               "which is what bloom looked like on the hardware these games were built for.\n"
+               "Uses its own threshold (rtx.bloom.dusklightThreshold) rather than rtx.bloom.luminanceThreshold. rtx.bloom.steps and rtx.bloom.burnIntensity still apply.");
+    RTX_OPTION_ARGS("rtx.bloom", float, dusklightThreshold, 0.5f,
+                    "Value subtracted from every colour channel before Dusklight bloom is gathered. Only used when rtx.bloom.dusklight is enabled.\n"
+                    "Pixels below the threshold do not bloom at all and pixels above it bloom in proportion to how far above they are, giving a harder cut than the "
+                    "smooth luminance rolloff of the default bloom. Subtracting per channel also pushes coloured highlights further towards their dominant hue.\n"
+                    "Note this is in the linear HDR range the image is in before tonemapping, not a 0..1 display value.",
+                    args.minValue = 0.0f);
+    RTX_OPTION_ARGS("rtx.bloom", float, dusklightBlurSize, 64.0f,
+                    "Radius of the ring blur applied at each pyramid level, in the same 0..255 range the game uses. Only used when rtx.bloom.dusklight is enabled.\n"
+                    "The radius is normalized against the game's original framebuffer height, so the halo covers the same fraction of the screen at any resolution.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 255.0f);
+    RTX_OPTION_ARGS("rtx.bloom", float, dusklightBlurRatio, 128.0f,
+                    "Overall brightness of the gathered bloom, in the same 0..255 range the game uses. Only used when rtx.bloom.dusklight is enabled.\n"
+                    "The total gain is spread evenly across the blur passes so that changing rtx.bloom.steps does not change how bright the bloom is, only how wide it is.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 255.0f);
+    RTX_OPTION_ARGS("rtx.bloom", float, dusklightFalloff, 0.25f,
+                    "How much weight the wider pyramid levels keep as they are combined back into the narrower ones. Only used when rtx.bloom.dusklight is enabled.\n"
+                    "Lower values concentrate the bloom close to its source, higher values spread it further out. At 1.0 every level contributes at full strength, "
+                    "which is how the default bloom pyramid behaves.",
+                    args.minValue = 0.01f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.bloom", float, dusklightSaturationPoint, 1.0f,
+                    "Value the bloom saturates at after each pass. Only used when rtx.bloom.dusklight is enabled.\n"
+                    "The original effect ran in 8 bit and clipped at white on every pass, and that clipping is a large part of why bright sources bloom as a solid "
+                    "washed out core. Raise this to keep more of the highlight range, or set it to 0 to leave the bloom unclamped.",
+                    args.minValue = 0.0f);
+    RTX_OPTION("rtx.bloom", Vector3, dusklightTint, Vector3(1.0f, 1.0f, 1.0f),
+               "Colour the Dusklight bloom is tinted with before it is added to the image. Only used when rtx.bloom.dusklight is enabled.");
+    RTX_OPTION("rtx.bloom", bool, dusklightScreenBlend, false,
+               "Adds the Dusklight bloom with a screen style blend instead of a plain additive one. Only used when rtx.bloom.dusklight is enabled.\n"
+               "Bloom is attenuated by how bright the image already is, so areas that are close to white glow rather than clipping further. "
+               "The game switches this on for scenes it wants to keep readable under heavy bloom.");
+    RTX_OPTION_ARGS("rtx.bloom", float, dusklightBaseWeight, 1.0f,
+                    "Weight the base image keeps when the Dusklight bloom is composited over it. Only used when rtx.bloom.dusklight is enabled.\n"
+                    "The game's composite scales the framebuffer by its blend alpha while adding bloom on top - twilight dims the scene to about 0.82 this way. "
+                    "1.0 leaves the base image untouched.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION("rtx.bloom", Vector3, dusklightMonoColor, Vector3(1.0f, 1.0f, 1.0f),
+               "Tint of the full-screen mono overlay applied before the Dusklight bloom is gathered. Only used when rtx.bloom.dusklight is enabled.\n"
+               "The image is converted to greyscale, multiplied by this colour, and blended back in by rtx.bloom.dusklightMonoAmount. "
+               "The game's environment system drives this for twilight and wolf senses.");
+    RTX_OPTION_ARGS("rtx.bloom", float, dusklightMonoAmount, 0.0f,
+                    "Strength of the full-screen mono (desaturate and tint) overlay, 0..1. Only used when rtx.bloom.dusklight is enabled.\n"
+                    "Applied before the bloom is gathered, so the bloom sees the overlaid image, exactly as on the original hardware. "
+                    "Twilight runs this at about 0.38 with a white tint - pure desaturation.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION("rtx.bloom", bool, dusklightMonoUseLuminance, false,
+               "Uses BT.709 luminance for the mono overlay's greyscale instead of replicating the red channel.\n"
+               "The game's TEV implementation replicated red, which reads slightly differently in warm scenes; red is the faithful default, "
+               "luminance is the technically correct alternative.");
+    RTX_OPTION("rtx.bloom", bool, dusklightFollowGame, true,
+               "Drives the Dusklight bloom from the environment state the game pushes through the Remix API (rtx.dusklight.env.*) instead of the manual rtx.bloom.dusklight* values.\n"
+               "Threshold, blur size, brightness, tint, blend mode, base weight and the mono overlay all track the game's per-area, per-time-of-day, per-weather palettes. "
+               "Has no effect unless the game's bridge is active (rtx.dusklight.env.enable). The manual values still apply when the feed is absent.");
+    RTX_OPTION_ARGS("rtx.bloom", float, dusklightThresholdScale, 1.0f,
+                    "Calibration factor between the game's 0..1 bloom threshold and the linear HDR range Remix blooms in. "
+                    "Only used while rtx.bloom.dusklightFollowGame is consuming the game feed.\n"
+                    "The game's threshold was subtracted from 8 bit display values after lighting; pre-tonemap HDR sits in a different range, "
+                    "so this scale is the one knob that needs tuning per setup. With auto exposure disabled the scene range is fixed, which makes this easier to calibrate.",
+                    args.minValue = 0.0f);
   };
   
 }

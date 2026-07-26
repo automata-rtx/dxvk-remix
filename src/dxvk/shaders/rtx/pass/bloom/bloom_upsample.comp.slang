@@ -64,5 +64,5 @@ void main(uint2 ipos : SV_DispatchThreadID)
   }
 
   // add, do not overwrite
-  OutColorBuffer[ipos] = OutColorBuffer[ipos] + float4(upsample(ipos), 0);
+  OutColorBuffer[ipos] = OutColorBuffer[ipos] + float4(upsample(ipos) * cb.weight, 0);
 }

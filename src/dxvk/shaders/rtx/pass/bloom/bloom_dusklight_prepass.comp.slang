@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -20,15 +20,25 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx/pass/bloom/bloom.h"
+#include "rtx/utility/color.slangh"
 
-layout(binding = BLOOM_COMPOSITE_COLOR_INPUT_OUTPUT)
-RWTexture2D<float4> InOutColorBuffer; 
+// Mono overlay step of the Dusklight bloom.
+//
+// The game runs this before gathering bloom: the framebuffer is converted to greyscale and
+// tinted, then blended back over itself by the overlay's alpha. The environment system drives
+// it per palette - twilight desaturates by about 38% through this, and the wolf senses look
+// leans on it too. The bloom pyramid then gathers from the overlaid image, so this must run
+// before the downsample chain, exactly as it does on the original hardware.
+//
+// The TEV implementation built its greyscale by replicating the red channel (swap table
+// R,R,R,G), not by computing luminance. That bias is visible in warm scenes, so red-replicate
+// is the faithful default and BT.709 luminance is offered as an alternative.
 
-layout(binding = BLOOM_COMPOSITE_BLOOM)
-Sampler2D InBloomBuffer;
+layout(binding = BLOOM_DUSKLIGHT_PREPASS_COLOR_INPUT_OUTPUT)
+RWTexture2D<float4> InOutColorBuffer;
 
 layout(push_constant)
-ConstantBuffer<BloomCompositeArgs> cb;
+ConstantBuffer<BloomDusklightPrepassArgs> cb;
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
@@ -39,25 +49,16 @@ void main(uint2 ipos : SV_DispatchThreadID)
     return;
   }
 
-  float2 uv = saturate((float2(ipos) + float2(0.5, 0.5)) * cb.imageSizeInverse);
+  float4 color = InOutColorBuffer[ipos];
 
-  float4 src = InBloomBuffer.SampleLevel(uv, 0);
-  float4 dst = InOutColorBuffer[ipos];
-
-  if (any(isnan(dst)) || any(isinf(dst)))
+  if (any(isnan(color)) || any(isinf(color)))
   {
     return;
   }
 
-  float3 bloom = src.rgb * cb.intensity * cb.tint;
+  const float grey = cb.useLuminance != 0 ? calcBt709Luminance(color.rgb) : color.r;
 
-  if (cb.screenBlend != 0)
-  {
-    // Screen style blend: the brighter the image already is here, the less bloom it takes. Keeps
-    // highlights glowing instead of flattening them into a uniform white blob. Uses the
-    // unweighted destination, matching the hardware blend this reproduces.
-    bloom *= max(float3(1.0) - dst.rgb, float3(0.0));
-  }
+  color.rgb = lerp(color.rgb, grey * cb.monoColor, cb.monoAmount);
 
-  InOutColorBuffer[ipos] = float4(dst.rgb * cb.baseWeight + bloom, dst.a);
+  InOutColorBuffer[ipos] = color;
 }
