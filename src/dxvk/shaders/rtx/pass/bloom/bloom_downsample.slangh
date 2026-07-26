@@ -1,0 +1,54 @@
+/*
+* Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// For reference, see SIGGRAPH 2014 https://advances.realtimerendering.com/s2014/index.html
+// 'Next Generation Post Processing in Call of Duty: Advanced Warfare' - Bloom - Downsampling
+// Weighted average of 5 overlapped blocks of 4-texel regions
+float3 bloomDownsample13tap(Sampler2D<float4> inColorBuffer, const float2 centerUv, const float2 inputSizeInverse)
+{
+  float3 taps_0  = inColorBuffer.SampleLevel(centerUv + float2(-2,-2) * inputSizeInverse, 0).rgb;
+  float3 taps_1  = inColorBuffer.SampleLevel(centerUv + float2( 0,-2) * inputSizeInverse, 0).rgb;
+  float3 taps_2  = inColorBuffer.SampleLevel(centerUv + float2( 2,-2) * inputSizeInverse, 0).rgb;
+  float3 taps_3  = inColorBuffer.SampleLevel(centerUv + float2(-1,-1) * inputSizeInverse, 0).rgb;
+  float3 taps_4  = inColorBuffer.SampleLevel(centerUv + float2( 1,-1) * inputSizeInverse, 0).rgb;
+  float3 taps_5  = inColorBuffer.SampleLevel(centerUv + float2(-2, 0) * inputSizeInverse, 0).rgb;
+  float3 taps_6  = inColorBuffer.SampleLevel(centerUv + float2( 0, 0) * inputSizeInverse, 0).rgb;
+  float3 taps_7  = inColorBuffer.SampleLevel(centerUv + float2( 2, 0) * inputSizeInverse, 0).rgb;
+  float3 taps_8  = inColorBuffer.SampleLevel(centerUv + float2(-1, 1) * inputSizeInverse, 0).rgb;
+  float3 taps_9  = inColorBuffer.SampleLevel(centerUv + float2( 1, 1) * inputSizeInverse, 0).rgb;
+  float3 taps_10 = inColorBuffer.SampleLevel(centerUv + float2(-2, 2) * inputSizeInverse, 0).rgb;
+  float3 taps_11 = inColorBuffer.SampleLevel(centerUv + float2( 0, 2) * inputSizeInverse, 0).rgb;
+  float3 taps_12 = inColorBuffer.SampleLevel(centerUv + float2( 2, 2) * inputSizeInverse, 0).rgb;
+
+  float3 a = 0.25 * (taps_3 + taps_4 + taps_8  + taps_9);
+  float3 b = 0.25 * (taps_0 + taps_1 + taps_5  + taps_6);
+  float3 c = 0.25 * (taps_1 + taps_2 + taps_6  + taps_7);
+  float3 d = 0.25 * (taps_5 + taps_6 + taps_10 + taps_11);
+  float3 e = 0.25 * (taps_6 + taps_7 + taps_11 + taps_12);
+
+  return 0.5   * a +
+         0.125 * b +
+         0.125 * c +
+         0.125 * d +
+         0.125 * e;
+}

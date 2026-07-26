@@ -27,9 +27,12 @@
 #include "rtx/pass/bloom/bloom.h"
 
 #include <rtx_shaders/bloom_downsample.h>
+#include <rtx_shaders/bloom_dusklight_downsample.h>
 #include <rtx_shaders/bloom_upsample.h>
 #include <rtx_shaders/bloom_composite.h>
 #include "rtx_imgui.h"
+
+#include <cmath>
 
 namespace dxvk {
   // Defined within an unnamed namespace to ensure unique definition across binary
@@ -47,6 +50,20 @@ namespace dxvk {
     };
 
     PREWARM_SHADER_PIPELINE(BloomDownsampleShader);
+
+    class BloomDusklightDownsampleShader : public ManagedShader
+    {
+      SHADER_SOURCE(BloomDusklightDownsampleShader, VK_SHADER_STAGE_COMPUTE_BIT, bloom_dusklight_downsample)
+
+      PUSH_CONSTANTS(BloomDusklightDownsampleArgs)
+
+      BEGIN_PARAMETER()
+        SAMPLER2D(BLOOM_DUSKLIGHT_DOWNSAMPLE_INPUT)
+        RW_TEXTURE2D(BLOOM_DUSKLIGHT_DOWNSAMPLE_OUTPUT)
+      END_PARAMETER()
+    };
+
+    PREWARM_SHADER_PIPELINE(BloomDusklightDownsampleShader);
 
     class BloomUpsampleShader : public ManagedShader
     {
@@ -88,7 +105,23 @@ namespace dxvk {
     RemixGui::Checkbox("Bloom Enabled", &enableObject());
     ImGui::Indent();
     RemixGui::DragFloat("Intensity##bloom", &burnIntensityObject(), 0.05f, 0.f, 5.f, "%.2f");
-    RemixGui::DragFloat("Threshold##bloom", &luminanceThresholdObject(), 0.05f, 0.f, 100.f, "%.2f");
+
+    RemixGui::Checkbox("Dusklight Bloom##bloom", &dusklightObject());
+
+    if (dusklight()) {
+      ImGui::Indent();
+      RemixGui::DragFloat("Threshold##bloomDusklight", &dusklightThresholdObject(), 0.01f, 0.f, 100.f, "%.2f");
+      RemixGui::DragFloat("Blur Size##bloomDusklight", &dusklightBlurSizeObject(), 1.f, 0.f, 255.f, "%.0f");
+      RemixGui::DragFloat("Blur Ratio##bloomDusklight", &dusklightBlurRatioObject(), 1.f, 0.f, 255.f, "%.0f");
+      RemixGui::DragFloat("Level Falloff##bloomDusklight", &dusklightFalloffObject(), 0.01f, 0.01f, 1.f, "%.2f");
+      RemixGui::DragFloat("Saturation Point##bloomDusklight", &dusklightSaturationPointObject(), 0.05f, 0.f, 100.f, "%.2f");
+      RemixGui::ColorEdit3("Tint##bloomDusklight", &dusklightTintObject());
+      RemixGui::Checkbox("Screen Blend##bloomDusklight", &dusklightScreenBlendObject());
+      ImGui::Unindent();
+    } else {
+      RemixGui::DragFloat("Threshold##bloom", &luminanceThresholdObject(), 0.05f, 0.f, 100.f, "%.2f");
+    }
+
     RemixGui::SliderInt("Radius##bloom", &stepsObject(), 4, MaxBloomSteps);
     ImGui::Unindent();
     ImGui::Unindent();
@@ -117,12 +150,58 @@ namespace dxvk {
 
     const int bloomDepth = std::clamp(steps(), 1, MaxBloomSteps);
 
-    for (int i = 0; i < bloomDepth; i++) {
-      dispatchDownsampleStep(ctx, linearSampler, *res[i], *res[i + 1], i == 0);
-    }
+    if (!dusklight()) {
+      for (int i = 0; i < bloomDepth; i++) {
+        dispatchDownsampleStep(ctx, linearSampler, *res[i], *res[i + 1], i == 0);
+      }
 
-    for (int i = bloomDepth; i > 1; i--) {
-      dispatchUpsampleStep(ctx, linearSampler, *res[i], *res[i - 1]);
+      for (int i = bloomDepth; i > 1; i--) {
+        dispatchUpsampleStep(ctx, linearSampler, *res[i], *res[i - 1], 1.0f);
+      }
+    } else {
+      // The blur radius Dusklight uses is expressed against the height of the game's original
+      // framebuffer, which keeps the halo the same size relative to the screen at any resolution.
+      constexpr float kSourceFramebufferHeight = 448.0f;
+      // Aspect the effect was authored at. Scaling the horizontal radius by this over the current
+      // aspect preserves the shape the ring had on the original 4:3 display.
+      constexpr float kSourceFramebufferAspect = 1.3571428f;
+      // Divisor that maps the game's 0..255 blur size onto a screen UV radius.
+      constexpr float kBlurSizeToUv = 1.0f / 6400.0f;
+
+      const VkExtent3D fullSize = inOutColorBuffer.image->info().extent;
+      const float fullWidth = static_cast<float>(std::max(fullSize.width, 1u));
+      const float fullHeight = static_cast<float>(std::max(fullSize.height, 1u));
+      const float aspect = fullWidth / fullHeight;
+
+      const float blurScale = std::max(dusklightBlurSize(), 0.0f) * (kSourceFramebufferHeight / fullHeight) * kBlurSizeToUv;
+      const Vector2 ringRadius(blurScale * (kSourceFramebufferAspect / aspect), blurScale);
+
+      // Dusklight spreads the total brightness evenly over its blur passes so that each one
+      // contributes the same factor and the product across the pyramid stays fixed. Doing the same
+      // means the depth of the pyramid changes how wide the bloom is without changing how bright
+      // it is. Every step past the first blurs; the first only thresholds, and picks up the gain
+      // itself only when the pyramid is too shallow to have any blur passes at all.
+      const int blurPassCount = std::max(bloomDepth - 1, 1);
+      const float totalGain = std::max(dusklightBlurRatio(), 0.0f) * 16.0f / 255.0f;
+      const float gainPerPass = std::pow(totalGain, 1.0f / static_cast<float>(blurPassCount));
+      const float initialGain = bloomDepth > 1 ? 1.0f : gainPerPass;
+
+      for (int i = 0; i < bloomDepth; i++) {
+        const bool initial = (i == 0);
+
+        dispatchDusklightDownsampleStep(ctx, linearSampler, *res[i], *res[i + 1], ringRadius,
+                                        initial ? initialGain : gainPerPass, initial);
+      }
+
+      // Each level is folded into the one above it with a weight that falls off geometrically
+      // with how far down the pyramid it came from, so the wide levels sit under the narrow ones
+      // instead of drowning them out the way an unweighted sum would.
+      const float falloff = std::clamp(dusklightFalloff(), 0.01f, 1.0f);
+
+      for (int i = bloomDepth; i > 1; i--) {
+        dispatchUpsampleStep(ctx, linearSampler, *res[i], *res[i - 1],
+                             std::pow(falloff, 1.0f / static_cast<float>(i)));
+      }
     }
 
     dispatchComposite(ctx, linearSampler, inOutColorBuffer, m_bloomBuffer[0]);
@@ -156,11 +235,46 @@ namespace dxvk {
     ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
   }
 
+  void DxvkBloom::dispatchDusklightDownsampleStep(
+    Rc<DxvkContext> ctx,
+    const Rc<DxvkSampler>& linearSampler,
+    const Resources::Resource& inputBuffer,
+    const Resources::Resource& outputBuffer,
+    const Vector2& ringRadius,
+    float gain,
+    bool initial) {
+    ScopedGpuProfileZone(ctx, "Bloom Dusklight Downsample");
+
+    const VkExtent3D inputSize = inputBuffer.image->info().extent;
+    const VkExtent3D outputSize = outputBuffer.image->info().extent;
+
+    // Prepare shader arguments
+    BloomDusklightDownsampleArgs pushArgs = {};
+    pushArgs.inputSizeInverse = { 1.0f / float(inputSize.width), 1.0f / float(inputSize.height) };
+    pushArgs.downsampledOutputSize = { outputSize.width, outputSize.height };
+    pushArgs.downsampledOutputSizeInverse = { 1.0f / float(outputSize.width), 1.0f / float(outputSize.height) };
+    pushArgs.ringRadius = { ringRadius.x, ringRadius.y };
+    pushArgs.threshold = initial ? std::max(dusklightThreshold(), 0.0f) : -1.0f;
+    pushArgs.gain = gain;
+    pushArgs.saturationPoint = std::max(dusklightSaturationPoint(), 0.0f);
+    pushArgs.isInitial = initial ? 1u : 0u;
+    ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
+
+    const VkExtent3D workgroups = util::computeBlockCount(outputSize, VkExtent3D{ 16, 16, 1 });
+
+    ctx->bindResourceView(BLOOM_DUSKLIGHT_DOWNSAMPLE_INPUT, inputBuffer.view, nullptr);
+    ctx->bindResourceSampler(BLOOM_DUSKLIGHT_DOWNSAMPLE_INPUT, linearSampler);
+    ctx->bindResourceView(BLOOM_DUSKLIGHT_DOWNSAMPLE_OUTPUT, outputBuffer.view, nullptr);
+    ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, BloomDusklightDownsampleShader::getShader());
+    ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
+  }
+
   void DxvkBloom::dispatchUpsampleStep(
     Rc<DxvkContext> ctx,
     const Rc<DxvkSampler>& linearSampler,
     const Resources::Resource& inputBuffer,
-    const Resources::Resource& outputBuffer) {
+    const Resources::Resource& outputBuffer,
+    float weight) {
     ScopedGpuProfileZone(ctx, "Bloom Upsample");
 
     VkExtent3D inputSize = inputBuffer.image->info().extent;
@@ -171,6 +285,7 @@ namespace dxvk {
     pushArgs.inputSizeInverse = { 1.f / float(inputSize.width), 1.f / float(inputSize.height) };
     pushArgs.upsampledOutputSize = { outputSize.width, outputSize.height };
     pushArgs.upsampledOutputSizeInverse = { 1.f / float(outputSize.width), 1.f / float(outputSize.height) };
+    pushArgs.weight = weight;
 
     ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 
@@ -198,6 +313,8 @@ namespace dxvk {
     pushArgs.imageSize = { outputSize.width, outputSize.height };
     pushArgs.imageSizeInverse = { 1.f / float(outputSize.width), 1.f / float(outputSize.height) };
     pushArgs.intensity = 0.01f * std::max(burnIntensity(), 0.0f);
+    pushArgs.tint = dusklight() ? dusklightTint() : Vector3(1.0f, 1.0f, 1.0f);
+    pushArgs.screenBlend = (dusklight() && dusklightScreenBlend()) ? 1u : 0u;
     ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 
     VkExtent3D workgroups = util::computeBlockCount(outputSize, VkExtent3D{ 16 , 16, 1 });

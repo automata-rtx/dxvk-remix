@@ -49,5 +49,14 @@ void main(uint2 ipos : SV_DispatchThreadID)
     return;
   }
 
-  InOutColorBuffer[ipos] = dst + src * cb.intensity;
+  float3 bloom = src.rgb * cb.intensity * cb.tint;
+
+  if (cb.screenBlend != 0)
+  {
+    // Screen style blend: the brighter the image already is here, the less bloom it takes. Keeps
+    // highlights glowing instead of flattening them into a uniform white blob.
+    bloom *= max(float3(1.0) - dst.rgb, float3(0.0));
+  }
+
+  InOutColorBuffer[ipos] = dst + float4(bloom, 0);
 }

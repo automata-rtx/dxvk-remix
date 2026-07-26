@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx/pass/bloom/bloom.h"
+#include "rtx/pass/bloom/bloom_downsample.slangh"
 #include "rtx/utility/color.slangh"
 
 layout(binding = BLOOM_DOWNSAMPLE_INPUT)
@@ -36,41 +37,6 @@ float2 calcUV(const int2 downsampledPix)
   return (float2(downsampledPix) + float2(0.5)) * cb.downsampledOutputSizeInverse;
 }
 
-float3 downsample13tap(const int2 downsampledPix)
-{
-  const float2 centerUv = calcUV(downsampledPix);
-
-  // For reference, see SIGGRAPH 2014 https://advances.realtimerendering.com/s2014/index.html
-  // 'Next Generation Post Processing in Call of Duty: Advanced Warfare' - Bloom - Downsampling
-  // Weighted average of 5 overplapped blocks of 4-texel regions
-
-  float3 taps_0  = InColorBuffer.SampleLevel(centerUv + float2(-2,-2) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_1  = InColorBuffer.SampleLevel(centerUv + float2( 0,-2) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_2  = InColorBuffer.SampleLevel(centerUv + float2( 2,-2) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_3  = InColorBuffer.SampleLevel(centerUv + float2(-1,-1) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_4  = InColorBuffer.SampleLevel(centerUv + float2( 1,-1) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_5  = InColorBuffer.SampleLevel(centerUv + float2(-2, 0) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_6  = InColorBuffer.SampleLevel(centerUv + float2( 0, 0) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_7  = InColorBuffer.SampleLevel(centerUv + float2( 2, 0) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_8  = InColorBuffer.SampleLevel(centerUv + float2(-1, 1) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_9  = InColorBuffer.SampleLevel(centerUv + float2( 1, 1) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_10 = InColorBuffer.SampleLevel(centerUv + float2(-2, 2) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_11 = InColorBuffer.SampleLevel(centerUv + float2( 0, 2) * cb.inputSizeInverse, 0).rgb;
-  float3 taps_12 = InColorBuffer.SampleLevel(centerUv + float2( 2, 2) * cb.inputSizeInverse, 0).rgb;
-
-  float3 a = 0.25 * (taps_3 + taps_4 + taps_8  + taps_9);
-  float3 b = 0.25 * (taps_0 + taps_1 + taps_5  + taps_6);
-  float3 c = 0.25 * (taps_1 + taps_2 + taps_6  + taps_7);
-  float3 d = 0.25 * (taps_5 + taps_6 + taps_10 + taps_11);
-  float3 e = 0.25 * (taps_6 + taps_7 + taps_11 + taps_12);
-
-  return 0.5   * a +
-         0.125 * b +
-         0.125 * c +
-         0.125 * d +
-         0.125 * e;
-}
-
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void main(uint2 ipos : SV_DispatchThreadID)
@@ -80,7 +46,7 @@ void main(uint2 ipos : SV_DispatchThreadID)
     return;
   }
 
-  float3 result = downsample13tap(int2(ipos));
+  float3 result = bloomDownsample13tap(InColorBuffer, calcUV(int2(ipos)), cb.inputSizeInverse);
 
   if (cb.threshold > 0)
   {
