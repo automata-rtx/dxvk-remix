@@ -197,6 +197,7 @@ namespace dxvk {
     void dispatchXeSS(const Resources::RaytracingOutput& rtOutput);
     void dispatchTemporalAA(const Resources::RaytracingOutput& rtOutput);
     void dispatchToneMapping(const Resources::RaytracingOutput& rtOutput);
+    void dispatchDusklightGrade(const Resources::RaytracingOutput& rtOutput);
     void dispatchBloom(const Resources::RaytracingOutput& rtOutput);
     void dispatchPostFxMotionBlur(Resources::RaytracingOutput& rtOutput);
     void dispatchPostFxLensEffects(Resources::RaytracingOutput& rtOutput);

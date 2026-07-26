@@ -56,6 +56,13 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", float, monoAmount, 0.0f, RtxOptionFlags::NoSave,
                     "Strength of the game's full-screen mono (desaturate + tint) overlay, 0..1. Twilight runs this at about 0.38. "
                     "Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, actorAmbient, Vector3(1.0f, 1.0f, 1.0f), RtxOptionFlags::NoSave,
+                    "The ambient colour the game's environment system is currently applying to actors, normalized to 0..1. Written by the game's kankyo bridge.\n"
+                    "This is the ambient the original fixed function pipeline tinted every character and object with; path tracing replaces that lighting, "
+                    "so rtx.dusklight.grade.* uses it to put the mood back.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, bgAmbient, Vector3(1.0f, 1.0f, 1.0f), RtxOptionFlags::NoSave,
+                    "The ambient colour the game's environment system is currently applying to room and terrain geometry, normalized to 0..1. "
+                    "Written by the game's kankyo bridge. The counterpart to rtx.dusklight.env.actorAmbient for everything that is not an actor.");
   };
 
 }

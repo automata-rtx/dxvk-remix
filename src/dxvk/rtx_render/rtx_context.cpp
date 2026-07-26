@@ -728,6 +728,11 @@ namespace dxvk {
         RtxDustParticles& dust = m_common->metaDustParticles();
         dust.simulateAndDraw(this, m_state, rtOutput);
 
+        // The game's ambient grade stands in for lighting the path tracer replaced, so it
+        // runs on the shaded image before bloom gathers from it - the order the original
+        // frame had.
+        dispatchDusklightGrade(rtOutput);
+
         dispatchBloom(rtOutput);
 
         // Motion blur runs before tonemapping while the image is still in linear HDR space.
@@ -1803,6 +1808,19 @@ namespace dxvk {
         GlobalTime::get().deltaTimeMs(),
         autoExposure.enabled());
     }
+  }
+
+  void RtxContext::dispatchDusklightGrade(const Resources::RaytracingOutput& rtOutput) {
+    ScopedCpuProfileZone();
+    DxvkDusklightGrade& grade = m_common->metaDusklightGrade();
+    if (!grade.isActive()) {
+      return;
+    }
+
+    this->spillRenderPass(false);
+    this->unbindComputePipeline();
+
+    grade.dispatch(this, rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite));
   }
 
   void RtxContext::dispatchBloom(const Resources::RaytracingOutput& rtOutput) {

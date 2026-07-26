@@ -3935,6 +3935,9 @@ namespace dxvk {
       if (RemixGui::CollapsingHeader("Bloom", collapsingHeaderClosedFlags))
         common->metaBloom().showImguiSettings();
 
+      if (RemixGui::CollapsingHeader("Dusklight Ambient Grade", collapsingHeaderClosedFlags))
+        common->metaDusklightGrade().showImguiSettings();
+
       if (RemixGui::CollapsingHeader("Auto Exposure", collapsingHeaderClosedFlags))
         common->metaAutoExposure().showImguiSettings();
 
