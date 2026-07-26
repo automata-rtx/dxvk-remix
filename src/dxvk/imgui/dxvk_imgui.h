@@ -104,6 +104,7 @@ namespace dxvk {
       kTab_Rendering = 0,
       kTab_Setup,
       kTab_Enhancements,
+      kTab_Dusklight,
       kTab_About,
       kTab_Development,
       kTab_Count
@@ -199,7 +200,9 @@ namespace dxvk {
     bool m_lastRenderVsyncStatus = false;
     std::unique_ptr<RtxGraphGUI> m_graphGUI;
 
-    static constexpr const char* tabNames[] = { "Rendering", "Game Setup", "Enhancements", "About" , "Dev Settings"};
+    static constexpr const char* tabNames[] = { "Rendering", "Game Setup", "Enhancements", "Dusklight", "About" , "Dev Settings"};
+    static_assert(sizeof(tabNames) / sizeof(tabNames[0]) == kTab_Count,
+                  "tabNames must stay in step with Tabs");
     Tabs m_curTab = kTab_Count;
     Tabs m_triggerTab = kTab_Count;
     void triggerTab(const Tabs tab) {
@@ -243,6 +246,8 @@ namespace dxvk {
     void showEnhancementsWindow(const Rc<DxvkContext>& ctx);
     void showEnhancementsTab(const Rc<DxvkContext>& ctx);
     void showDevelopmentSettings(const Rc<DxvkContext>& ctx);
+
+    void showDusklightWindow(const Rc<DxvkContext>& ctx);
 
     // helper to display a configurable grid of all textures currently hooked to ImGUI
     void showTextureSelectionGrid(const Rc<DxvkContext>& ctx, const char* uniqueId, const uint32_t texturesPerRow, const float thumbnailSize, const float minChildHeight = 600.0f);

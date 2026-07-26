@@ -63,6 +63,31 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, bgAmbient, Vector3(1.0f, 1.0f, 1.0f), RtxOptionFlags::NoSave,
                     "The ambient colour the game's environment system is currently applying to room and terrain geometry, normalized to 0..1. "
                     "Written by the game's kankyo bridge. The counterpart to rtx.dusklight.env.actorAmbient for everything that is not an actor.");
+
+    // Light status, reported so the Dusklight tab can show what the game is actually doing.
+    // The game's own debug UI is not drawn in its D3D9 mode, so this is the only place these
+    // are visible.
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, sunActive, false, RtxOptionFlags::NoSave,
+                    "True while the game is drawing its sun/moon distant light. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, sunIsDay, false, RtxOptionFlags::NoSave,
+                    "True when the game's celestial light is currently the sun rather than the moon. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, sunAzimuth, 0.0f, RtxOptionFlags::NoSave,
+                    "Compass bearing of the game's sun or moon in degrees, about the world's up axis (0 = +Z, 90 = +X). Written by the game's kankyo bridge.\n"
+                    "This is a function of the game's time of day and nothing else, so it must not move while the player does - which makes it the quickest "
+                    "answer to whether the light is following the player around.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, sunElevation, 0.0f, RtxOptionFlags::NoSave,
+                    "Height of the game's sun or moon above the horizon in degrees. Written by the game's kankyo bridge. "
+                    "Like the azimuth, a function of time of day alone.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, sunFade, 0.0f, RtxOptionFlags::NoSave,
+                    "How far the game's celestial light is faded in, 0..1. Falls to zero across the dawn and dusk handovers, where the direction jumps "
+                    "between the sun's and the moon's. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, deviceRegistered, false, RtxOptionFlags::NoSave,
+                    "True once the game has registered its D3D9 device with the Remix API, which everything that submits lights depends on. "
+                    "Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsDrawn, 0, RtxOptionFlags::NoSave,
+                    "How many of the game's own point lights were submitted to Remix this frame. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsTracked, 0, RtxOptionFlags::NoSave,
+                    "How many of the game's own point lights currently hold a live Remix light. Written by the game's kankyo bridge.");
   };
 
 }

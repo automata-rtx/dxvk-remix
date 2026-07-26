@@ -144,3 +144,14 @@ namespace dxvk {
 
 // Export function for unit testing
 extern "C" __declspec(dllexport) bool writeMarkdownDocumentation(const char* outputMarkdownFilePath);
+
+// Reads a resolved option value as a string, for in-process code that cannot link against
+// dxvk. The Remix API can only write options (SetConfigVariable), which is enough for a game
+// reporting its state but not for one whose own settings are being edited from the Remix UI -
+// it has to read them back. Adding a getter to remixapi_Interface would break its ABI (the
+// struct size is asserted), so this rides the same plain export as the function above.
+//
+// Writes a NUL-terminated value into outValue and returns the number of bytes required
+// including the terminator, which may exceed valueSize - in that case nothing is written.
+// Returns 0 if the key is unknown. Pass a null buffer to query the required size.
+extern "C" __declspec(dllexport) uint32_t getRtxOptionValue(const char* key, char* outValue, uint32_t valueSize);

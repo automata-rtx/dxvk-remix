@@ -46,6 +46,8 @@
 #include "rtx_render/rtx_context.h"
 #include "rtx_render/rtx_hash_collision_detection.h"
 #include "rtx_render/rtx_options.h"
+#include "rtx_render/rtx_dusklight_env.h"
+#include "rtx_render/rtx_dusklight_game.h"
 #include "rtx_render/rtx_terrain_baker.h"
 #include "rtx_render/rtx_neural_radiance_cache.h"
 #include "rtx_render/rtx_ray_reconstruction.h"
@@ -1037,6 +1039,9 @@ namespace dxvk {
               break;
             case kTab_Enhancements:
               showEnhancementsWindow(ctx);
+              break;
+            case kTab_Dusklight:
+              showDusklightWindow(ctx);
               break;
             case kTab_About:
               m_about->show(ctx);
@@ -2519,6 +2524,109 @@ namespace dxvk {
 
     ImGui::NewLine();
     ImGui::PopID();
+  }
+
+  void ImGUI::showDusklightWindow(const Rc<DxvkContext>& ctx) {
+    ImGui::PushItemWidth(largeUiMode() ? m_largeWindowWidgetWidth : m_regularWindowWidgetWidth);
+
+    // These settings belong to the game, not to Remix. They live here because the game's own
+    // debug UI is not drawn at all in the fixed function D3D9 mode this feature exists for, so
+    // this tab is the only place they can be reached while the game runs. The game polls them
+    // every frame; moving a slider takes effect on the next one.
+
+    const bool feedLive = DusklightEnv::enable();
+
+    if (feedLive) {
+      ImGui::TextUnformatted("Connected: the game is feeding its environment state to Remix.");
+    } else {
+      ImGui::TextWrapped(
+        "Not connected. Nothing here has any effect until the game's bridge is running: it needs "
+        "the game's D3D9 backend, this build of Remix, and rtx.dusklight.game.bridgeEnable. "
+        "Settings changed here are kept and applied as soon as it connects.");
+    }
+
+    RemixGui::Separator();
+
+    if (RemixGui::CollapsingHeader("Bridge", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Environment Bridge Enabled", &DusklightGame::bridgeEnableObject());
+      if (feedLive) {
+        ImGui::Text("Device registered with the Remix API: %s",
+                    DusklightEnv::deviceRegistered() ? "yes" : "no");
+      }
+      ImGui::Unindent();
+    }
+
+    if (RemixGui::CollapsingHeader("Sun / Moon Light", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Sun/Moon Light Enabled", &DusklightGame::sunMoonLightObject());
+      RemixGui::DragFloat("Sun Intensity##dusklight", &DusklightGame::sunIntensityObject(), 0.05f, 0.f, 50.f, "%.2f");
+      RemixGui::DragFloat("Moon Intensity##dusklight", &DusklightGame::moonIntensityObject(), 0.01f, 0.f, 10.f, "%.2f");
+      RemixGui::DragFloat("Angular Diameter##dusklight", &DusklightGame::celestialAngleObject(), 0.05f, 0.1f, 20.f, "%.2f deg");
+
+      if (feedLive) {
+        if (DusklightEnv::sunActive()) {
+          // Azimuth and elevation are functions of the game's time of day and nothing else, so
+          // they answer "is the light following the player?" at a glance - which is the first
+          // thing anyone asks of a sun that was just made distant.
+          ImGui::Text("Drawing: %s   azimuth %6.1f deg   elevation %5.1f deg   fade %.2f",
+                      DusklightEnv::sunIsDay() ? "SUN" : "MOON",
+                      DusklightEnv::sunAzimuth(), DusklightEnv::sunElevation(),
+                      DusklightEnv::sunFade());
+          ImGui::TextWrapped(
+            "Azimuth and elevation depend on the game's time of day and nothing else. If they "
+            "hold still while the player runs in a circle, the direction is not tied to the "
+            "player - lock it below and check whether a tree's shadow stays anchored to the tree.");
+        } else {
+          ImGui::TextUnformatted("Not drawing: the game reports no sun or moon in this area.");
+        }
+      }
+
+      RemixGui::Separator();
+      RemixGui::Checkbox("Flip Direction (diagnostic)", &DusklightGame::celestialFlipObject());
+      RemixGui::Checkbox("Lock Direction (diagnostic)", &DusklightGame::celestialLockObject());
+      ImGui::Unindent();
+    }
+
+    if (RemixGui::CollapsingHeader("Local Point Lights", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Local Lights Enabled", &DusklightGame::localLightsObject());
+      RemixGui::DragFloat("Local Intensity##dusklight", &DusklightGame::localLightIntensityObject(), 0.05f, 0.f, 32.f, "%.2f");
+      RemixGui::DragFloat("Local Radius##dusklight", &DusklightGame::localLightRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
+
+      if (feedLive) {
+        ImGui::Text("Drawn this frame: %d   tracked: %d", DusklightEnv::localLightsDrawn(),
+                    DusklightEnv::localLightsTracked());
+      }
+      ImGui::TextWrapped(
+        "Radius changes brightness as well as softness: the radiance is solved so the light still "
+        "reaches the same distance, so a larger emitter needs less of it.");
+      ImGui::Unindent();
+    }
+
+    if (RemixGui::CollapsingHeader("Environment Response", collapsingHeaderFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "How strongly Remix responds to the game's environment. The bloom lives under "
+        "Rendering > Post-Processing > Bloom; the ambient grade under Dusklight Ambient Grade.");
+      RemixGui::Separator();
+
+      if (feedLive) {
+        ImGui::Text("Bloom: %s   threshold %.3f   blur %.0f / %.0f",
+                    DusklightEnv::bloomEnable() ? "on" : "off", DusklightEnv::bloomThreshold(),
+                    DusklightEnv::bloomBlurSize(), DusklightEnv::bloomBlurRatio());
+        const Vector3 actorAmbient = DusklightEnv::actorAmbient();
+        const Vector3 bgAmbient = DusklightEnv::bgAmbient();
+        ImGui::Text("Actor ambient: %.3f, %.3f, %.3f", actorAmbient.x, actorAmbient.y, actorAmbient.z);
+        ImGui::Text("BG ambient:    %.3f, %.3f, %.3f", bgAmbient.x, bgAmbient.y, bgAmbient.z);
+        ImGui::Text("Mono overlay:  %.2f", DusklightEnv::monoAmount());
+      } else {
+        ImGui::TextUnformatted("Nothing reported yet.");
+      }
+      ImGui::Unindent();
+    }
+
+    ImGui::PopItemWidth();
   }
 
   void ImGUI::showEnhancementsWindow(const Rc<DxvkContext>& ctx) {
