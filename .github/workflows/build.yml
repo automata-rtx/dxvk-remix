@@ -1,8 +1,11 @@
 name: Build
 
 on:
+  # This fork develops on claude/** branches and merges them to main through a
+  # pull request, so without them here a feature branch gets no build until the
+  # PR opens - which is exactly when a compile error is most expensive to find.
   push:
-    branches: [ main, 'release/**' ]
+    branches: [ main, 'release/**', 'claude/**' ]
   pull_request:
     branches: [ main, 'release/**' ]
 
