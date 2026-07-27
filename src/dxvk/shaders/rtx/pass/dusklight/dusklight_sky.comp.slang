@@ -22,6 +22,8 @@
 
 #include "rtx/pass/dusklight/dusklight_sky.h"
 #include "rtx/utility/shader_types.slangh"
+// Note: pi, twoPi and square all live here rather than in shader_types.
+#include "rtx/utility/math.slangh"
 
 // Builds the sky the game would have drawn, as a lat-long image for Remix's dome light.
 //

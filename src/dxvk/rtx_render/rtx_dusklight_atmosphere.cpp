@@ -179,7 +179,18 @@ namespace dxvk {
     const float maxDistance = std::max(froxelMaxDistanceMaxMeters() * meterToWorld, minDistance);
     const float target = std::clamp(end * std::max(froxelRangeScale(), 0.0f), minDistance, maxDistance);
 
-    if (m_smoothedFroxelMaxDistance <= 0.0f || !isFinite(m_smoothedFroxelMaxDistance)) {
+    // Snap rather than ease when the target jumps by more than this much in either direction. Easing
+    // is right for the palette drifting through a sunrise; it is wrong for a room change or an area
+    // load, where easing would drag the grid through a range that matches neither the room left nor
+    // the one entered, for as long as the ease takes.
+    constexpr float kSnapRatio = 4.0f;
+
+    const bool noHistory = m_smoothedFroxelMaxDistance <= 0.0f || !isFinite(m_smoothedFroxelMaxDistance);
+    const bool jumped = !noHistory &&
+                        (target > m_smoothedFroxelMaxDistance * kSnapRatio ||
+                         target * kSnapRatio < m_smoothedFroxelMaxDistance);
+
+    if (noHistory || jumped) {
       m_smoothedFroxelMaxDistance = target;
     } else {
       const float rate = std::clamp(froxelSmoothingRate(), 0.0f, 1.0f);
@@ -374,7 +385,8 @@ namespace dxvk {
 
     RemixGui::Separator();
     ImGui::TextUnformatted("Resolved");
-    const Derived& d = derived();
+    // peek, not derived: this runs on the presenting thread and must not drive the per-frame latch.
+    const Derived& d = peek();
     if (!d.fogValid) {
       ImGui::TextUnformatted("fog: inactive");
     } else {

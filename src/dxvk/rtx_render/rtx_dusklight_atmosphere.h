@@ -96,6 +96,11 @@ namespace dxvk {
     // Resolved lazily and latched per frame, so callers do not have to agree about ordering.
     const Derived& derived() const;
 
+    // The last resolved state, without driving the latch. The UI runs on the presenting thread, and
+    // resolving from there would both race the render thread's reads and steal a smoothing step
+    // from it, so the panel reads whatever the last rendered frame settled on.
+    const Derived& peek() const { return m_derived; }
+
     // True while the game's feed is driving the medium. Everything guarded by this must be a no-op
     // when it is false, so that turning the bridge off leaves a build that behaves as upstream.
     bool active() const;
@@ -178,10 +183,13 @@ namespace dxvk {
                     "because it was a colour blend rather than a simulation. This is what keeps a dark room's fog the colour the palette asked for.",
                     args.minValue = 0.0f,
                     args.maxValue = 4.0f);
-    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, froxelRangeScale, 1.0f,
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, froxelRangeScale, 0.6f,
                     "How much of the game's fog range the froxel grid is sized to cover.\n"
                     "The grid gets a fixed number of depth slices wherever it is pointed, so sizing it from the game's own fog range is what puts them where the "
                     "fog actually is: tight inside a dense interior, wide across an open field. Costs nothing - the slice count does not change, only its reach.\n"
+                    "Deliberately below 1. At 1 the grid swallows the whole ramp, the composite's far half has nothing left to do, and the fog never closes to "
+                    "fully opaque the way the original does - an exponential medium only ever asymptotes towards that. Leaving the last stretch to the ramp is "
+                    "what buys the closure, and it also spends the fixed slice count on the near field where light shafts actually live.\n"
                     "UNVALIDATED: never measured against a running build.",
                     args.minValue = 0.1f,
                     args.maxValue = 4.0f);

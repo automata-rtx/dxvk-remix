@@ -639,7 +639,15 @@ namespace dxvk {
     const float invertedWorld = atmosphereInverted() ? -1.f : 1.f;
     const Vector3 sceneUpDirection = RtxOptions::zUp() ? Vector3(0, 0, invertedWorld) : Vector3(0, invertedWorld, 0);
 
-    const float atmosphereHeight = atmosphereHeightMeters() * RtxOptions::getMeterToWorldUnitScale();
+    // Note: The shell has to actually contain the fog, or forcing the atmosphere on below trades one problem for a worse
+    // one: the medium gets clipped at the shell's ceiling and an open field's fog stops partway up. The option's own
+    // default is 30 m, which is shorter than most of this game's fog ranges.
+    float atmosphereHeight = atmosphereHeightMeters() * RtxOptions::getMeterToWorldUnitScale();
+
+    if (dusklight && dusklightAtmosphere.outdoor()) {
+      atmosphereHeight = std::max(atmosphereHeight, dusklightAtmosphere.derived().rampEnd);
+    }
+
     const float planetRadius = atmospherePlanetRadiusMeters() * RtxOptions::getMeterToWorldUnitScale();
     // Create a virtual planet center by projecting the camera position onto the plane defined by the origin and scene up direction.
     // Todo: Consider pre-transforming this planet center into the various volume camera translated world spaces to avoid needing to do this translation on the GPU constantly. May be just as costly however

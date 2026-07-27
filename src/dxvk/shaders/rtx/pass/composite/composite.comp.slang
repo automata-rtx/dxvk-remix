@@ -603,6 +603,7 @@ void applyFog(
   float viewDistance,
   float radianceScale,
   vec3 volumeAttenuation,
+  bool primaryMiss,
   inout vec3 radianceOutput,
   inout vec4 particleLayerOutput)
 {
@@ -612,6 +613,15 @@ void applyFog(
     // lookup saturates past its last slice and stops accumulating there. Dusklight's fog regularly runs far beyond that,
     // so the game's own ramp carries the rest of the distance.
     if (cb.dusklightArgs.enable == 0)
+    {
+      return;
+    }
+
+    // Nothing was hit, so there is no surface at a distance to fog towards - the radiance here is the sky, which was
+    // just added above and is at infinity. Running the ramp on it would drive it to full fog and replace the sky with a
+    // flat colour, which is what the legacy path's maxFogDistance escape hatch existed to prevent. The two agree anyway:
+    // the game authors its fog colour and its sky colour from the same palette entry.
+    if (primaryMiss)
     {
       return;
     }
@@ -637,11 +647,19 @@ void applyFog(
       return;
     }
 
-    const float t = saturate((fogAtDistance - fogAtHandover) / remaining);
+    float t = saturate((fogAtDistance - fogAtHandover) / remaining);
 
-    // Light scattered out there still has to travel back through the volume in front of it, which is exactly what the
-    // grid's attenuation describes.
-    vec3 farFogRadiance = cb.dusklightArgs.fogColor * volumeAttenuation;
+    // Scaled by how much light the near volume still lets past. The far fog sits behind that volume, so it can only
+    // affect what survives it: with a dense medium up close this correctly falls to nothing, and with a thin one it runs
+    // at full strength.
+    //
+    // This is also standing in for a separation we cannot make here. By this point radianceOutput holds the surface
+    // radiance and the near in-scatter added together, and only the former is behind the far fog - blending both towards
+    // the fog colour would erase in-scatter that is actually in front of it. Weighting by the near transmittance keeps
+    // that error where the in-scatter is small, which is the same place the far fog is strong.
+    t *= saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
+
+    vec3 farFogRadiance = cb.dusklightArgs.fogColor;
 
     if (cb.sparseRenderingArgs.mode != SparseRenderingMode::Off)
     {
@@ -821,7 +839,7 @@ vec4 compositeResult(
   applySkyContribution(pixelCoordinate, primaryRayDirections, primaryMiss, radianceScale, volumeAttenuation, radianceOutput);
 
   // Apply fog 
-  applyFog(viewDistance, radianceScale, volumeAttenuation, radianceOutput, particleLayerOutput);
+  applyFog(viewDistance, radianceScale, volumeAttenuation, primaryMiss, radianceOutput, particleLayerOutput);
 
   // DLSS-RR needs to do alpha blending using the backgroundAlpha, so the input is untouched here.
   // Output final composite result for NRD denoiser.
