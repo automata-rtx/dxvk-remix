@@ -35,6 +35,10 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, enable, false, RtxOptionFlags::NoSave,
                     "True while the game's kankyo bridge is pushing environment state into Remix.\n"
                     "Set by the game itself; do not set by hand. Consumers only honour the other rtx.dusklight.env options while this is true.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, protocol, 0, RtxOptionFlags::NoSave,
+                    "Which revision of the game side bridge is running, so the Dusklight tab can tell an out of date game build from a broken one.\n"
+                    "0 means the game predates rtx.dusklight.game.*, and every control in that tab will appear to do nothing because nothing is reading them. "
+                    "Written by the game's kankyo bridge.");
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, bloomEnable, true, RtxOptionFlags::NoSave,
                     "Whether the game's current environment palette wants bloom at all. Written by the game's kankyo bridge.");
     RTX_OPTION_FLAG("rtx.dusklight.env", float, bloomThreshold, 0.5f, RtxOptionFlags::NoSave,

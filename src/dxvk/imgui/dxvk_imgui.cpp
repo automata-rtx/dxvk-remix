@@ -2536,12 +2536,25 @@ namespace dxvk {
 
     const bool feedLive = DusklightEnv::enable();
 
-    if (feedLive) {
+    // The controls below are read by the game, so they are only live if the game is
+    // both connected and new enough to know about them. Those are different failures
+    // and they look identical from here unless we say so.
+    constexpr int kRequiredProtocol = 1;
+    const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
+
+    if (feedLive && !gameTooOld) {
       ImGui::TextUnformatted("Connected: the game is feeding its environment state to Remix.");
+    } else if (gameTooOld) {
+      ImGui::TextWrapped(
+        "Connected, but the game build is older than this build of Remix: it does not read these "
+        "settings, so every control below will appear to do nothing. The readouts are still "
+        "accurate. Update the game to a build that reports protocol 1 or newer.");
     } else {
       ImGui::TextWrapped(
-        "Not connected. Nothing here has any effect until the game's bridge is running: it needs "
-        "the game's D3D9 backend, this build of Remix, and rtx.dusklight.game.bridgeEnable. "
+        "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "
+        "backend against this d3d9.dll, with the bridge enabled. If it was connected a moment ago "
+        "and stopped, that is worth reporting: the game re-sends its state when it notices this, "
+        "so it should recover within a couple of seconds by itself. "
         "Settings changed here are kept and applied as soon as it connects.");
     }
 
