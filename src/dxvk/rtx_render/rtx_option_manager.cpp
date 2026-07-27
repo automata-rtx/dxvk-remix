@@ -512,6 +512,12 @@ uint32_t getRtxOptionValue(const char* key, char* outValue, uint32_t valueSize) 
     return 0;
   }
 
+  // Called from the game's thread while Remix resolves options on its own at the
+  // end of each frame, so take the same lock those writes do. Reading a resolved
+  // value without it races the write, and for the string and vector types that is
+  // a torn read of a heap pointer rather than a merely stale number.
+  std::lock_guard<std::mutex> lock(dxvk::RtxOptionImpl::getUpdateMutex());
+
   dxvk::RtxOptionImpl* option = dxvk::RtxOptionImpl::getOptionByFullName(std::string { key });
   if (option == nullptr) {
     return 0;
