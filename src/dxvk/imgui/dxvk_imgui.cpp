@@ -2595,6 +2595,11 @@ namespace dxvk {
         }
       }
 
+      RemixGui::DragFloat("Noon Elevation##dusklight", &DusklightGame::celestialNoonElevationObject(), 0.25f, 1.f, 90.f, "%.1f deg");
+      ImGui::TextWrapped(
+        "The game's arc tops out at 59 degrees, which leaves midday without an overhead sun. 90 puts "
+        "it straight up at noon. Moves the visible body too, and does not touch time of day.");
+
       RemixGui::Separator();
       RemixGui::Checkbox("Flip Direction (diagnostic)", &DusklightGame::celestialFlipObject());
       RemixGui::Checkbox("Lock Direction (diagnostic)", &DusklightGame::celestialLockObject());
@@ -2620,6 +2625,7 @@ namespace dxvk {
     if (RemixGui::CollapsingHeader("Geometry", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::Indent();
       RemixGui::Checkbox("Disable Frustum Culling", &DusklightGame::disableFrustumCullingObject());
+      RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
       ImGui::TextWrapped(
         "The game drops geometry outside the camera's view, which a path tracer still needs: a wall "
         "culled because you turned away stops occluding, and light leaks through where it was. Costs "

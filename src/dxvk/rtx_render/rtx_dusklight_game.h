@@ -87,6 +87,22 @@ namespace dxvk {
                "turned away stops occluding, and light spills through the gap into rooms it should never reach. Turning this off submits everything in the "
                "room every frame, which costs exactly what the culling was saving, so it is off by default. Remix's own rtx.antiCulling.object.enable is the "
                "cheaper half measure - it retains objects it has already seen rather than preventing them being dropped in the first place.");
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, celestialNoonElevation, 59.036f,
+                    "How high the sun and moon climb at their peak, in degrees above the horizon.\n"
+                    "The game's own arc tops out at 59 degrees and never higher, which reads fine against baked lighting but leaves a path tracer without a "
+                    "usable overhead sun: midday shadows stretch about as far as mid-afternoon ones. Raising this tilts the orbit towards vertical, so 90 puts "
+                    "the sun directly overhead at noon and drops shadows straight down.\n"
+                    "The default reproduces the game's arc exactly. This moves the visible sun and moon as well as the light, so the two never disagree, and it "
+                    "changes nothing about time of day - dawn, dusk, night and the palette schedule all run off the clock and never look at the orbit. Sunrise "
+                    "and sunset elevations barely move either, so those transitions look the same.",
+                    args.minValue = 1.0f,
+                    args.maxValue = 90.0f);
+    RTX_OPTION("rtx.dusklight.game", bool, hideSkyBillboards, false,
+               "Stops the game drawing its sun, moon and star billboards.\n"
+               "Those are placed at a fixed offset from the camera, so they travel with the player. Any of them that Remix captures as ordinary world geometry "
+               "becomes an occluder that follows you around - a candidate for shadowed areas appearing to wander as the camera moves, and one that would only "
+               "show at night, since stars and the moon are the only sky billboards drawn then.\n"
+               "Tagging those textures as Sky is the real fix; this is here to test the theory in one click. It does remove the visible stars and moon.");
     RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightRadius, 4.0f,
                     "Emitter radius of the game's local lights in world units, matching Remix's own default for converted point lights.\n"
                     "This changes brightness as well as softness: the radiance is solved so the light still reaches the same distance, so a larger "
