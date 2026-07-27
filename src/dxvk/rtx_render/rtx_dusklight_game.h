@@ -81,6 +81,12 @@ namespace dxvk {
                     "the number to try if the torches look weak.",
                     args.minValue = 0.0f,
                     args.maxValue = 32.0f);
+    RTX_OPTION("rtx.dusklight.game", bool, disableFrustumCulling, false,
+               "Stops the game discarding geometry that falls outside the camera's view.\n"
+               "The game culls aggressively because a rasterizer has no use for what it cannot see. A path tracer does: a wall dropped because the camera "
+               "turned away stops occluding, and light spills through the gap into rooms it should never reach. Turning this off submits everything in the "
+               "room every frame, which costs exactly what the culling was saving, so it is off by default. Remix's own rtx.antiCulling.object.enable is the "
+               "cheaper half measure - it retains objects it has already seen rather than preventing them being dropped in the first place.");
     RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightRadius, 4.0f,
                     "Emitter radius of the game's local lights in world units, matching Remix's own default for converted point lights.\n"
                     "This changes brightness as well as softness: the radiance is solved so the light still reaches the same distance, so a larger "

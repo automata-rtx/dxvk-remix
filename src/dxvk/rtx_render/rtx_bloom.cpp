@@ -434,7 +434,14 @@ namespace dxvk {
     BloomCompositeArgs pushArgs = {};
     pushArgs.imageSize = { outputSize.width, outputSize.height };
     pushArgs.imageSizeInverse = { 1.f / float(outputSize.width), 1.f / float(outputSize.height) };
-    pushArgs.intensity = 0.01f * std::max(burnIntensity(), 0.0f);
+    // Remix's own pyramid gathers broadly from unthresholded HDR and needs heavy attenuation
+    // here; the 0.01 is calibrated for it. The Dusklight path must not inherit that. Its
+    // brightness is already fully specified by the game's own blur ratio, and the original
+    // composite adds its bloom at full strength - modulated only by the blend colour and the
+    // hardware blend factors, with no scale factor anywhere. Inheriting Remix's attenuation made
+    // ours a hundred times too faint, which is exactly why it needed every brightness knob pinned
+    // to its maximum to show up at all, and why turning it off looked closer to the original.
+    pushArgs.intensity = std::max(burnIntensity(), 0.0f) * (dusklight() ? 1.0f : 0.01f);
     pushArgs.tint = tint;
     pushArgs.screenBlend = screenBlend ? 1u : 0u;
     pushArgs.baseWeight = baseWeight;

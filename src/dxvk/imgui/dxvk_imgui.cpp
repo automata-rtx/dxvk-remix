@@ -2617,6 +2617,16 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
+    if (RemixGui::CollapsingHeader("Geometry", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Disable Frustum Culling", &DusklightGame::disableFrustumCullingObject());
+      ImGui::TextWrapped(
+        "The game drops geometry outside the camera's view, which a path tracer still needs: a wall "
+        "culled because you turned away stops occluding, and light leaks through where it was. Costs "
+        "what the culling was saving.");
+      ImGui::Unindent();
+    }
+
     if (RemixGui::CollapsingHeader("Environment Response", collapsingHeaderFlags)) {
       ImGui::Indent();
       ImGui::TextWrapped(

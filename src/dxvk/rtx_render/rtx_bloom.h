@@ -128,7 +128,11 @@ namespace dxvk {
     Resources::Resource m_bloomBuffer[MaxBloomSteps] = {};
 
     RTX_OPTION_ENV("rtx.bloom", bool, enable, true, "RTX_BLOOM_ENABLE", "Enable bloom - glowing halos around intense, bright areas.");
-    RTX_OPTION("rtx.bloom", float, burnIntensity, 1.0f, "Amount of bloom to add to the final image.");
+    RTX_OPTION("rtx.bloom", float, burnIntensity, 1.0f,
+               "Amount of bloom to add to the final image.\n"
+               "The default pyramid is attenuated by a further fixed factor of 0.01 on top of this, which is calibrated for how broadly it gathers. "
+               "The Dusklight pyramid is not: its brightness is already carried by rtx.bloom.dusklightBlurRatio, and the effect it reproduces composited "
+               "at full strength. So the same value here means something about a hundred times stronger with rtx.bloom.dusklight enabled.");
     RTX_OPTION("rtx.bloom", float, luminanceThreshold, 0.25f,
                "Adjust the bloom threshold to suppress blooming of the dim areas. "
                "Pixels with luminance lower than the threshold are multiplied by "
