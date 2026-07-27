@@ -2539,7 +2539,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 1;
+    constexpr int kRequiredProtocol = 2;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -2548,7 +2548,7 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Connected, but the game build is older than this build of Remix: it does not read these "
         "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 1 or newer.");
+        "accurate. Update the game to a build that reports protocol 2 or newer.");
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "
@@ -2626,10 +2626,14 @@ namespace dxvk {
       ImGui::Indent();
       RemixGui::Checkbox("Disable Frustum Culling", &DusklightGame::disableFrustumCullingObject());
       RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
+      RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
       ImGui::TextWrapped(
         "The game drops geometry outside the camera's view, which a path tracer still needs: a wall "
         "culled because you turned away stops occluding, and light leaks through where it was. Costs "
         "what the culling was saving.");
+      ImGui::TextWrapped(
+        "Hide the sky dome once Remix is generating its own (Rendering > Dusklight Atmosphere), or you "
+        "will be looking at both.");
       ImGui::Unindent();
     }
 
@@ -2649,6 +2653,27 @@ namespace dxvk {
         ImGui::Text("Actor ambient: %.3f, %.3f, %.3f", actorAmbient.x, actorAmbient.y, actorAmbient.z);
         ImGui::Text("BG ambient:    %.3f, %.3f, %.3f", bgAmbient.x, bgAmbient.y, bgAmbient.z);
         ImGui::Text("Mono overlay:  %.2f", DusklightEnv::monoAmount());
+
+        RemixGui::Separator();
+
+        // The game's fog numbers live in stage data rather than in its code, so this readout is the only
+        // way to learn what an area actually asks for. Stand somewhere that looks wrong and read them.
+        const Vector3 fogColor = DusklightEnv::fogColor();
+        ImGui::Text("Fog: %s   %.0f .. %.0f units",
+                    DusklightEnv::fogActive() ? "on" : "off",
+                    DusklightEnv::fogStartZ(), DusklightEnv::fogEndZ());
+        ImGui::Text("Fog colour:    %.3f, %.3f, %.3f", fogColor.x, fogColor.y, fogColor.z);
+
+        const Vector3 skyColor = DusklightEnv::skyColor();
+        const Vector3 kasumiInner = DusklightEnv::kasumiInner();
+        const Vector3 kasumiOuter = DusklightEnv::kasumiOuter();
+        ImGui::Text("Sky: %s   colpat %d   moya %d @ %.0f",
+                    DusklightEnv::skyHidden() ? "none (interior)" : "present",
+                    DusklightEnv::colpat(), DusklightEnv::moyaMode(), DusklightEnv::moyaCount());
+        ImGui::Text("Sky colour:    %.3f, %.3f, %.3f", skyColor.x, skyColor.y, skyColor.z);
+        ImGui::Text("Haze in / out: %.3f, %.3f, %.3f  /  %.3f, %.3f, %.3f",
+                    kasumiInner.x, kasumiInner.y, kasumiInner.z,
+                    kasumiOuter.x, kasumiOuter.y, kasumiOuter.z);
       } else {
         ImGui::TextUnformatted("Nothing reported yet.");
       }
@@ -4074,6 +4099,9 @@ namespace dxvk {
 
       if (RemixGui::CollapsingHeader("Dusklight Ambient Grade", collapsingHeaderClosedFlags))
         common->metaDusklightGrade().showImguiSettings();
+
+      if (RemixGui::CollapsingHeader("Dusklight Atmosphere", collapsingHeaderClosedFlags))
+        common->metaDusklightAtmosphere().showImguiSettings();
 
       if (RemixGui::CollapsingHeader("Auto Exposure", collapsingHeaderClosedFlags))
         common->metaAutoExposure().showImguiSettings();

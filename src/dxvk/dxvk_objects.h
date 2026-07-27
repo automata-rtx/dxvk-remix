@@ -49,6 +49,7 @@
 #include "rtx_render/rtx_tone_mapping.h"
 #include "rtx_render/rtx_local_tone_mapping.h"
 #include "rtx_render/rtx_bloom.h"
+#include "rtx_render/rtx_dusklight_atmosphere.h"
 #include "rtx_render/rtx_dusklight_grade.h"
 #include "rtx_render/rtx_geometry_utils.h"
 #include "rtx_render/rtx_image_utils.h"
@@ -75,6 +76,7 @@ namespace dxvk {
   class DxvkReSTIRGIRayQuery;
   class DxvkToneMapping;
   class DxvkBloom;
+  class DxvkDusklightAtmosphere;
   class DxvkDusklightGrade;
   class RtxGeometryUtils;
   class CompositePass;
@@ -264,6 +266,10 @@ namespace dxvk {
       return m_dusklightGrade.get();
     }
 
+    DxvkDusklightAtmosphere& metaDusklightAtmosphere() {
+      return m_dusklightAtmosphere.get();
+    }
+
     RtxGeometryUtils& metaGeometryUtils() {
       return m_geometryUtils.get();
     }
@@ -403,6 +409,7 @@ namespace dxvk {
     Active<DxvkLocalToneMapping>            m_localToneMapping;
     Active<DxvkBloom>                       m_bloom;
     Active<DxvkDusklightGrade>              m_dusklightGrade;
+    Active<DxvkDusklightAtmosphere>         m_dusklightAtmosphere;
     Active<RtxGeometryUtils>                m_geometryUtils;
     Active<RtxImageUtils>                   m_imageUtils;
     Active<DxvkPostFx>                      m_postFx;

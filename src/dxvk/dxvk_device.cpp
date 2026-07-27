@@ -559,6 +559,7 @@ namespace dxvk {
     m_localToneMapping(device),
     m_bloom(device),
     m_dusklightGrade(device),
+    m_dusklightAtmosphere(device),
     m_geometryUtils(device),
     m_imageUtils(device),
     m_postFx(device),

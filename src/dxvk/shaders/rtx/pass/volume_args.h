@@ -99,7 +99,12 @@ struct VolumeArgs {
   uint resetHistory;
   uint16_t enableTranslucentShadows;
   uint16_t pad0;
-  uint pad1;
+  // Note: The froxel grid's max distance as it was on the previous frame. Reprojection has to
+  // rebuild the previous frame's froxel mapping, and doing that with the current frame's max
+  // distance silently misplaces every sample for as long as the value is moving. Upstream assumed
+  // the option was static so it read the current one; that assumption does not hold once the grid
+  // is sized from the game's own fog range, which changes per area.
+  float previousFroxelMaxDistance;
 };
 
 #ifdef __cplusplus

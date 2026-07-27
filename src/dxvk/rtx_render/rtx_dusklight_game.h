@@ -103,6 +103,13 @@ namespace dxvk {
                "becomes an occluder that follows you around - a candidate for shadowed areas appearing to wander as the camera moves, and one that would only "
                "show at night, since stars and the moon are the only sky billboards drawn then.\n"
                "Tagging those textures as Sky is the real fix; this is here to test the theory in one click. It does remove the visible stars and moon.");
+    RTX_OPTION("rtx.dusklight.game", bool, hideVrbox, false,
+               "Stops the game drawing its own sky dome.\n"
+               "The dome is painted by handing the hardware a handful of colours rather than by drawing a texture, so Remix has nothing "
+               "distinctive to hash and the dome can never be tagged as sky - which is why rtx.dusklight.atmosphere.skyEnable generates a "
+               "sky from those same colours instead. Turn this on together with that, or the generated sky and the game's own dome will "
+               "both be visible; leave it off and the atmosphere still lights the scene but you will be looking at the game's dome.\n"
+               "Also set rtx.skyAutoDetect to None, otherwise the auto detected dome keeps feeding a second, dimmer sky into the same pixels.");
     RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightRadius, 4.0f,
                     "Emitter radius of the game's local lights in world units, matching Remix's own default for converted point lights.\n"
                     "This changes brightness as well as softness: the radiance is solved so the light still reaches the same distance, so a larger "

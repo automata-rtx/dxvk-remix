@@ -275,6 +275,9 @@ namespace dxvk {
     Resources::Resource m_volumeAccumulatedRadianceAge[2];
     bool m_swapTextures = false;
     bool m_rebuildFroxels = false;
+    // Note: Latched here rather than in a frame begin hook because getVolumeArgs is the only place the extent is
+    // decided, and it runs exactly once per frame. Mutable because that function is const.
+    mutable float m_previousFroxelMaxDistance = 0.0f;
 
     DxvkRaytracingPipelineShaders getPipelineShaders(bool useRayQuery) const;
 

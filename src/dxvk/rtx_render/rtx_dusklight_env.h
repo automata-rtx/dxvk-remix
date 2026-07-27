@@ -68,6 +68,66 @@ namespace dxvk {
                     "The ambient colour the game's environment system is currently applying to room and terrain geometry, normalized to 0..1. "
                     "Written by the game's kankyo bridge. The counterpart to rtx.dusklight.env.actorAmbient for everything that is not an actor.");
 
+    // Fog. The game authors these in the same palette entry as the sky colours below, selected by
+    // the same time of day and weather indices and blended by the same call, so its fog colour is
+    // its sky colour - distant terrain dissolves into the sky because it was authored to. They are
+    // pushed together for that reason and consumed together by rtx.dusklight.atmosphere.
+    //
+    // These are the game's *global* environment fog. The game also sets fog per object, which is
+    // what the D3D9 capture sees, and Remix keeps only the first such state it encounters in a
+    // frame - so the captured value is decided by submission order. These replace it.
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, fogActive, false, RtxOptionFlags::NoSave,
+                    "True while the game's environment system has fog enabled. Written by the game's kankyo bridge.\n"
+                    "When false the atmosphere leaves Remix's own fog handling alone.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, fogColor, Vector3(1.0f, 1.0f, 1.0f), RtxOptionFlags::NoSave,
+                    "The game's fog colour, normalized to 0..1. Written by the game's kankyo bridge.\n"
+                    "This is the final value after every modifier the game applies - the palette blend, the additive offset, the colour "
+                    "ratio that lightning pulses, and the second 'gather' blend that the fog bank tags drive - so nothing needs "
+                    "reimplementing on this side to stay faithful.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, fogStartZ, 0.0f, RtxOptionFlags::NoSave,
+                    "Distance in world units at which the game's fog begins. Written by the game's kankyo bridge.\n"
+                    "The game's fog is a linear ramp, not extinction: nothing before this, fully opaque at rtx.dusklight.env.fogEndZ. "
+                    "Scripted fog banks pass a negative value here deliberately, which means the ramp is already well underway at the camera.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, fogEndZ, 0.0f, RtxOptionFlags::NoSave,
+                    "Distance in world units at which the game's fog reaches full opacity. Written by the game's kankyo bridge.\n"
+                    "Ranges over three orders of magnitude across the game - a couple of metres inside a scripted fog bank, hundreds "
+                    "of metres in an open field - which is why the froxel grid has to follow it rather than sit at a fixed size.");
+
+    // Sky. Fed to the dome light, which replaces both Remix's auto detected sky probe and the
+    // game's own sky dome. The game paints its dome by handing the hardware these few colours per
+    // frame rather than by drawing a texture, which is why the dome cannot be tagged: there is no
+    // texture content to hash. Generating the sky from the same colours sidesteps that entirely.
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, skyHidden, false, RtxOptionFlags::NoSave,
+                    "True when the game's current area has no sky at all - interiors and most dungeons. Written by the game's kankyo bridge.\n"
+                    "The game decides this itself by checking whether its sky colours sum to zero, so this is its own answer rather than a guess, "
+                    "and it is what stops a sky light being added indoors.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, skyColor, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
+                    "The game's sky colour at the zenith, normalized to 0..1. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kasumiInner, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
+                    "The game's horizon haze colour on the sun's side, normalized to 0..1. Written by the game's kankyo bridge.\n"
+                    "'Kasumi' is the game's own name for it. This is the colour that carries sunrise and sunset.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kasumiOuter, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
+                    "The game's horizon haze colour away from the sun, normalized to 0..1. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kumoTop, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
+                    "The game's lit cloud colour, normalized to 0..1. Written by the game's kankyo bridge. Not consumed yet - clouds are a later phase.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kumoBottom, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
+                    "The game's shaded cloud underside colour, normalized to 0..1. Written by the game's kankyo bridge. Not consumed yet.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kumoShadow, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
+                    "The game's cloud shadow colour, normalized to 0..1. Written by the game's kankyo bridge. Not consumed yet.");
+
+    // Scene classification, used to decide how stylised the atmosphere should be.
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, colpat, 0, RtxOptionFlags::NoSave,
+                    "Which of the game's colour patterns is currently active. Written by the game's kankyo bridge.\n"
+                    "0 is clear weather; others are weather, story and area variants. Pattern 9 is the Palace of Twilight, whose sky has no "
+                    "physical description at all - there is no sun and the look is authored - so it is the clearest signal to stop trying to "
+                    "model the sky and reproduce the palette instead.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, moyaMode, 0, RtxOptionFlags::NoSave,
+                    "Which of the game's haze particle modes is running, 0 for none. Written by the game's kankyo bridge.\n"
+                    "These are billboard particles rather than fog, so under a path tracer they arrive as geometry. Keeping them alongside a "
+                    "dense medium counts the same haze twice.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, moyaCount, 0.0f, RtxOptionFlags::NoSave,
+                    "How strongly the game's haze particles are running, in its native 0..50 range. Written by the game's kankyo bridge.");
+
     // Light status, reported so the Dusklight tab can show what the game is actually doing.
     // The game's own debug UI is not drawn in its D3D9 mode, so this is the only place these
     // are visible.

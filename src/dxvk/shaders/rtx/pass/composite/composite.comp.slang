@@ -602,12 +602,55 @@ void applySkyContribution(
 void applyFog(
   float viewDistance,
   float radianceScale,
+  vec3 volumeAttenuation,
   inout vec3 radianceOutput,
   inout vec4 particleLayerOutput)
 {
   if (cb.volumeArgs.enable)
   {
-    return; // Volumetric fog is applied in volume integration
+    // Volumetric fog is applied in volume integration - but only as far as the froxel grid reaches, because the froxel
+    // lookup saturates past its last slice and stops accumulating there. Dusklight's fog regularly runs far beyond that,
+    // so the game's own ramp carries the rest of the distance.
+    if (cb.dusklightArgs.enable == 0)
+    {
+      return;
+    }
+
+    const float span = cb.dusklightArgs.rampEnd - cb.dusklightArgs.rampStart;
+
+    if (span <= 0.0f || viewDistance <= cb.dusklightArgs.handoverDistance)
+    {
+      return;
+    }
+
+    // How much of the ramp the grid already covered, and how much of what it left is still to be fogged. Expressing the
+    // remainder as a fraction of the *remaining* clear signal is what stops the two halves counting the same air twice,
+    // and it reaches exactly 1 at the ramp's end - which is where the original went fully opaque and where an
+    // exponential medium never quite arrives.
+    const float fogAtHandover = saturate((cb.dusklightArgs.handoverDistance - cb.dusklightArgs.rampStart) / span);
+    const float fogAtDistance = saturate((viewDistance - cb.dusklightArgs.rampStart) / span);
+    const float remaining = 1.0f - fogAtHandover;
+
+    if (remaining <= 1e-4f)
+    {
+      // The grid already reaches past the end of the ramp; there is nothing left to add.
+      return;
+    }
+
+    const float t = saturate((fogAtDistance - fogAtHandover) / remaining);
+
+    // Light scattered out there still has to travel back through the volume in front of it, which is exactly what the
+    // grid's attenuation describes.
+    vec3 farFogRadiance = cb.dusklightArgs.fogColor * volumeAttenuation;
+
+    if (cb.sparseRenderingArgs.mode != SparseRenderingMode::Off)
+    {
+      farFogRadiance *= radianceScale;
+    }
+
+    radianceOutput = lerp(radianceOutput, farFogRadiance, t);
+
+    return;
   }
 
   // Todo: Using view distance is a bit of a hack here, the primary emissive contribution will not be fully weighted correctly
@@ -778,7 +821,7 @@ vec4 compositeResult(
   applySkyContribution(pixelCoordinate, primaryRayDirections, primaryMiss, radianceScale, volumeAttenuation, radianceOutput);
 
   // Apply fog 
-  applyFog(viewDistance, radianceScale, radianceOutput, particleLayerOutput);
+  applyFog(viewDistance, radianceScale, volumeAttenuation, radianceOutput, particleLayerOutput);
 
   // DLSS-RR needs to do alpha blending using the backgroundAlpha, so the input is untouched here.
   // Output final composite result for NRD denoiser.

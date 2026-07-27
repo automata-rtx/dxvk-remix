@@ -25,6 +25,7 @@
 #include "rtx/pass/volume_args.h"
 #include "rtx/pass/raytrace_args.h"
 #include "rtx/algorithm/accumulate.h"
+#include "rtx/pass/dusklight/dusklight_composite_args.h"
 
 #define DENOISER_MODE_OFF 0
 #define DENOISER_MODE_RELAX 1
@@ -37,6 +38,7 @@ struct CompositeArgs {
   VolumeArgs volumeArgs;
   AccumulationArgs accumulationArgs;
   SparseRenderingArgs sparseRenderingArgs;
+  DusklightCompositeArgs dusklightArgs;
 
   // -- Struct objects should go above this line to preserve alignment --
 

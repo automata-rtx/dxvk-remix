@@ -2063,9 +2063,21 @@ namespace dxvk {
       }
     }
 
+    // The fog state above is whichever one the draw stream happened to present first. That is fine for a game with one
+    // global fog, but Dusklight sets fog per object, so which of a room's many states wins is decided by submission
+    // order and can change from frame to frame. When its bridge is running it reports the room's actual environment
+    // fog, which is the value every one of those per object states was derived from.
+    //
+    // Placed here because it dominates every writer of the fog state and precedes all three of its readers - the
+    // volumetric arguments, the composite arguments, and the end of frame hash check.
+    m_device->getCommon()->metaDusklightAtmosphere().applyFogOverride(
+      m_fog, m_fogStartInMediumMaterialIndex_inCache != kInvalidMaterialCacheIndex);
+
     m_graphManager.applySceneOverrides(ctx);
 
     m_terrainBaker->prepareSceneData(ctx);
+
+    m_device->getCommon()->metaDusklightAtmosphere().prepareSceneData(ctx, *this);
 
     auto& textureManager = m_device->getCommon()->getTextureManager();
     m_bindlessResourceManager.prepareSceneData(ctx, textureManager.getTextureTable(), getBufferTable(), getSamplerTable());

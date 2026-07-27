@@ -426,11 +426,13 @@ shows, and the first knob to reach for.
 
 | # | Compromise | How it will show | First knob |
 | :-- | :-- | :-- | :-- |
+| C0 | **The calibration pass was never run.** Phase 0 below was skipped, so `zHalfMin`, `froxelRangeScale` and `skyIntensity` are analytic first guesses that have never met a running build. | Fog uniformly too thick or too thin everywhere; sky too bright or too dim everywhere. A *uniform* error is this; a *per-area* error is not. | `rtx.dusklight.atmosphere.densityScale` first (one number, whole-scene), then the three above. Run Phase 0 properly before concluding anything else is wrong. |
+| C10 | **Fog is composited in linear HDR, not the game's display space.** The original blended fog over a finished, display-referred image; here both halves of the range split happen pre-tonemap. | Fog reads with a different contrast curve than vanilla - typically holding its colour longer in the bright end. | `rtx.dusklight.atmosphere.fogRadianceScale`. The structural fix is moving the far ramp post-tonemap, the same correction the bloom needed. |
 | C1 | **Dusk saturation.** Physical twilight is more graduated and less saturated than TP's authored dusk. | Sunsets read calmer / less punchy than vanilla. | Lower `physicalWeight`'s `elevationTerm` at low sun; or add a saturation push applied to the *medium's* Rayleigh/Mie tint, not to output pixels. |
 | C2 | **Exponential never fully closes.** | Distant terrain slightly more visible than vanilla at `fog_end_z`. | The §5.2 range split is the fix; if still short, lower the split distance so the vanilla ramp owns more. |
 | C3 | **Clouds have no physical analogue.** `kumo_top/bottom/shadow` describe painted cloud bands. | Skies read emptier than vanilla if the vrbox is replaced wholesale. | Keep TP's cloud layer as geometry over our sky (Phase D). |
 | C4 | **Weather has no physical analogue.** Clear-sky scattering cannot do "rain grey". | Storms look insufficiently oppressive. | `styleTerm` drops `physicalWeight` on weather colpats; overcast can also be faked with high Mie + suppressed sun. |
-| C5 | **Moya swirl replaced by noise.** (§8.1) | Lake Hylia haze animates differently from vanilla. | `noiseFieldTimeScale`, `noiseFieldOctaves`, `noiseFieldLacunarity`. |
+| C5 | ~~Moya swirl replaced by noise.~~ **Withdrawn - the problem does not exist on this backend.** `mMoyaCount` feeds `mpCloudPacket->mCount` (`d_kankyo_rain.cpp:1616`, inside `cloud_shadow_move`), and `dKankyo_cloud_Packet::draw` already returns early on D3D9 (`d_kankyo_wether.cpp:119-126`). The haze billboards were never drawn here, so there is nothing to double count and no switch was needed. `moyaMode`/`moyaCount` are still pushed, as a signal of how much haze an area wants folded into the medium. | — | — |
 | C6 | **Fog-avoid tag ignored.** (§8.2) | No clear bubble around the player in heavy fog. | Deferred feature, not a tuning knob. |
 | C7 | **Per-object fog flattened to one global.** (§8.3) | Objects authored with distinct fog match their room instead. | Could be restored per-instance later; costs a per-instance field. |
 | C8 | **Night is fully stylised.** Physics gives near-black without a sun. | No moonlight scattering / no physical night sky. | Deliberate. Moon-driven scattering is possible but is a separate feature. |
@@ -540,8 +542,66 @@ Churn in `d_kankyo.cpp` is limited to one capture call, matching the existing
 | Item | State |
 | :-- | :-- |
 | Design | this document, 2026-07-27 |
-| Phase 0 calibration | not run |
-| Phase A | not started |
-| Phase B | not started |
+| **Phase 0 calibration** | **NEVER RUN — see §13** |
+| Phase A (A1–A4) | implemented 2026-07-27, **untested** |
+| Phase B (B1–B2) | implemented 2026-07-27, **untested** |
 | Phase C | not started |
-| Current recommended config | depth fog (`rtx.volumetrics.enable = False`) — see `dusklight-ao/docs/dx9-fixed-function.md` |
+
+### What landed
+
+| Piece | Where |
+| :-- | :-- |
+| A1 fog push + fog-state override | `rtx_dusklight_env.h` (new keys), `rtx_scene_manager.cpp` (`applyFogOverride`), game `remix_bridge.cpp` |
+| A2 medium derivation | `rtx_dusklight_atmosphere.{h,cpp}`, hooked at `rtx_global_volumetrics.cpp` |
+| A3 range split | `dusklight_composite_args.h`, `composite.comp.slang` `applyFog`, `rtx_composite.cpp` |
+| A4 live grid extent | `volume_args.h` (`previousFroxelMaxDistance`), `froxel.slangh`, `rtx_global_volumetrics.{h,cpp}` |
+| B1 generated sky | `dusklight_sky.{h,comp.slang}`, `DxvkDusklightAtmosphere::prepareSceneData` |
+| B2 dome suppression | game `d_a_vrbox.cpp`, `d_a_vrbox2.cpp`, `settings.{h,cpp}` |
+
+Bridge protocol went **1 → 2**. A game build older than that will show the "game build is older than this Remix build"
+notice in the Dusklight tab rather than silently doing nothing.
+
+### To turn it on
+
+```
+rtx.dusklight.atmosphere.enable = True
+rtx.volumetrics.enable = True          # the atmosphere drives it; leaving this False keeps the old depth-only path
+
+# Sky (all three together, or you will be looking at more than one sky)
+rtx.dusklight.atmosphere.skyEnable = True
+rtx.dusklight.game.hideVrbox = True
+rtx.skyAutoDetect = None
+```
+
+Everything defaults off, so a build with none of these set behaves as upstream.
+
+---
+
+## 13. Phase 0 was skipped — read before tuning
+
+**The calibration pass in §10 was never run.** Phase A and B were implemented directly, so the following constants are
+analytic first guesses that have never been compared against a running build:
+
+| Constant | Default | How it was chosen |
+| :-- | :-- | :-- |
+| `rtx.dusklight.atmosphere.zHalfMin` | 100 world units (1 m) | Reasoning about where a scripted whiteout's half-density point lands. Never measured. |
+| `rtx.dusklight.atmosphere.froxelRangeScale` | 1.0 | Assumes covering the whole fog range is right. The correct value depends on where the fog actually does its work, which is what Phase 0 would have shown. |
+| `rtx.dusklight.atmosphere.skyIntensity` | 1.0 | Derived from the sky:sun irradiance ratio against the default `sunIntensity` of 5. Sound reasoning, unverified number. |
+
+We also do not know, empirically, **whether the original problem was range or curve shape.** That was the whole question
+Phase 0 existed to answer, and the answer changes what to tune first:
+
+- **If it was range** (the 20 m froxel grid), A4 alone fixes it and the range split in A3 is mostly insurance.
+- **If it was curve shape** (linear ramp versus exponential extinction), A3 is doing the real work and the handover
+  distance matters more than the density.
+
+**Doing Phase 0 now, on a build that has this change:** set `rtx.dusklight.atmosphere.enable = False` and
+`rtx.volumetrics.enable = True` to get the old behaviour with Remix's own remap, then flip the atmosphere on and compare.
+That is a better experiment than the original Phase 0 because both sides are now reachable from one build.
+
+Then run the measurement pass in `dusklight-ao/docs/kankyo-fog.md` §5 — the Dusklight tab now reports the game's live fog
+range and colour, which is the only way to learn what any given area actually asks for, since those numbers live in stage
+data rather than in code.
+
+Judging results: a **uniform** error everywhere is one of the three constants above. A **per-area** error - right in the
+field, wrong in the mines - is the mapping, and that is a more interesting bug.
