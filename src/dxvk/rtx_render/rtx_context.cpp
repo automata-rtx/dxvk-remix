@@ -733,12 +733,17 @@ namespace dxvk {
         // frame had.
         dispatchDusklightGrade(rtOutput);
 
-        dispatchBloom(rtOutput);
+        dispatchBloom(rtOutput, DxvkBloom::Stage::PreTonemap);
 
         // Motion blur runs before tonemapping while the image is still in linear HDR space.
         dispatchPostFxMotionBlur(rtOutput);
 
         dispatchToneMapping(rtOutput);
+
+        // The Dusklight bloom runs here instead: it reproduces an effect that was authored
+        // against a finished 8 bit framebuffer, and almost everything about it - the threshold,
+        // the per pass clipping, the screen blend - is defined against display values.
+        dispatchBloom(rtOutput, DxvkBloom::Stage::PostTonemap);
 
         // Lens effects (chromatic aberration, vignette) run AFTER tonemapping. They are
         // display-space artifacts so they operate on post-tonemap LDR data.
@@ -1823,10 +1828,10 @@ namespace dxvk {
     grade.dispatch(this, rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite));
   }
 
-  void RtxContext::dispatchBloom(const Resources::RaytracingOutput& rtOutput) {
+  void RtxContext::dispatchBloom(const Resources::RaytracingOutput& rtOutput, DxvkBloom::Stage stage) {
     ScopedCpuProfileZone();
     DxvkBloom& bloom = m_common->metaBloom();
-    if (!bloom.isActive()) {
+    if (!bloom.isActive() || bloom.activeStage() != stage) {
       return;
     }
 
@@ -1836,7 +1841,8 @@ namespace dxvk {
 
     bloom.dispatch(this,
       getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE),
-      rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite));
+      rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite),
+      stage);
   }
 
   void RtxContext::dispatchPostFxMotionBlur(Resources::RaytracingOutput& rtOutput) {

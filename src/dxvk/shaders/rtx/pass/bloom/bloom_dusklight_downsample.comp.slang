@@ -21,6 +21,7 @@
 */
 #include "rtx/pass/bloom/bloom.h"
 #include "rtx/pass/bloom/bloom_downsample.slangh"
+#include "rtx/utility/color.slangh"
 
 // Downsample step of the Dusklight bloom pyramid.
 //
@@ -31,9 +32,18 @@
 // to white while the surrounding halo keeps a smooth, wide falloff. That saturation is not an
 // artifact to be avoided - it is a large part of what the effect looks like.
 //
-// The first step of the chain does not blur. It thresholds instead, subtracting a constant from
-// every channel and letting the result clamp at zero. Subtracting per channel rather than
-// weighting by luminance is what keeps strongly coloured highlights saturated in the bloom.
+// The first step of the chain does not blur. It thresholds instead, and the shape of that
+// threshold is the single most distinctive thing about the effect. The original spends three TEV
+// stages on it: two build a greyscale key out of the framebuffer through the swap tables, and the
+// third multiplies the *original* colour by that key.
+//
+//   key    = 0.25 * R + 0.25 * G + 0.5 * B      (swap tables R,R,R,G then B,B,B,A, mixed by HALF)
+//   source = colour * saturate(key - threshold)
+//
+// So it is a luminance keyed mask, not a per channel subtraction, and the resulting bloom carries
+// the source's own hue rather than drifting towards whichever channel was brightest. The weights
+// are not a standard luma either - blue counts double red or green, which is why blue highlights
+// in this game bloom so much more readily than their brightness alone would suggest.
 
 layout(binding = BLOOM_DUSKLIGHT_DOWNSAMPLE_INPUT)
 Sampler2D<float4> InColorBuffer;
@@ -93,15 +103,21 @@ void main(uint2 ipos : SV_DispatchThreadID)
   if (cb.isInitial != 0)
   {
     // Use the same downsample kernel as the default pyramid here. The original effect just point
-    // samples the framebuffer, but the input at this point is raytraced HDR colour and a wider
-    // kernel keeps single bright pixels from making the whole bloom flicker.
+    // samples the framebuffer, but a wider kernel keeps single bright pixels from making the whole
+    // bloom flicker, which matters more here than the point sample's exactness.
     result = bloomDownsample13tap(InColorBuffer, calcUV(int2(ipos)), cb.inputSizeInverse);
 
-    if (cb.threshold > 0)
+    // The pyramid runs in whatever space the original did: display referred, so that the threshold
+    // means what it meant, and so the per pass saturation below clips at white rather than at some
+    // arbitrary point in an open ended range.
+    if (cb.displaySpace != 0)
     {
-      result = max(result - float3(cb.threshold), float3(0));
+      result = linearToGamma(max(result, float3(0)));
     }
 
+    const float key = dot(result, float3(0.25f, 0.25f, 0.5f));
+
+    result *= saturate(key - cb.threshold);
     result *= cb.gain;
   }
   else

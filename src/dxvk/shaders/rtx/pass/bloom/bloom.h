@@ -67,6 +67,8 @@ struct BloomDusklightDownsampleArgs {
   float  saturationPoint;
   // Non-zero on the first step, which thresholds the input instead of ring blurring it.
   uint   isInitial;
+  // Non-zero to run the pyramid in display referred (gamma) space, as the original did.
+  uint   displaySpace;
 };
 
 struct BloomDusklightPrepassArgs {
@@ -78,6 +80,8 @@ struct BloomDusklightPrepassArgs {
   // Non-zero to use BT.709 luminance for the greyscale; zero replicates the red channel the
   // way the game's TEV swap tables did.
   uint   useLuminance;
+  // Non-zero to apply the overlay in display referred space, where the original applied it.
+  uint   displaySpace;
 };
 
 struct BloomUpsampleArgs {
@@ -99,6 +103,9 @@ struct BloomCompositeArgs {
   // Weight the base image keeps under the bloom. The game's composite scales the framebuffer
   // by its blend alpha while adding bloom on top; twilight uses this to dim the scene.
   float  baseWeight;
+  // Non-zero when the bloom was gathered in display referred space, so the composite has to meet
+  // it there: the screen blend and the base weight are both defined against display values.
+  uint   displaySpace;
 };
 
 #endif  // BLOOM_H

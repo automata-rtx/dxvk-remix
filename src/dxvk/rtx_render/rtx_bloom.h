@@ -41,10 +41,21 @@ namespace dxvk {
     DxvkBloom& operator=(const DxvkBloom&) = delete;
     DxvkBloom& operator=(DxvkBloom&&) noexcept = delete;
 
+    // The Dusklight path wants to run after tone mapping and the default pyramid before it, so
+    // both points call in and the pass takes the one it is configured for.
+    enum class Stage {
+      PreTonemap,
+      PostTonemap,
+    };
+
     void dispatch(
       Rc<RtxContext> ctx,
       Rc<DxvkSampler> linearSampler,
-      const Resources::Resource& inOutColorBuffer);
+      const Resources::Resource& inOutColorBuffer,
+      Stage stage);
+
+    // Which side of tone mapping this pass wants to run on given the current options.
+    Stage activeStage() const;
 
     void showImguiSettings();
 
@@ -194,6 +205,13 @@ namespace dxvk {
                     "Twilight runs this at about 0.38 with a white tint - pure desaturation.",
                     args.minValue = 0.0f,
                     args.maxValue = 1.0f);
+    RTX_OPTION("rtx.bloom", bool, dusklightDisplaySpace, true,
+               "Runs the Dusklight bloom after tone mapping, on display referred values, which is where the original ran.\n"
+               "The effect was authored against an 8 bit framebuffer holding finished display colours: its threshold is a fraction of display white, its "
+               "intermediate buffers clip at white, and its screen blend and base weight are both defined against a 0..1 image. Gathering it from open ended "
+               "pre-tonemap radiance instead changes all four - the threshold stops meaning anything fixed, the clipping that gives bright cores their washed "
+               "out look either never happens or eats the image, and blurring linear radiance concentrates halos far more tightly than blurring display values "
+               "does. Turn this off only to compare against the pre-tonemap behaviour.");
     RTX_OPTION("rtx.bloom", bool, dusklightMonoUseLuminance, false,
                "Uses BT.709 luminance for the mono overlay's greyscale instead of replicating the red channel.\n"
                "The game's TEV implementation replicated red, which reads slightly differently in warm scenes; red is the faithful default, "

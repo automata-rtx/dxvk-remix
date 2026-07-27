@@ -141,6 +141,7 @@ namespace dxvk {
         RemixGui::DragFloat("Mono Amount##bloomDusklight", &dusklightMonoAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
       }
 
+      RemixGui::Checkbox("Display Referred##bloomDusklight", &dusklightDisplaySpaceObject());
       RemixGui::Checkbox("Mono Uses Luminance##bloomDusklight", &dusklightMonoUseLuminanceObject());
       RemixGui::DragFloat("Level Falloff##bloomDusklight", &dusklightFalloffObject(), 0.01f, 0.01f, 1.f, "%.2f");
       RemixGui::DragFloat("Saturation Point##bloomDusklight", &dusklightSaturationPointObject(), 0.05f, 0.f, 100.f, "%.2f");
@@ -184,9 +185,18 @@ namespace dxvk {
     return p;
   }
 
+  DxvkBloom::Stage DxvkBloom::activeStage() const {
+    return dusklight() && dusklightDisplaySpace() ? Stage::PostTonemap : Stage::PreTonemap;
+  }
+
   void DxvkBloom::dispatch(Rc<RtxContext> ctx,
                            Rc<DxvkSampler> linearSampler,
-                           const Resources::Resource& inOutColorBuffer) {
+                           const Resources::Resource& inOutColorBuffer,
+                           Stage stage) {
+    if (stage != activeStage()) {
+      return;
+    }
+
     ScopedGpuProfileZone(ctx, "Bloom");
     ctx->setFramePassStage(RtxFramePassStage::Bloom);
 
@@ -252,6 +262,9 @@ namespace dxvk {
       // means the depth of the pyramid changes how wide the bloom is without changing how bright
       // it is. Every step past the first blurs; the first only thresholds, and picks up the gain
       // itself only when the pyramid is too shallow to have any blur passes at all.
+      // One blur per level below the threshold step. The original runs five of them (its divStart
+      // 2 through divNum 6), which corresponds to rtx.bloom.steps = 6 here - the default of 5 is
+      // one short, so the gain lands differently and the halo stops one level narrower.
       const int blurPassCount = std::max(bloomDepth - 1, 1);
       const float totalGain = std::max(dl.blurRatio, 0.0f) * 16.0f / 255.0f;
       const float gainPerPass = std::pow(totalGain, 1.0f / static_cast<float>(blurPassCount));
@@ -269,9 +282,12 @@ namespace dxvk {
       // instead of drowning them out the way an unweighted sum would.
       const float falloff = std::clamp(dusklightFalloff(), 0.01f, 1.0f);
 
+      // The original's exponent counts levels from the top of the blur chain, not from the top of
+      // the pyramid: alpha = falloff^(1/(i - divStart + 1)) with divStart 2, i.e. one less than
+      // the level index. Getting this off by one leaves every level slightly too faint.
       for (int i = bloomDepth; i > 1; i--) {
         dispatchUpsampleStep(ctx, linearSampler, *res[i], *res[i - 1],
-                             std::pow(falloff, 1.0f / static_cast<float>(i)));
+                             std::pow(falloff, 1.0f / static_cast<float>(i - 1)));
       }
     }
 
@@ -326,6 +342,7 @@ namespace dxvk {
     pushArgs.monoColor = monoColor;
     pushArgs.monoAmount = monoAmount;
     pushArgs.useLuminance = dusklightMonoUseLuminance() ? 1u : 0u;
+    pushArgs.displaySpace = dusklightDisplaySpace() ? 1u : 0u;
     ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 
     const VkExtent3D workgroups = util::computeBlockCount(imageSize, VkExtent3D{ 16, 16, 1 });
@@ -359,6 +376,7 @@ namespace dxvk {
     pushArgs.gain = gain;
     pushArgs.saturationPoint = std::max(dusklightSaturationPoint(), 0.0f);
     pushArgs.isInitial = initial ? 1u : 0u;
+    pushArgs.displaySpace = dusklightDisplaySpace() ? 1u : 0u;
     ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 
     const VkExtent3D workgroups = util::computeBlockCount(outputSize, VkExtent3D{ 16, 16, 1 });
@@ -420,6 +438,7 @@ namespace dxvk {
     pushArgs.tint = tint;
     pushArgs.screenBlend = screenBlend ? 1u : 0u;
     pushArgs.baseWeight = baseWeight;
+    pushArgs.displaySpace = (dusklight() && dusklightDisplaySpace()) ? 1u : 0u;
     ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 
     VkExtent3D workgroups = util::computeBlockCount(outputSize, VkExtent3D{ 16 , 16, 1 });

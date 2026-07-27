@@ -25,6 +25,9 @@
 #include "rtx_resources.h"
 #include "rtx_asset_exporter.h"
 #include "rtx_camera_manager.h"
+// For DxvkBloom::Stage: the Dusklight path runs after tone mapping and the default pyramid
+// before it, so the dispatch point is a parameter.
+#include "rtx_bloom.h"
 #include "rtx/pass/nrd_args.h"
 
 #include <cstdint>
@@ -198,7 +201,7 @@ namespace dxvk {
     void dispatchTemporalAA(const Resources::RaytracingOutput& rtOutput);
     void dispatchToneMapping(const Resources::RaytracingOutput& rtOutput);
     void dispatchDusklightGrade(const Resources::RaytracingOutput& rtOutput);
-    void dispatchBloom(const Resources::RaytracingOutput& rtOutput);
+    void dispatchBloom(const Resources::RaytracingOutput& rtOutput, DxvkBloom::Stage stage);
     void dispatchPostFxMotionBlur(Resources::RaytracingOutput& rtOutput);
     void dispatchPostFxLensEffects(Resources::RaytracingOutput& rtOutput);
     void dispatchSRGBDither(const Resources::RaytracingOutput& rtOutput, bool performSRGBConversion);
