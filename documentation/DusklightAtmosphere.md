@@ -683,9 +683,32 @@ colours are decoded out of gamma before being scaled, which takes a mid blue
 from 0.5 to about 0.2. The multiplier needed to be about six times larger to
 land the same ratio. Now 6.0.
 
-Nothing else was reported wrong, so `zHalfMin` (100) and `froxelRangeScale`
-(0.6) stand unchallenged rather than confirmed - they were simply not the
-thing that looked off.
+Everything else read correct on a second pass, and two observations are worth
+recording because of what they each rule out:
+
+**"Distance scaling is perfect; very far geometry almost entirely blends into
+the fog."** Range is solved — §2.1's 20 metre grid is gone. The "almost" is the
+right answer rather than a shortfall: the original only reaches full opacity
+exactly at `fog_end_z`, so geometry short of that should be partially fogged.
+The failure signatures to watch for instead are distant terrain looking pasted
+on, or fog visibly *stopping* partway towards it.
+
+**"Fog is noticeably scaling with different areas."** The most informative
+sentence of the pass, because it confirms three things at once:
+
+- the fog-state lottery fix (§2.5) is working. Before it, a frame's fog was
+  whichever draw arrived first, so per-area variation could not have been
+  stable;
+- the σ mapping generalises across regimes, which was the central design bet —
+  one scale-free expression, no per-area code anywhere;
+- the froxel grid really is resizing per area (A4).
+
+**Still uncovered: the dense end.** Everything confirmed so far is the thin and
+mid regime. `zHalfMin` only does anything where the half-density point falls
+behind the camera, which happens in a scripted fog bank and nowhere else, so it
+remains untested rather than confirmed. Lake Hylia in the morning and the Goron
+Mines are the two visits that would close that gap. `froxelRangeScale` (0.6) is
+likewise unchallenged rather than validated.
 
 ### The measurement pass is still worth doing
 
