@@ -148,6 +148,10 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, deviceRegistered, false, RtxOptionFlags::NoSave,
                     "True once the game has registered its D3D9 device with the Remix API, which everything that submits lights depends on. "
                     "Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsFound, 0, RtxOptionFlags::NoSave,
+                    "How many point lights the game itself had registered this frame, before any filtering on our side. Written by the game's kankyo bridge.\n"
+                    "This is what tells a room with no lights in it apart from a bridge that is failing to submit them - two states that otherwise both read as "
+                    "zero drawn, which is what made the first attempt at this hard to diagnose.");
     RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsDrawn, 0, RtxOptionFlags::NoSave,
                     "How many of the game's own point lights were submitted to Remix this frame. Written by the game's kankyo bridge.");
     RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsTracked, 0, RtxOptionFlags::NoSave,

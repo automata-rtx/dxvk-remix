@@ -2539,7 +2539,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 2;
+    constexpr int kRequiredProtocol = 3;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -2548,7 +2548,7 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Connected, but the game build is older than this build of Remix: it does not read these "
         "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 2 or newer.");
+        "accurate. Update the game to a build that reports protocol 3 or newer.");
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "
@@ -2613,8 +2613,26 @@ namespace dxvk {
       RemixGui::DragFloat("Local Radius##dusklight", &DusklightGame::localLightRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
 
       if (feedLive) {
-        ImGui::Text("Drawn this frame: %d   tracked: %d", DusklightEnv::localLightsDrawn(),
+        ImGui::Text("Registered by the game: %d   drawn this frame: %d   tracked: %d",
+                    DusklightEnv::localLightsFound(), DusklightEnv::localLightsDrawn(),
                     DusklightEnv::localLightsTracked());
+
+        // Zero drawn has three quite different causes and they are indistinguishable from the
+        // count alone, so the two states that separate them are spelled out rather than left to
+        // be inferred.
+        if (!DusklightEnv::deviceRegistered()) {
+          ImGui::TextWrapped(
+            "The game has not registered its D3D9 device with the Remix API, so no light of any "
+            "kind can be submitted - this one and the sun both. That is the thing to fix first.");
+        } else if (DusklightEnv::localLightsFound() == 0) {
+          ImGui::TextWrapped(
+            "The game has no lights registered here at all, so there is nothing to submit. "
+            "Expected in a room lit only by its palette; suspicious if you are stood at a torch.");
+        } else if (DusklightEnv::localLightsDrawn() == 0) {
+          ImGui::TextWrapped(
+            "The game has lights here but none reached Remix, so they are being rejected on the "
+            "way through - by the brightness and reach test, or by CreateLight itself.");
+        }
       }
       ImGui::TextWrapped(
         "Radius changes brightness as well as softness: the radiance is solved so the light still "
