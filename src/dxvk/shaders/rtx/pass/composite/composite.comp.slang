@@ -604,6 +604,7 @@ void applyFog(
   float radianceScale,
   vec3 volumeAttenuation,
   bool primaryMiss,
+  vec3 worldDirection,
   inout vec3 radianceOutput,
   inout vec4 particleLayerOutput)
 {
@@ -660,6 +661,18 @@ void applyFog(
     t *= saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
 
     vec3 farFogRadiance = cb.dusklightArgs.fogColor;
+
+    // Distant geometry fades towards the sky that is behind it, which is what aerial perspective
+    // means and why the original's fog colour was authored in the same palette entry as its sky.
+    // Once the sky is simulated the palette no longer describes it, so the fog follows the sky
+    // itself - sampled in the view direction, so it varies across the frame the way the sky does.
+    if (cb.dusklightArgs.skyColorWeight > 0.0f && cb.domeLightArgs.active)
+    {
+      const vec3 skyRadiance = cb.domeLightArgs.radiance *
+        sampleDomeLightTexture(SkyLight, worldDirection, cb.domeLightArgs.worldToLightTransform);
+
+      farFogRadiance = lerp(farFogRadiance, skyRadiance, saturate(cb.dusklightArgs.skyColorWeight));
+    }
 
     if (cb.sparseRenderingArgs.mode != SparseRenderingMode::Off)
     {
@@ -839,7 +852,8 @@ vec4 compositeResult(
   applySkyContribution(pixelCoordinate, primaryRayDirections, primaryMiss, radianceScale, volumeAttenuation, radianceOutput);
 
   // Apply fog 
-  applyFog(viewDistance, radianceScale, volumeAttenuation, primaryMiss, radianceOutput, particleLayerOutput);
+  applyFog(viewDistance, radianceScale, volumeAttenuation, primaryMiss,
+           primaryRayDirections.worldDirection, radianceOutput, particleLayerOutput);
 
   // DLSS-RR needs to do alpha blending using the backgroundAlpha, so the input is untouched here.
   // Output final composite result for NRD denoiser.

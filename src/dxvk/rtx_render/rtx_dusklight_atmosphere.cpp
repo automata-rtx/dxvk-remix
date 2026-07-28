@@ -30,9 +30,12 @@
 #include "dxvk_scoped_annotation.h"
 #include "rtx_render/rtx_shader_manager.h"
 #include "rtx/pass/dusklight/dusklight_sky.h"
+#include "rtx/pass/dusklight/dusklight_atmosphere.h"
 #include "rtx/pass/dusklight/dusklight_composite_args.h"
 
 #include <rtx_shaders/dusklight_sky.h>
+#include <rtx_shaders/dusklight_transmittance.h>
+#include <rtx_shaders/dusklight_multiscatter.h>
 #include "rtx_imgui.h"
 #include "../../util/util_color.h"
 
@@ -46,14 +49,43 @@ namespace dxvk {
     {
       SHADER_SOURCE(DusklightSkyShader, VK_SHADER_STAGE_COMPUTE_BIT, dusklight_sky)
 
-      PUSH_CONSTANTS(DusklightSkyArgs)
+      PUSH_CONSTANTS(DusklightAtmosphereArgs)
 
       BEGIN_PARAMETER()
         RW_TEXTURE2D(DUSKLIGHT_SKY_OUTPUT)
+        SAMPLER2D(DUSKLIGHT_SKY_TRANSMITTANCE)
+        SAMPLER2D(DUSKLIGHT_SKY_MULTISCATTER)
       END_PARAMETER()
     };
 
     PREWARM_SHADER_PIPELINE(DusklightSkyShader);
+
+    class DusklightTransmittanceShader : public ManagedShader
+    {
+      SHADER_SOURCE(DusklightTransmittanceShader, VK_SHADER_STAGE_COMPUTE_BIT, dusklight_transmittance)
+
+      PUSH_CONSTANTS(DusklightAtmosphereArgs)
+
+      BEGIN_PARAMETER()
+        RW_TEXTURE2D(DUSKLIGHT_TRANSMITTANCE_OUTPUT)
+      END_PARAMETER()
+    };
+
+    PREWARM_SHADER_PIPELINE(DusklightTransmittanceShader);
+
+    class DusklightMultiScatterShader : public ManagedShader
+    {
+      SHADER_SOURCE(DusklightMultiScatterShader, VK_SHADER_STAGE_COMPUTE_BIT, dusklight_multiscatter)
+
+      PUSH_CONSTANTS(DusklightAtmosphereArgs)
+
+      BEGIN_PARAMETER()
+        SAMPLER2D(DUSKLIGHT_MULTISCATTER_TRANSMITTANCE)
+        RW_TEXTURE2D(DUSKLIGHT_MULTISCATTER_OUTPUT)
+      END_PARAMETER()
+    };
+
+    PREWARM_SHADER_PIPELINE(DusklightMultiScatterShader);
 
     // Small on purpose. The dome is a smooth gradient with no detail to lose, and every ray that
     // misses geometry samples it, so a compact image stays resident in cache. It is also the
@@ -103,6 +135,11 @@ namespace dxvk {
   void DxvkDusklightAtmosphere::releaseTargetResource() {
     m_skyTexture.reset();
     m_skyTextureIndex = UINT32_MAX;
+    m_transmittanceLut.reset();
+    m_multiScatterLut.reset();
+    // Forget what the tables held, or they would be considered current after being destroyed.
+    m_lutSkyColor = Vector3(-1.0f, -1.0f, -1.0f);
+    m_lutPaletteInfluence = -1.0f;
   }
 
   bool DxvkDusklightAtmosphere::active() const {
@@ -139,6 +176,9 @@ namespace dxvk {
   DxvkDusklightAtmosphere::Derived DxvkDusklightAtmosphere::resolve() const {
     Derived out = {};
     out.outdoor = DusklightEnv::enable() && !DusklightEnv::skyHidden();
+    // Resolved before the fog checks below, deliberately: an area can have a sky and no fog, and
+    // the sky must not go dark just because nobody put haze in the room.
+    out.physicalWeight = resolvePhysicalWeight();
 
     if (!enable() || !DusklightEnv::enable() || !DusklightEnv::fogActive()) {
       return out;
@@ -201,6 +241,62 @@ namespace dxvk {
     out.fogValid = true;
 
     return out;
+  }
+
+  float DxvkDusklightAtmosphere::resolvePhysicalWeight() const {
+    if (!physicalSky() || !enable() || !DusklightEnv::enable()) {
+      return 0.0f;
+    }
+
+    // Indoors there is no sky to simulate, and the game says so itself.
+    if (DusklightEnv::skyHidden()) {
+      return 0.0f;
+    }
+
+    // The Palace of Twilight is a colour pattern like any other as far as the game is concerned,
+    // but there is no physical description of it to reach for: it has no sun, and its sky is an
+    // authored amber rather than anything air does. The model is bypassed there rather than tuned.
+    constexpr int kPalaceOfTwilightColpat = 9;
+
+    if (DusklightEnv::colpat() == kPalaceOfTwilightColpat) {
+      return 0.0f;
+    }
+
+    // At night the celestial light is the moon, and a clear-sky scattering model with no sun in it
+    // returns very close to black - correct, and useless. The game's night is a deliberately
+    // readable blue with stars in it, so it keeps the night outright.
+    if (!DusklightEnv::sunIsDay()) {
+      return 0.0f;
+    }
+
+    const float low = physicalElevationLowDegrees();
+    const float high = physicalElevationHighDegrees();
+    const float elevation = DusklightEnv::sunElevation();
+
+    float elevationTerm = 1.0f;
+
+    if (high > low) {
+      const float t = std::clamp((elevation - low) / (high - low), 0.0f, 1.0f);
+      // Smoothstep rather than linear so the handover has no visible edge as the sun climbs.
+      elevationTerm = t * t * (3.0f - 2.0f * t);
+    } else {
+      elevationTerm = elevation >= high ? 1.0f : 0.0f;
+    }
+
+    const float weatherTerm = DusklightEnv::colpat() == 0
+      ? 1.0f
+      : std::clamp(physicalWeatherWeight(), 0.0f, 1.0f);
+
+    return std::clamp(physicalMaxWeight(), 0.0f, 1.0f) * elevationTerm * weatherTerm;
+  }
+
+  bool DxvkDusklightAtmosphere::mediumChangedSince(const Vector3& skyColor, float influence) const {
+    constexpr float kEpsilon = 1e-3f;
+
+    return std::fabs(skyColor.x - m_lutSkyColor.x) > kEpsilon ||
+           std::fabs(skyColor.y - m_lutSkyColor.y) > kEpsilon ||
+           std::fabs(skyColor.z - m_lutSkyColor.z) > kEpsilon ||
+           std::fabs(influence - m_lutPaletteInfluence) > kEpsilon;
   }
 
   void DxvkDusklightAtmosphere::applyFogOverride(FogState& fog, bool fogReplacedByMaterial) const {
@@ -275,6 +371,10 @@ namespace dxvk {
     args.rampStart = d.rampStart;
     args.rampEnd = d.rampEnd;
     args.handoverDistance = d.froxelMaxDistance;
+    // The same weight the sky itself was blended with. Once the sky stops coming from the palette,
+    // the palette's fog colour stops describing it, and letting the fog keep the old colour would
+    // leave the horizon one weather and the air in front of it another.
+    args.skyColorWeight = skyActive() ? std::clamp(d.physicalWeight, 0.0f, 1.0f) : 0.0f;
   }
 
   void DxvkDusklightAtmosphere::prepareSceneData(Rc<RtxContext> ctx, SceneManager& sceneManager) {
@@ -299,34 +399,106 @@ namespace dxvk {
         VK_FORMAT_R16G16B16A16_SFLOAT);
     }
 
-    if (m_skyTexture.view == nullptr) {
-      ONCE(Logger::err("[Dusklight] failed to create the generated sky image; falling back to Remix's sky probe."));
+    if (m_transmittanceLut.image == nullptr) {
+      m_transmittanceLut = Resources::createImageResource(
+        baseCtx, "dusklight atmosphere transmittance",
+        VkExtent3D { DUSKLIGHT_TRANSMITTANCE_WIDTH, DUSKLIGHT_TRANSMITTANCE_HEIGHT, 1 },
+        VK_FORMAT_R16G16B16A16_SFLOAT);
+    }
+
+    if (m_multiScatterLut.image == nullptr) {
+      m_multiScatterLut = Resources::createImageResource(
+        baseCtx, "dusklight atmosphere multiscatter",
+        VkExtent3D { DUSKLIGHT_MULTISCATTER_SIZE, DUSKLIGHT_MULTISCATTER_SIZE, 1 },
+        VK_FORMAT_R16G16B16A16_SFLOAT);
+    }
+
+    if (m_skyTexture.view == nullptr || m_transmittanceLut.view == nullptr || m_multiScatterLut.view == nullptr) {
+      ONCE(Logger::err("[Dusklight] failed to create the generated sky images; falling back to Remix's sky probe."));
       return;
+    }
+
+    const Derived& d = derived();
+
+    constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
+
+    DusklightAtmosphereArgs pushArgs = {};
+    pushArgs.sunAzimuthRadians = DusklightEnv::sunAzimuth() * kDegreesToRadians;
+    pushArgs.sunElevationRadians = DusklightEnv::sunElevation() * kDegreesToRadians;
+    pushArgs.skyColor = sRGBGammaToLinear(sanitizeColor(DusklightEnv::skyColor()));
+    pushArgs.intensity = std::max(skyIntensity(), 0.0f);
+    pushArgs.kasumiInner = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiInner()));
+    pushArgs.physicalWeight = std::clamp(d.physicalWeight, 0.0f, 1.0f);
+    pushArgs.kasumiOuter = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiOuter()));
+    pushArgs.paletteInfluence = std::clamp(paletteInfluence(), 0.0f, 1.0f);
+    pushArgs.horizonSharpness = std::max(skyHorizonSharpness(), 1e-3f);
+    pushArgs.groundFraction = std::clamp(skyGroundFraction(), 0.0f, 1.0f);
+    pushArgs.mieAnisotropy = std::clamp(mieAnisotropy(), 0.0f, 0.95f);
+    pushArgs.multiScatterScale = std::max(multiScatterScale(), 0.0f);
+
+    ctx->setFramePassStage(RtxFramePassStage::FrameBegin);
+    ctx->setPushConstantBank(DxvkPushConstantBank::RTX);
+
+    Rc<DxvkSampler> linearSampler = ctx->getResourceManager().getSampler(
+      VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+    // Both tables are functions of the medium alone - not of the sun, not of the view - so they are
+    // rebuilt only when the medium moves, which in this game means when the palette does. Rebuilding
+    // them per frame would be most of the cost of the whole feature for no change in the result.
+    const bool needsLutRebuild =
+      pushArgs.physicalWeight > 0.0f && mediumChangedSince(pushArgs.skyColor, pushArgs.paletteInfluence);
+
+    if (needsLutRebuild) {
+      {
+        ScopedGpuProfileZone(ctx, "Dusklight Atmosphere Transmittance");
+
+        DusklightAtmosphereArgs lutArgs = pushArgs;
+        lutArgs.imageSize = { DUSKLIGHT_TRANSMITTANCE_WIDTH, DUSKLIGHT_TRANSMITTANCE_HEIGHT };
+        ctx->pushConstants(0, sizeof(lutArgs), &lutArgs);
+
+        const VkExtent3D groups = util::computeBlockCount(
+          VkExtent3D { DUSKLIGHT_TRANSMITTANCE_WIDTH, DUSKLIGHT_TRANSMITTANCE_HEIGHT, 1 }, VkExtent3D { 8, 8, 1 });
+
+        ctx->bindResourceView(DUSKLIGHT_TRANSMITTANCE_OUTPUT, m_transmittanceLut.view, nullptr);
+        ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, DusklightTransmittanceShader::getShader());
+        ctx->dispatch(groups.width, groups.height, groups.depth);
+      }
+
+      {
+        ScopedGpuProfileZone(ctx, "Dusklight Atmosphere Multi Scatter");
+
+        DusklightAtmosphereArgs lutArgs = pushArgs;
+        lutArgs.imageSize = { DUSKLIGHT_MULTISCATTER_SIZE, DUSKLIGHT_MULTISCATTER_SIZE };
+        ctx->pushConstants(0, sizeof(lutArgs), &lutArgs);
+
+        const VkExtent3D groups = util::computeBlockCount(
+          VkExtent3D { DUSKLIGHT_MULTISCATTER_SIZE, DUSKLIGHT_MULTISCATTER_SIZE, 1 }, VkExtent3D { 8, 8, 1 });
+
+        ctx->bindResourceView(DUSKLIGHT_MULTISCATTER_TRANSMITTANCE, m_transmittanceLut.view, nullptr);
+        ctx->bindResourceSampler(DUSKLIGHT_MULTISCATTER_TRANSMITTANCE, linearSampler);
+        ctx->bindResourceView(DUSKLIGHT_MULTISCATTER_OUTPUT, m_multiScatterLut.view, nullptr);
+        ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, DusklightMultiScatterShader::getShader());
+        ctx->dispatch(groups.width, groups.height, groups.depth);
+      }
+
+      m_lutSkyColor = pushArgs.skyColor;
+      m_lutPaletteInfluence = pushArgs.paletteInfluence;
     }
 
     {
       ScopedGpuProfileZone(ctx, "Dusklight Sky");
-      ctx->setFramePassStage(RtxFramePassStage::FrameBegin);
-      ctx->setPushConstantBank(DxvkPushConstantBank::RTX);
 
-      constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
-
-      DusklightSkyArgs pushArgs = {};
       pushArgs.imageSize = { kSkyWidth, kSkyHeight };
-      pushArgs.sunAzimuthRadians = DusklightEnv::sunAzimuth() * kDegreesToRadians;
-      pushArgs.horizonSharpness = std::max(skyHorizonSharpness(), 1e-3f);
-      pushArgs.skyColor = sRGBGammaToLinear(sanitizeColor(DusklightEnv::skyColor()));
-      pushArgs.groundFraction = std::clamp(skyGroundFraction(), 0.0f, 1.0f);
-      pushArgs.kasumiInner = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiInner()));
-      pushArgs.intensity = std::max(skyIntensity(), 0.0f);
-      pushArgs.kasumiOuter = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiOuter()));
-
       ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 
       const VkExtent3D workgroups = util::computeBlockCount(
         VkExtent3D { kSkyWidth, kSkyHeight, 1 }, VkExtent3D { 16, 16, 1 });
 
       ctx->bindResourceView(DUSKLIGHT_SKY_OUTPUT, m_skyTexture.view, nullptr);
+      ctx->bindResourceView(DUSKLIGHT_SKY_TRANSMITTANCE, m_transmittanceLut.view, nullptr);
+      ctx->bindResourceSampler(DUSKLIGHT_SKY_TRANSMITTANCE, linearSampler);
+      ctx->bindResourceView(DUSKLIGHT_SKY_MULTISCATTER, m_multiScatterLut.view, nullptr);
+      ctx->bindResourceSampler(DUSKLIGHT_SKY_MULTISCATTER, linearSampler);
       ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, DusklightSkyShader::getShader());
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
     }
@@ -378,6 +550,22 @@ namespace dxvk {
     RemixGui::DragFloat("Horizon Sharpness##dusklightAtmo", &skyHorizonSharpnessObject(), 0.05f, 0.25f, 16.f, "%.2f");
     RemixGui::DragFloat("Ground Fraction##dusklightAtmo", &skyGroundFractionObject(), 0.01f, 0.f, 1.f, "%.2f");
 
+    RemixGui::Separator();
+    ImGui::TextUnformatted("Physical sky");
+    RemixGui::Checkbox("Simulate Scattering##dusklightAtmo", &physicalSkyObject());
+    RemixGui::DragFloat("Max Weight##dusklightAtmo", &physicalMaxWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
+    RemixGui::DragFloat("Blend From##dusklightAtmo", &physicalElevationLowDegreesObject(), 0.5f, -10.f, 45.f, "%.1f deg");
+    RemixGui::DragFloat("Blend To##dusklightAtmo", &physicalElevationHighDegreesObject(), 0.5f, 0.f, 90.f, "%.1f deg");
+    RemixGui::DragFloat("Weather Weight##dusklightAtmo", &physicalWeatherWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
+    RemixGui::DragFloat("Palette Influence##dusklightAtmo", &paletteInfluenceObject(), 0.01f, 0.f, 1.f, "%.2f");
+    RemixGui::DragFloat("Haze Forward Scatter##dusklightAtmo", &mieAnisotropyObject(), 0.01f, 0.f, 0.95f, "%.2f");
+    RemixGui::DragFloat("Multi Scatter##dusklightAtmo", &multiScatterScaleObject(), 0.01f, 0.f, 4.f, "%.2f");
+    ImGui::TextWrapped(
+      "The blend follows the sun's height because that is where the two skies actually disagree. At midday both are a "
+      "plain blue gradient and the change is nearly invisible, while everything it brings - sky fill in shadow, haze "
+      "with distance - is not. At dusk the game's version is deliberately more saturated than physics produces, so it "
+      "keeps the bottom of the arc. Night and the Twilight Realm are the game's outright.");
+
     if (skyEnable() && RtxOptions::skyAutoDetect() != SkyAutoDetectMode::None) {
       ImGui::TextWrapped("rtx.skyAutoDetect is not None: the game's own dome is still being captured behind "
                          "the generated sky. Set it to None.");
@@ -397,7 +585,11 @@ namespace dxvk {
       ImGui::Text("froxel grid reaches %.0f units (%.1f m)",
                   d.froxelMaxDistance, d.froxelMaxDistance / RtxOptions::getMeterToWorldUnitScale());
     }
-    ImGui::Text("area: %s", d.outdoor ? "outdoor" : "no sky");
+    ImGui::Text("area: %s   colpat %d   sun %.1f deg %s",
+                d.outdoor ? "outdoor" : "no sky", DusklightEnv::colpat(),
+                DusklightEnv::sunElevation(), DusklightEnv::sunIsDay() ? "(day)" : "(night)");
+    ImGui::Text("physical weight: %.3f%s", d.physicalWeight,
+                d.physicalWeight <= 0.0f ? "  (the game's own sky)" : "");
 
     ImGui::TextWrapped("The constants above were derived analytically and have never been measured against a "
                        "running build. Read the game's own fog range off the Dusklight tab in the places that "

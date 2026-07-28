@@ -17,11 +17,15 @@ repos.
 
 ## 0. The one-sentence design
 
-> The atmosphere medium **is** the fog medium **is** the sky. Derive it once
-> from the game's palette, and let the dome light, the visible sky and the
-> volumetrics all read the same derivation.
+> Derive the environment once, from the game's own palette, and let the visible
+> sky, the light that sky casts, and the colour distant geometry fades towards
+> all read that one derivation — so none of them can describe a different day.
 
 Everything else in this document follows from that sentence.
+
+*(An earlier wording said the atmosphere medium **is** the fog medium. That is
+false at this game's scale and §1 records why: air is transparent over a hundred
+metres, so the fog's density is the game's and only its colour is shared.)*
 
 ---
 
@@ -53,13 +57,36 @@ integral over different path lengths. A renderer that computes the sky from a
 medium and the fog from an unrelated set of coefficients is doing the same
 physics twice with two different answers.
 
-**This buys the biggest efficiency win in the plan.** Once the volumetric
-medium and the sky medium are the same object, *aerial perspective is free* —
-Remix's froxel grid is already integrating that medium along the view ray. We
-do not need Hillaire's fourth (aerial perspective) LUT at all. The three-way
-conflict flagged earlier in this project (kankyo fog vs Remix volumetrics vs
-Hillaire aerial perspective) dissolves: there was never a third system, only
-one medium described three times.
+**Corrected 2026-07-28 — the two media meet at colour, not at density.** This
+section originally claimed the volumetric medium and the sky medium should be
+*the same object*, with the atmosphere's coefficients driving `VolumeArgs`.
+Measured against this game's scale that is wrong, and implementing it literally
+would have deleted the fog:
+
+| Distance | Real Rayleigh extinction |
+| :-- | :-- |
+| 100 m — a typical `fog_end_z` | **0.13%** |
+| 1 km | 1.3% |
+| 10 km | 12.6% |
+
+Air is transparent at the distances this game cares about. The fog TP needs is
+orders of magnitude denser than air and comes from its palette. So:
+
+- **Fog density** stays the game's. It is the only thing at this scale that
+  produces visible fog at all.
+- **Sky radiance** becomes physical (Phase C).
+- **Fog colour** follows the sky: the far ramp samples the generated dome *in
+  the view direction*. That is what aerial perspective actually is — distant
+  things fade towards the sky behind them — and it is also why the original
+  authored its fog colour in the same palette entry as its sky.
+
+The consistency requirement is unchanged and still met. One weight drives the
+sky's appearance, the light it casts, and the colour distant geometry fades
+towards; it is carried by the shared *colour* rather than a shared σ.
+
+Hillaire's fourth (aerial perspective) lookup table is still not needed, for a
+blunter reason than the original argument gave: at these distances it would be
+computing a fraction of a percent.
 
 ---
 
@@ -337,9 +364,9 @@ would compute the same thing twice.
 | Palette blend (fog + sky + ambient) | **game**, once per frame | everything | Reading outputs also inherits addcol, ratio, override and gather layers for free (§3) |
 | Transmittance LUT (256×64) | on medium change only | sky-view LUT, aerial persp | Function of the medium alone — **not** of sun direction. Dirty-flag it on colpat/time-slot change; it does not belong in the per-frame path |
 | Multi-scattering LUT (32×32) | on medium change only | sky-view LUT | Same |
-| Sky-view LUT (lat-long) | per frame | dome light **and** visible sky | Both already funnel through `sampleDomeLightTexture`, so one texture serves GI and appearance with no new plumbing |
-| Medium extinction/scattering | per frame, once | volumetrics **and** sky | The core unification — see §1 |
-| Aerial perspective | — | — | **Not computed.** Falls out of the froxel integration of the same medium. No fourth LUT |
+| Sky-view LUT (lat-long) | per frame | dome light, visible sky **and** the far fog's colour | There is no separate sky-view table: the dome image *is* it. All three consumers already funnel through `sampleDomeLightTexture`, so one evaluation serves appearance, GI and aerial perspective with no new plumbing |
+| Medium extinction/scattering | per frame, once | volumetrics only | **Not** shared with the sky — see the correction in §1. Air is transparent at this game's distances, so the fog's medium and the sky's are different things that agree on colour |
+| Aerial perspective | — | — | **Not computed.** The far ramp samples the dome in the view direction, which is the same thing for a fraction of the cost. No fourth LUT |
 
 The two big ones are the last two rows: unifying the medium removes a whole
 derivation *and* removes the possibility of sky and fog disagreeing, and the
@@ -477,10 +504,12 @@ Each phase is independently shippable and states its predicted look up front.
   sky-tagging problem is permanently solved. Sky and skylight guaranteed equal.
 
 **Phase C — physical atmosphere.**
-- C1 Hillaire transmittance / multiscattering / sky-view LUTs, parameters from
-  the palette (`vrbox_sky_col`→Rayleigh, `kasumi_*`→Mie, dusk warmth→ozone).
+- C1 Hillaire transmittance and multiscattering LUTs, rebuilt only when the
+  medium changes. There is no separate sky-view LUT: the dome image already is
+  one, so the physical evaluation goes straight into it.
 - C2 `physicalWeight` blend (§4).
-- C3 **Unify:** the same medium drives `VolumeArgs`. Aerial perspective appears
+- C3 **Couple:** the far fog's colour follows the sky, sampled in the view
+  direction. Aerial perspective for the cost of one texture fetch.
   for free (§7).
 - *Predicted:* §9's fidelity table.
 
@@ -546,7 +575,7 @@ Churn in `d_kankyo.cpp` is limited to one capture call, matching the existing
 | Phase 0 calibration | run 2026-07-28 — see §13 |
 | Phase A (A1–A4) | implemented 2026-07-27, **tested good 2026-07-28** |
 | Phase B (B1–B2) | implemented 2026-07-27, **tested good 2026-07-28**; `skyIntensity` raised 1.0 → 6.0 after it read dim |
-| Phase C | in progress |
+| Phase C (C1-C3) | implemented 2026-07-28, **untested** |
 
 Still untested at the time of writing, all independent of the atmosphere:
 `rtx.dusklight.game.disableFrustumCulling`, `hideSkyBillboards`, and the local

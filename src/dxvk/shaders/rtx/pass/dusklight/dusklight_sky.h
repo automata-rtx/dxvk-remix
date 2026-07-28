@@ -23,35 +23,25 @@
 #ifndef DUSKLIGHT_SKY_H
 #define DUSKLIGHT_SKY_H
 
-#include "rtx/utility/shader_types.h"
+#include "rtx/pass/dusklight/dusklight_atmosphere.h"
 
-#define DUSKLIGHT_SKY_OUTPUT 0
-
-// Push constants for the generated sky dome.
+// The generated sky dome.
 //
-// The image is a lat-long map consumed by Remix's existing dome light sampling, so the layout is
+// This image is a lat-long map consumed by Remix's existing dome light sampling, so its layout is
 // fixed by cartesianDirectionToLatLongSphere: theta = acos(dir.z) down the V axis, phi =
 // atan2(dir.x, dir.y) across U with 0.5 at phi = 0. The polar axis is Z in light space; the world
-// is Y up, and the dome light's worldToLight transform carries that swap, so this shader can work
-// purely in light space and treat +Z as up.
-struct DusklightSkyArgs {
-  uint2 imageSize;
-  // Where the sun is, as an angle about the up axis, matching the U axis' phi directly. The haze
-  // colour the game keeps for the sun's side of the sky is strongest here.
-  float sunAzimuthRadians;
-  float horizonSharpness;
+// is Y up, and the dome light's worldToLight transform carries that swap, so this shader works
+// purely in light space and treats +Z as up.
+//
+// It is also, when the physical model is running, exactly what Hillaire calls the sky-view lookup
+// table - which is why there is no separate one. The same image feeds the visible sky, the light
+// the sky casts into the scene, and the colour distant geometry fades towards. Three consumers,
+// one evaluation, and no way for them to disagree.
+//
+// Push constants are DusklightAtmosphereArgs, shared with the two lookup table passes.
 
-  // Colour at the zenith.
-  vec3 skyColor;
-  float groundFraction;
-
-  // Horizon haze on the sun's side.
-  vec3 kasumiInner;
-  float intensity;
-
-  // Horizon haze away from the sun.
-  vec3 kasumiOuter;
-  float pad0;
-};
+#define DUSKLIGHT_SKY_OUTPUT         0
+#define DUSKLIGHT_SKY_TRANSMITTANCE  1
+#define DUSKLIGHT_SKY_MULTISCATTER   2
 
 #endif  // DUSKLIGHT_SKY_H

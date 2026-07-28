@@ -91,6 +91,10 @@ namespace dxvk {
 
       // How far the froxel grid reaches this frame, in world units, after smoothing.
       float   froxelMaxDistance = 0.0f;
+
+      // 0 is the game's own gradient, 1 is the scattering model. See resolvePhysicalWeight for why
+      // it is shaped the way it is.
+      float   physicalWeight = 0.0f;
     };
 
     // Resolved lazily and latched per frame, so callers do not have to agree about ordering.
@@ -134,6 +138,12 @@ namespace dxvk {
 
     void resolveIfStale() const;
     Derived resolve() const;
+    float resolvePhysicalWeight() const;
+
+    // The two lookup tables depend on the medium and on nothing else - not the sun, not the view -
+    // so they are rebuilt only when the medium actually changes. That is what makes a physically
+    // based sky affordable per frame at all.
+    bool mediumChangedSince(const Vector3& skyColor, float influence) const;
 
     DxvkDevice* m_device;
 
@@ -148,6 +158,13 @@ namespace dxvk {
     // Remix's own probe.
     Resources::Resource m_skyTexture;
     uint32_t m_skyTextureIndex = UINT32_MAX;
+
+    Resources::Resource m_transmittanceLut;
+    Resources::Resource m_multiScatterLut;
+    // What the tables were last built for. A rebuild is triggered by a change here, not by a frame
+    // boundary.
+    Vector3 m_lutSkyColor = Vector3(-1.0f, -1.0f, -1.0f);
+    float m_lutPaletteInfluence = -1.0f;
 
     RTX_OPTION("rtx.dusklight.atmosphere", bool, enable, false,
                "Derives one participating medium from the game's environment feed and gives it to the volumetrics, the fog and the sky together.\n"
@@ -233,6 +250,55 @@ namespace dxvk {
                     "in a thin band and let the sky colour own most of the dome; lower values bleed it further up.",
                     args.minValue = 0.25f,
                     args.maxValue = 16.0f);
+    RTX_OPTION("rtx.dusklight.atmosphere", bool, physicalSky, false,
+               "Computes the sky by simulating how light scatters through air, instead of reading the game's gradient off its palette.\n"
+               "What this buys is structure the palette cannot describe: the sky correctly brightening towards the horizon and around the sun and darkening "
+               "overhead, all of it changing as the sun moves, without anyone tuning it - and, most usefully, shadows filled with a blue that is right rather "
+               "than chosen.\n"
+               "It does not replace the game's look everywhere, and is not meant to. The blend is driven by how high the sun is, because that is where the two "
+               "actually disagree: a real midday sky and this game's midday sky are both a plain blue gradient, while its dusk is deliberately more saturated "
+               "than physics would ever produce. See rtx.dusklight.atmosphere.physicalMaxWeight.");
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, physicalMaxWeight, 1.0f,
+                    "How far towards the simulated sky the blend is allowed to go, at its strongest. 0 leaves the game's gradient untouched.\n"
+                    "Lower this if midday looks right but you want the game's palette to keep more of a say.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, physicalElevationLowDegrees, 2.0f,
+                    "Sun elevation below which the sky is entirely the game's own, in degrees.\n"
+                    "The two descriptions diverge most at a low sun: the game's dusk is authored, saturated and unmistakably its own, and a physical one is "
+                    "quieter and more graduated. Holding the game's version at the bottom of the arc keeps sunsets recognisable.",
+                    args.minValue = -10.0f,
+                    args.maxValue = 45.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, physicalElevationHighDegrees, 28.0f,
+                    "Sun elevation above which the sky is entirely simulated, in degrees.\n"
+                    "Safe to be aggressive here: by this height the game's sky is a plain blue gradient and so is a real one, so the change is nearly invisible "
+                    "while everything it brings with it - correct sky fill in shadow, correct haze with distance - is not.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 90.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, physicalWeatherWeight, 0.25f,
+                    "How much simulation survives under the game's non-clear weather patterns, 0..1.\n"
+                    "A clear-sky model has nothing to say about an overcast one; the palette does, because someone painted it. This keeps the palette in charge "
+                    "when the weather is doing something the physics cannot describe.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, paletteInfluence, 0.5f,
+                    "How far the simulated air is steered towards the game's own colours, 0..1.\n"
+                    "Applied to the scattering coefficients rather than to the finished image. That distinction is the whole idea: tinting the coefficients means "
+                    "the sky and the light it casts stay the same sky, whereas tinting the output would leave a scene lit by one colour and looking at another. "
+                    "At 0 the air is Earth's; at 1 its blue is whatever the artists picked.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, mieAnisotropy, 0.76f,
+                    "How strongly haze scatters light forwards, 0..0.95. Higher pulls the glow tighter around the sun.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 0.95f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, multiScatterScale, 1.0f,
+                    "Scales light that bounced more than once before reaching the eye.\n"
+                    "At 0 you get single scattering only, which is both too dark and too saturated - in a blue-scattering medium the photons that bounce most are "
+                    "exactly the blue ones, so throwing them away skews the colour as well as the level.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 4.0f);
+
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyGroundFraction, 0.35f,
                     "How much of the lower hemisphere is treated as ground bounce rather than sky, 0..1.\n"
                     "A dome light wraps the whole sphere, so without this the scene is lit from below by a copy of the sky and everything loses its sense of "

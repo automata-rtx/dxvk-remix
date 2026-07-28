@@ -49,7 +49,12 @@ struct DusklightCompositeArgs {
   float rampEnd;
   // Where the froxel grid stops and this takes over.
   float handoverDistance;
-  float pad0;
+  // How far the far fog is allowed to take its colour from the sky in the view direction rather
+  // than from the palette. This is aerial perspective stated plainly: distant things fade towards
+  // whatever sky is behind them, so once the sky is being simulated the fog has to follow it or the
+  // two describe different weather. Carrying the same weight the sky was blended with is what keeps
+  // them the same weather.
+  float skyColorWeight;
 };
 
 #endif  // DUSKLIGHT_COMPOSITE_ARGS_H

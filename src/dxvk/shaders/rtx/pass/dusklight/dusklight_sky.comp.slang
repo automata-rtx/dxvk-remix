@@ -20,31 +20,137 @@
 * DEALINGS IN THE SOFTWARE.
 */
 
-#include "rtx/pass/dusklight/dusklight_sky.h"
 #include "rtx/utility/shader_types.slangh"
-// Note: pi, twoPi and square all live here rather than in shader_types.
-#include "rtx/utility/math.slangh"
+#include "rtx/pass/dusklight/dusklight_sky.h"
+#include "rtx/pass/dusklight/dusklight_atmosphere_common.slangh"
 
-// Builds the sky the game would have drawn, as a lat-long image for Remix's dome light.
+// Builds the sky the game would have drawn, and the sky physics would have drawn, and blends
+// between them.
 //
 // The game does not draw its sky from a texture. It hands the hardware a handful of colours each
 // frame - one for the zenith, two for the horizon haze, three more for clouds - and lets the
 // vertices of a dome model smear them into gradients. That is why the sky cannot be tagged: there
-// is no texture content to fingerprint. Rebuilding the gradient here from the same colours gets
-// around that permanently, and puts the sky in high dynamic range, which the game's own dome never
-// was and which is what lets it light the world at a believable strength.
+// is no texture content to fingerprint. Rebuilding it here from the same colours gets around that
+// permanently, and puts the sky in high dynamic range, which the game's own dome never was.
 //
-// The dome model itself is the one piece we do not have, so the vertical falloff between horizon
-// and zenith is a stand-in shaped by horizonSharpness rather than a reproduction of its vertices.
-//
-// Layout is fixed by the sampling side (cartesianDirectionToLatLongSphere): V runs from the +Z
-// pole down, U carries phi = atan2(x, y) with 0.5 at phi = 0. In light space +Z is up.
+// The two halves are blended as radiance, before anything downstream sees either. That matters:
+// this one image is the visible sky, the light the sky casts, and the colour distant geometry
+// fades towards, so blending here keeps all three describing the same sky. Blending finished
+// pixels instead would let the sky you look at drift away from the light you stand in.
 
 layout(binding = DUSKLIGHT_SKY_OUTPUT)
 RWTexture2D<float4> SkyOutput;
 
+layout(binding = DUSKLIGHT_SKY_TRANSMITTANCE)
+Sampler2D<float4> TransmittanceLut;
+
+layout(binding = DUSKLIGHT_SKY_MULTISCATTER)
+Sampler2D<float4> MultiScatterLut;
+
 layout(push_constant)
-ConstantBuffer<DusklightSkyArgs> cb;
+ConstantBuffer<DusklightAtmosphereArgs> cb;
+
+// The game's own gradient. Its dome model is the one piece we do not have, so the vertical falloff
+// between horizon and zenith is a stand-in shaped by horizonSharpness rather than a reproduction of
+// that model's vertices.
+float3 evaluateStylisedSky(float height, float3 horizonColor)
+{
+  if (height >= 0.0f)
+  {
+    const float t = pow(saturate(height), 1.0f / max(cb.horizonSharpness, 1e-3f));
+    return lerp(horizonColor, cb.skyColor, t);
+  }
+
+  return horizonColor;
+}
+
+// Single scattering along the view ray, plus the precomputed multiple scattering, after
+// Hillaire 2020.
+float3 evaluatePhysicalSky(float3 direction, float3 sunDirection)
+{
+  const float3 rayleighScattering =
+    dusklightTintCoefficients(kRayleighScattering, cb.skyColor, cb.paletteInfluence);
+  // The haze colours steer how much Mie there is rather than what colour it is: Mie scattering is
+  // almost wavelength independent, so a coloured haze is a contradiction. Their brightness is a
+  // good proxy for how thick the air reads in a given palette.
+  const float hazeLevel = dot(cb.kasumiInner + cb.kasumiOuter, float3(0.2126f, 0.7152f, 0.0722f)) * 0.5f;
+  const float mieScatteringScale = lerp(1.0f, saturate(hazeLevel) * 4.0f + 0.25f, saturate(cb.paletteInfluence));
+
+  // Just above the ground. The game's camera is effectively at sea level on this scale.
+  const float3 origin = float3(0.0f, 0.0f, kPlanetRadiusKm + 0.0005f);
+
+  const float groundDistance = dusklightRaySphere(origin, direction, kPlanetRadiusKm);
+  const float topDistance = dusklightRaySphere(origin, direction, kAtmosphereTopKm);
+  const float distanceKm = groundDistance > 0.0f ? groundDistance : topDistance;
+
+  if (!(distanceKm > 0.0f))
+  {
+    return float3(0.0f, 0.0f, 0.0f);
+  }
+
+  const float cosTheta = dot(direction, sunDirection);
+  const float rayleighPhase = dusklightRayleighPhase(cosTheta);
+  const float miePhase = dusklightMiePhase(cosTheta, clamp(cb.mieAnisotropy, 0.0f, 0.95f));
+
+  const int kStepCount = 32;
+  const float stepKm = distanceKm / float(kStepCount);
+
+  float3 throughput = float3(1.0f, 1.0f, 1.0f);
+  float3 luminance = float3(0.0f, 0.0f, 0.0f);
+
+  for (int i = 0; i < kStepCount; ++i)
+  {
+    const float3 position = origin + direction * ((float(i) + 0.5f) * stepKm);
+    const float radiusKm = max(length(position), kPlanetRadiusKm);
+    const float heightKm = radiusKm - kPlanetRadiusKm;
+
+    const DusklightMedium medium = dusklightSampleMedium(heightKm, rayleighScattering, mieScatteringScale);
+    const float3 stepTransmittance = exp(-medium.extinction * stepKm);
+
+    const float3 up = position / radiusKm;
+    const float cosSunZenith = dot(up, sunDirection);
+
+    const float3 sunTransmittance =
+      TransmittanceLut.SampleLevel(dusklightTransmittanceParamsToUv(radiusKm, cosSunZenith), 0).xyz;
+
+    // The planet blocks the sun below its own horizon. Without this the ground glows after sunset.
+    const float sunVisibility = dusklightRaySphere(position, sunDirection, kPlanetRadiusKm) > 0.0f ? 0.0f : 1.0f;
+
+    const float3 phaseWeighted =
+      medium.rayleighScattering * rayleighPhase + medium.mieScattering.xxx * miePhase;
+
+    const float3 multiScatter =
+      MultiScatterLut.SampleLevel(
+        float2(cosSunZenith * 0.5f + 0.5f,
+               saturate((radiusKm - kPlanetRadiusKm) / (kAtmosphereTopKm - kPlanetRadiusKm))), 0).xyz;
+
+    // Integrating scattering across the step in closed form rather than sampling its midpoint;
+    // this is what keeps the horizon from banding at a step count this low.
+    const float3 inverseExtinction = 1.0f / max(medium.extinction, float3(1e-9f, 1e-9f, 1e-9f));
+
+    const float3 directTerm =
+      (phaseWeighted - phaseWeighted * stepTransmittance) * inverseExtinction * sunTransmittance * sunVisibility;
+    const float3 multiTerm =
+      (medium.scattering - medium.scattering * stepTransmittance) * inverseExtinction * multiScatter * cb.multiScatterScale;
+
+    luminance += throughput * (directTerm + multiTerm);
+    throughput *= stepTransmittance;
+  }
+
+  if (groundDistance > 0.0f)
+  {
+    const float3 groundPoint = origin + direction * groundDistance;
+    const float3 groundNormal = normalize(groundPoint);
+    const float cosSunGround = saturate(dot(groundNormal, sunDirection));
+
+    const float3 groundTransmittance =
+      TransmittanceLut.SampleLevel(dusklightTransmittanceParamsToUv(kPlanetRadiusKm, cosSunGround), 0).xyz;
+
+    luminance += throughput * groundTransmittance * cosSunGround * (kGroundAlbedo / pi);
+  }
+
+  return luminance;
+}
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
@@ -61,8 +167,11 @@ void main(uint2 ipos : SV_DispatchThreadID)
   const float theta = uv.y * pi;
   const float phi = (uv.x - 0.5f) * twoPi;
 
+  const float sinTheta = sin(theta);
+  const float3 direction = float3(sinTheta * sin(phi), sinTheta * cos(phi), cos(theta));
+
   // Height above the horizon as a sine, +1 at the zenith and -1 straight down.
-  const float height = cos(theta);
+  const float height = direction.z;
 
   // Angular distance from the sun about the up axis, folded to 0..1. The game keeps two horizon
   // colours, one for the sun's side and one for away from it, and this is what chooses between
@@ -73,22 +182,30 @@ void main(uint2 ipos : SV_DispatchThreadID)
 
   const float3 horizonColor = lerp(cb.kasumiOuter, cb.kasumiInner, sunProximity);
 
-  float3 color;
+  float3 color = evaluateStylisedSky(height, horizonColor);
 
-  if (height >= 0.0f)
+  const float weight = saturate(cb.physicalWeight);
+
+  if (weight > 0.0f)
   {
-    // Upward: the haze gives way to the sky colour. A higher sharpness pulls the crossover down
-    // towards the horizon, leaving the haze as a thin band.
-    const float t = pow(saturate(height), 1.0f / max(cb.horizonSharpness, 1e-3f));
-    color = lerp(horizonColor, cb.skyColor, t);
+    const float cosElevation = cos(cb.sunElevationRadians);
+    const float3 sunDirection = float3(cosElevation * sin(cb.sunAzimuthRadians),
+                                       cosElevation * cos(cb.sunAzimuthRadians),
+                                       sin(cb.sunElevationRadians));
+
+    const float3 physical = evaluatePhysicalSky(direction, sunDirection);
+
+    // Blended as radiance, which is the whole point - see the note at the top of this file.
+    color = lerp(color, physical, weight);
   }
-  else
+
+  // A dome light wraps the whole sphere, so the lower half would otherwise light the scene from
+  // below with a second copy of the sky and flatten everything out. The physical model's own ground
+  // bounce is real, but this game's ground is path traced geometry that already bounces light, so
+  // it would be counted twice.
+  if (height < 0.0f)
   {
-    // Downward: a dome light wraps the whole sphere, so the lower half would otherwise light the
-    // scene from below with a second copy of the sky and flatten everything out. Fade it towards a
-    // dimmer ground bounce instead.
-    const float t = saturate(-height);
-    color = lerp(horizonColor, horizonColor * saturate(1.0f - cb.groundFraction), t);
+    color *= lerp(1.0f, saturate(1.0f - cb.groundFraction), saturate(-height));
   }
 
   color *= cb.intensity;

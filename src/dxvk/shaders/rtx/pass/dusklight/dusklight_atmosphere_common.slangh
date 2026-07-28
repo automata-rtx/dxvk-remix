@@ -1,0 +1,175 @@
+/*
+* Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+#include "rtx/utility/math.slangh"
+#include "rtx/pass/dusklight/dusklight_atmosphere.h"
+
+// Shared medium for the physically based sky, after Hillaire 2020, "A Scalable and Production
+// Ready Sky and Atmosphere Rendering Technique".
+//
+// Everything here works in kilometres. That is not cosmetic: the planet is thousands of kilometres
+// across and the atmosphere a hundred, and expressing that in the game's centimetre units would
+// spend most of a float's mantissa before any physics happened.
+//
+// A scale note that shapes the whole design. This medium is essentially transparent at the
+// distances the game cares about - Rayleigh extinction over a hundred metres is about a tenth of a
+// percent - so it is a source of *radiance*, not of fog. The fog that this game needs is far denser
+// than air and comes from its own palette. The two meet at colour, not at density.
+
+static const float kPlanetRadiusKm = 6360.0f;
+static const float kAtmosphereTopKm = 6460.0f;
+
+// Sea level scattering, per kilometre. Rayleigh is strongly wavelength dependent, which is the
+// entire reason the sky is blue and sunsets are red; Mie is not, which is why haze is white.
+static const float3 kRayleighScattering = float3(5.802e-3f, 13.558e-3f, 33.100e-3f);
+static const float  kRayleighScaleHeightKm = 8.0f;
+
+static const float kMieScattering = 3.996e-3f;
+static const float kMieExtinction = 4.440e-3f;
+static const float kMieScaleHeightKm = 1.2f;
+
+// Ozone absorbs in the green-yellow band and sits in a layer well above the ground. It contributes
+// nothing at noon and is most of why twilight goes blue-violet overhead rather than simply dark.
+static const float3 kOzoneAbsorption = float3(0.650e-3f, 1.881e-3f, 0.085e-3f);
+static const float  kOzoneCenterKm = 25.0f;
+static const float  kOzoneHalfWidthKm = 15.0f;
+
+static const float kGroundAlbedo = 0.3f;
+
+struct DusklightMedium
+{
+  float3 scattering;
+  float3 extinction;
+  float3 rayleighScattering;
+  float  mieScattering;
+};
+
+// Steers the medium's coefficients towards the game's palette. Deliberately applied to the
+// coefficients rather than to the finished radiance: tinting the output would leave the sky a
+// different colour from the light it casts, which is the exact failure this whole system exists to
+// avoid. Normalized by luminance so the palette chooses hue and the physics keeps the magnitude.
+float3 dusklightTintCoefficients(float3 base, float3 paletteColor, float influence)
+{
+  const float paletteLuminance = dot(paletteColor, float3(0.2126f, 0.7152f, 0.0722f));
+
+  if (paletteLuminance <= 1e-5f || influence <= 0.0f)
+  {
+    return base;
+  }
+
+  const float baseLuminance = dot(base, float3(0.2126f, 0.7152f, 0.0722f));
+  const float3 tinted = paletteColor * (baseLuminance / paletteLuminance);
+
+  return lerp(base, tinted, saturate(influence));
+}
+
+DusklightMedium dusklightSampleMedium(float heightKm, float3 rayleighScattering, float mieScatteringScale)
+{
+  DusklightMedium medium;
+
+  const float densityRayleigh = exp(-max(heightKm, 0.0f) / kRayleighScaleHeightKm);
+  const float densityMie = exp(-max(heightKm, 0.0f) / kMieScaleHeightKm);
+  // A tent rather than an exponential: ozone is a layer at altitude, not something that thins out
+  // from the ground up.
+  const float densityOzone = saturate(1.0f - abs(heightKm - kOzoneCenterKm) / kOzoneHalfWidthKm);
+
+  medium.rayleighScattering = rayleighScattering * densityRayleigh;
+  medium.mieScattering = kMieScattering * mieScatteringScale * densityMie;
+
+  const float mieExtinction = kMieExtinction * mieScatteringScale * densityMie;
+  const float3 ozoneAbsorption = kOzoneAbsorption * densityOzone;
+
+  medium.scattering = medium.rayleighScattering + medium.mieScattering;
+  medium.extinction = medium.rayleighScattering + mieExtinction + ozoneAbsorption;
+
+  return medium;
+}
+
+// Distance from a point to the atmosphere's outer shell along a direction, or to the ground if the
+// ray hits it first. Returns a negative value when the ray starts outside and misses.
+float dusklightRaySphere(float3 origin, float3 direction, float radius)
+{
+  const float b = dot(origin, direction);
+  const float c = dot(origin, origin) - radius * radius;
+  const float discriminant = b * b - c;
+
+  if (discriminant < 0.0f)
+  {
+    return -1.0f;
+  }
+
+  const float root = sqrt(discriminant);
+  const float near = -b - root;
+  const float far = -b + root;
+
+  if (far < 0.0f)
+  {
+    return -1.0f;
+  }
+
+  return near < 0.0f ? far : near;
+}
+
+// Transmittance lookup parameterization from Bruneton, as used by Hillaire. Chosen so the table
+// stays smooth right at the horizon, where a naive angle parameterization has all its detail.
+void dusklightTransmittanceUvToParams(float2 uv, out float heightKm, out float cosZenith)
+{
+  const float H = sqrt(kAtmosphereTopKm * kAtmosphereTopKm - kPlanetRadiusKm * kPlanetRadiusKm);
+  const float rho = H * uv.y;
+
+  heightKm = sqrt(rho * rho + kPlanetRadiusKm * kPlanetRadiusKm);
+
+  const float dMin = kAtmosphereTopKm - heightKm;
+  const float dMax = rho + H;
+  const float d = dMin + uv.x * (dMax - dMin);
+
+  cosZenith = d == 0.0f ? 1.0f : (H * H - rho * rho - d * d) / (2.0f * heightKm * d);
+  cosZenith = clamp(cosZenith, -1.0f, 1.0f);
+}
+
+float2 dusklightTransmittanceParamsToUv(float radiusKm, float cosZenith)
+{
+  const float H = sqrt(max(0.0f, kAtmosphereTopKm * kAtmosphereTopKm - kPlanetRadiusKm * kPlanetRadiusKm));
+  const float rho = sqrt(max(0.0f, radiusKm * radiusKm - kPlanetRadiusKm * kPlanetRadiusKm));
+
+  const float discriminant = radiusKm * radiusKm * (cosZenith * cosZenith - 1.0f) + kAtmosphereTopKm * kAtmosphereTopKm;
+  const float d = max(0.0f, -radiusKm * cosZenith + sqrt(max(discriminant, 0.0f)));
+
+  const float dMin = kAtmosphereTopKm - radiusKm;
+  const float dMax = rho + H;
+
+  return float2(dMax > dMin ? (d - dMin) / (dMax - dMin) : 0.0f, H > 0.0f ? rho / H : 0.0f);
+}
+
+float dusklightRayleighPhase(float cosTheta)
+{
+  return (3.0f / (16.0f * pi)) * (1.0f + cosTheta * cosTheta);
+}
+
+float dusklightMiePhase(float cosTheta, float g)
+{
+  const float gg = g * g;
+  const float denom = 1.0f + gg - 2.0f * g * cosTheta;
+
+  return (1.0f - gg) / (4.0f * pi * max(denom, 1e-4f) * sqrt(max(denom, 1e-4f)));
+}
