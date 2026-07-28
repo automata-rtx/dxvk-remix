@@ -148,6 +148,19 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, deviceRegistered, false, RtxOptionFlags::NoSave,
                     "True once the game has registered its D3D9 device with the Remix API, which everything that submits lights depends on. "
                     "Written by the game's kankyo bridge.");
+    // Warp destinations, resolved by the game from the indices the overlay selected. Pipe
+    // delimited, because a list crossing as one value beats one option per entry.
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, warpRegions, "", RtxOptionFlags::NoSave,
+                    "Every warp region the game knows, in plain English, pipe delimited. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, warpMaps, "", RtxOptionFlags::NoSave,
+                    "Levels in the selected region, in plain English, pipe delimited. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, warpRooms, "", RtxOptionFlags::NoSave,
+                    "Room numbers in the selected level, pipe delimited. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, warpPoints, "", RtxOptionFlags::NoSave,
+                    "Spawn points in the selected room, pipe delimited. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, warpStage, "", RtxOptionFlags::NoSave,
+                    "The stage file the current selection resolves to - the name the warp actually travels on. Written by the game's kankyo bridge.");
+
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, localLightsRunning, false, RtxOptionFlags::NoSave,
                     "True when the game got past every gate and actually ran its light submission loop. Written by the game's kankyo bridge.\n"
                     "Without this an option that reads false and an area with no lights in it are indistinguishable from the other side, since both report zero.");

@@ -51,6 +51,8 @@
 #include "rtx_render/rtx_global_volumetrics.h"
 #include "rtx_render/rtx_bloom.h"
 #include <functional>
+#include <algorithm>
+#include <vector>
 #include "rtx_render/rtx_terrain_baker.h"
 #include "rtx_render/rtx_neural_radiance_cache.h"
 #include "rtx_render/rtx_ray_reconstruction.h"
@@ -2609,12 +2611,125 @@ namespace dxvk {
     ImGui::PopItemWidth();
   }
 
+  namespace {
+    // The game pushes its lists pipe delimited: one option carrying a list beats one option per
+    // entry, and the destination table stays in the one place that owns it.
+    std::vector<std::string> splitPipes(const std::string& packed) {
+      std::vector<std::string> out;
+      if (packed.empty()) {
+        return out;
+      }
+
+      size_t start = 0;
+      while (true) {
+        const size_t next = packed.find('|', start);
+        out.push_back(packed.substr(start, next == std::string::npos ? std::string::npos : next - start));
+        if (next == std::string::npos) {
+          break;
+        }
+        start = next + 1;
+      }
+      return out;
+    }
+
+    // ImGui's combo wants a contiguous array of pointers, and clamps the selection itself so a
+    // list that shrank under it - which happens the moment the region changes - cannot index out.
+    bool comboFromList(const char* label, const std::vector<std::string>& items, int& index) {
+      if (items.empty()) {
+        ImGui::BeginDisabled();
+        int dummy = 0;
+        const char* none = "(none)";
+        ImGui::Combo(label, &dummy, &none, 1);
+        ImGui::EndDisabled();
+        return false;
+      }
+
+      index = std::clamp(index, 0, static_cast<int>(items.size()) - 1);
+
+      std::vector<const char*> pointers;
+      pointers.reserve(items.size());
+      for (const std::string& item : items) {
+        pointers.push_back(item.c_str());
+      }
+
+      return ImGui::Combo(label, &index, pointers.data(), static_cast<int>(pointers.size()));
+    }
+  }
+
   void ImGUI::showDusklightWarpTab(const Rc<DxvkContext>& ctx) {
-    ImGui::TextWrapped(
-      "Not built yet. The game's warp is a single call and its destination table already carries "
-      "plain English region and level names, so this will list them by name rather than by file "
-      "code. What it needs is a way for a selection made here to reach the game, which the bridge "
-      "can carry as indices with the names pushed back.");
+    if (!DusklightEnv::enable()) {
+      ImGui::TextWrapped("Waiting for the game. Warp destinations come from the game's own table, so nothing can be listed until it connects.");
+      return;
+    }
+
+    const std::vector<std::string> regions = splitPipes(DusklightEnv::warpRegions());
+    const std::vector<std::string> maps = splitPipes(DusklightEnv::warpMaps());
+    const std::vector<std::string> rooms = splitPipes(DusklightEnv::warpRooms());
+    const std::vector<std::string> points = splitPipes(DusklightEnv::warpPoints());
+
+    if (regions.empty()) {
+      ImGui::TextWrapped("The game has not sent its destination list yet. It arrives within a frame or two of connecting.");
+      return;
+    }
+
+    int regionIndex = DusklightGame::regionIndex();
+    int mapIndex = DusklightGame::mapIndex();
+
+    // Changing the region invalidates the level list, which the game rebuilds from the new index -
+    // so the selection resets rather than pointing at whatever happens to sit at the same offset.
+    if (comboFromList("Region", regions, regionIndex)) {
+      DusklightGame::regionIndex.setDeferred(regionIndex);
+      DusklightGame::mapIndex.setDeferred(0);
+      DusklightGame::roomIndex.setDeferred(0);
+      DusklightGame::pointIndex.setDeferred(0);
+    }
+
+    if (comboFromList("Level", maps, mapIndex)) {
+      DusklightGame::mapIndex.setDeferred(mapIndex);
+      DusklightGame::roomIndex.setDeferred(0);
+      DusklightGame::pointIndex.setDeferred(0);
+    }
+
+    const bool canWarp = !maps.empty() && !rooms.empty() && !points.empty();
+
+    ImGui::BeginDisabled(!canWarp);
+    if (ImGui::Button("Warp", ImVec2(120, 0))) {
+      // The game acts on this changing, not on its value.
+      DusklightGame::commit.setDeferred(DusklightGame::commit() + 1);
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    ImGui::Text("-> %s", DusklightEnv::warpStage().empty() ? "(nothing selected)" : DusklightEnv::warpStage().c_str());
+
+    RemixGui::Separator();
+
+    if (RemixGui::CollapsingHeader("Room, point and layer", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "Rarely needed. The defaults land at the level's first room and entrance, which is what you "
+        "want almost every time.");
+
+      int roomIndex = DusklightGame::roomIndex();
+      if (comboFromList("Room", rooms, roomIndex)) {
+        DusklightGame::roomIndex.setDeferred(roomIndex);
+        DusklightGame::pointIndex.setDeferred(0);
+      }
+
+      int pointIndex = DusklightGame::pointIndex();
+      if (comboFromList("Point", points, pointIndex)) {
+        DusklightGame::pointIndex.setDeferred(pointIndex);
+      }
+
+      int layer = DusklightGame::layer();
+      if (ImGui::InputInt("Layer", &layer)) {
+        DusklightGame::layer.setDeferred(std::clamp(layer, -1, 15));
+      }
+      ImGui::TextWrapped(
+        "Layer is how the game keeps several versions of one place - before and after a story "
+        "event, say. -1 asks it to pick.");
+      ImGui::Unindent();
+    }
   }
 
   void ImGUI::showDusklightControlsTab(const Rc<DxvkContext>& ctx) {

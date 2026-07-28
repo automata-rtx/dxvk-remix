@@ -54,6 +54,19 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight", bool, uiActive, false, RtxOptionFlags::NoSave,
                     "True while an overlay is up and wants the input to itself. Written by Remix, read by the game; do not set by hand.");
 
+    // Warp, driven from the overlay's Warp tab. Indices rather than names: the destination table
+    // belongs to the game, and keeping a copy here would guarantee the two drift apart. The game
+    // reads these, resolves them against its own table and pushes the names back for display.
+    // All NoSave - a commit counter surviving a restart would fire a warp nobody asked for.
+    RTX_OPTION_FLAG("rtx.dusklight.warp", int, regionIndex, 0, RtxOptionFlags::NoSave, "Selected warp region. Set by the overlay.");
+    RTX_OPTION_FLAG("rtx.dusklight.warp", int, mapIndex, 0, RtxOptionFlags::NoSave, "Selected warp level within the region. Set by the overlay.");
+    RTX_OPTION_FLAG("rtx.dusklight.warp", int, roomIndex, 0, RtxOptionFlags::NoSave, "Selected room within the level. Set by the overlay.");
+    RTX_OPTION_FLAG("rtx.dusklight.warp", int, pointIndex, 0, RtxOptionFlags::NoSave, "Selected spawn point within the room. Set by the overlay.");
+    RTX_OPTION_FLAG("rtx.dusklight.warp", int, layer, 0, RtxOptionFlags::NoSave, "Selected stage layer, which is how the game holds several versions of one place. Set by the overlay.");
+    RTX_OPTION_FLAG("rtx.dusklight.warp", int, commit, 0, RtxOptionFlags::NoSave,
+                    "Incremented by the overlay to request a warp. The game acts on the change rather than the value, and latches the first one it sees "
+                    "without acting, so connecting to a session that already has a non-zero count does not teleport anyone.");
+
     RTX_OPTION("rtx.dusklight.game", bool, bridgeEnable, true,
                "Whether the game feeds its environment state to Remix at all.\n"
                "Turning this off stops every push and takes the game's sun, moon and local lights with it, which makes it the "
