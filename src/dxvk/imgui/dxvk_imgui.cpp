@@ -2672,8 +2672,13 @@ namespace dxvk {
     const std::vector<std::string> rooms = splitPipes(DusklightEnv::warpRooms());
     const std::vector<std::string> points = splitPipes(DusklightEnv::warpPoints());
 
+    // The destination list can lag a frame or two behind the connection, and the clock does not
+    // depend on it, so the time controls are still offered while that arrives rather than
+    // disappearing along with the combos.
     if (regions.empty()) {
       ImGui::TextWrapped("The game has not sent its destination list yet. It arrives within a frame or two of connecting.");
+      RemixGui::Separator();
+      showDusklightTimeOfDay();
       return;
     }
 
@@ -2739,6 +2744,95 @@ namespace dxvk {
         "anywhere whose default is not 0.");
       ImGui::Unindent();
     }
+
+    RemixGui::Separator();
+
+    showDusklightTimeOfDay();
+  }
+
+  void ImGUI::showDusklightTimeOfDay() {
+    if (!RemixGui::CollapsingHeader("Time of day", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
+      return;
+    }
+
+    ImGui::Indent();
+
+    const float gameTime = DusklightEnv::daytime();
+
+    // The whole day is 360 degrees, so a degree is four minutes. Shown as a clock as well as the
+    // raw number because the schedule that picks the palettes is written in hours, while
+    // everything in these options is written in degrees. Integer minutes throughout, which keeps
+    // this off <cmath> - the file does not include it and a transitive one is not worth relying
+    // on across three compilers.
+    const int totalMinutes = static_cast<int>(gameTime * 4.0f);
+    const int hour = (totalMinutes / 60) % 24;
+    const int minute = totalMinutes % 60;
+
+    ImGui::Text("Game clock: %02d:%02d   (%.1f deg)%s", hour, minute, gameTime,
+                DusklightGame::freezeTime() ? "   FROZEN" : "");
+
+    // The slider follows the game whenever it is not being held, so it reads as a clock as much
+    // as a control and a drag always starts from where the game actually is. It cannot simply be
+    // driven from the readout every frame: the value crosses the bridge, gets applied, and comes
+    // back a frame or two later, so a slider fed the returning value would fight the hand
+    // holding it.
+    static float s_sliderTime = 0.0f;
+    static bool s_sliderHeld = false;
+
+    if (!s_sliderHeld) {
+      s_sliderTime = gameTime;
+    }
+
+    // The value and the request to apply it are separate, so dragging back onto a value the
+    // option already holds still moves the clock. Pressing Noon twice in a row has to work.
+    //
+    // The counter is kept here rather than read back off the option and incremented, the way the
+    // warp button does it: a slider fires on many consecutive frames, and read-modify-write only
+    // stays monotonic if every deferred set lands before the next read. A button pressed once a
+    // frame at most never tests that; a drag would.
+    static int s_timeRequests = 0;
+    const auto requestTime = [](float degrees) {
+      DusklightGame::timeOfDay.setDeferred(degrees);
+      DusklightGame::timeCommit.setDeferred(++s_timeRequests);
+    };
+
+    if (ImGui::SliderFloat("Set Time##dusklight", &s_sliderTime, 0.0f, 359.9f, "%.1f deg")) {
+      requestTime(s_sliderTime);
+    }
+    s_sliderHeld = ImGui::IsItemActive();
+
+    // The quarter points, which are also the four the light actually differs at. Buttons rather
+    // than a combo because the whole value of these is landing on the same number twice.
+    struct TimePreset {
+      const char* label;
+      float degrees;
+    };
+    static constexpr TimePreset kPresets[] = {
+      { "Midnight", 0.0f }, { "Sunrise", 90.0f }, { "Noon", 180.0f }, { "Sunset", 270.0f },
+    };
+    constexpr size_t kPresetCount = sizeof(kPresets) / sizeof(kPresets[0]);
+
+    for (size_t i = 0; i < kPresetCount; i++) {
+      if (i > 0) {
+        ImGui::SameLine();
+      }
+      if (ImGui::Button(kPresets[i].label)) {
+        s_sliderTime = kPresets[i].degrees;
+        requestTime(kPresets[i].degrees);
+      }
+    }
+
+    RemixGui::Checkbox("Freeze Time", &DusklightGame::freezeTimeObject());
+    ImGui::TextWrapped(
+      "Freeze before shooting an A/B pair. Without it the sun has moved between the two shots and "
+      "part of any difference is the clock rather than the setting under test.");
+    ImGui::TextWrapped(
+      "The moon to sun handover sits around 67 to 75 degrees, which is the window to sit in for "
+      "anything about the celestial light. The physical sky blend is driven by sun elevation "
+      "rather than by the clock, so noon is where it is at full strength and sunrise or sunset is "
+      "where the game's own palette keeps it.");
+
+    ImGui::Unindent();
   }
 
   void ImGUI::showDusklightControlsTab(const Rc<DxvkContext>& ctx) {
@@ -2807,7 +2901,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 3;
+    constexpr int kRequiredProtocol = 4;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -2816,7 +2910,7 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Connected, but the game build is older than this build of Remix: it does not read these "
         "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 3 or newer.");
+        "accurate. Update the game to a build that reports protocol 4 or newer.");
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "

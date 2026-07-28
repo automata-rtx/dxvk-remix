@@ -145,6 +145,28 @@ namespace dxvk {
                "sky from those same colours instead. Turn this on together with that, or the generated sky and the game's own dome will "
                "both be visible; leave it off and the atmosphere still lights the scene but you will be looking at the game's dome.\n"
                "Also set rtx.skyAutoDetect to None, otherwise the auto detected dome keeps feeding a second, dimmer sky into the same pixels.");
+    // Clock control. Both NoSave: a frozen clock or a pinned time that survived a restart would
+    // be a silent, invisible reason for the world to behave oddly, and this pair exists to make
+    // comparisons repeatable rather than to configure anything.
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, timeOfDay, 0.0f,
+                    "Where to move the game's clock to, in degrees: the whole day is 360, so 15 is an hour. 0 midnight, 90 sunrise, 180 noon, 270 sunset.\n"
+                    "Setting this alone does nothing - rtx.dusklight.game.timeCommit is what asks for it to be applied. Holding the value and the request "
+                    "apart is what lets the clock run on from wherever it was put instead of being pinned there, and it means pressing the same preset "
+                    "twice works the second time.",
+                    args.flags = RtxOptionFlags::NoSave,
+                    args.minValue = 0.0f,
+                    args.maxValue = 359.9f);
+    RTX_OPTION_FLAG("rtx.dusklight.game", int, timeCommit, 0, RtxOptionFlags::NoSave,
+                    "Incremented by the overlay to move the clock to rtx.dusklight.game.timeOfDay. The game acts on the change rather than the value, and "
+                    "latches the first one it sees without acting, so connecting to a session that already has a non-zero count does not move anyone's "
+                    "clock. Same shape as the warp commit, for the same reason.");
+    RTX_OPTION_FLAG("rtx.dusklight.game", bool, freezeTime, false, RtxOptionFlags::NoSave,
+                    "Stops the game's clock, so the sun, the moon and every palette that follows them hold still.\n"
+                    "This is what makes an A/B pair worth comparing: without it the light has moved between the two shots and any difference is partly the "
+                    "clock rather than the setting under test.\n"
+                    "It reuses the same mechanism the game uses for a stage whose sky must not move, so it also holds the Twilight Realm's separate clock "
+                    "and skips the reset to midnight that entering twilight would normally do - frozen means frozen, which is right for a comparison but "
+                    "is not what the game does on its own.");
     RTX_OPTION("rtx.dusklight.game", bool, recordingMode, false,
                "The game's own recording mode: hides its HUD and silences its music.\n"
                "It is a game setting rather than a Remix one, and the game's settings screen is not drawn in the fixed function D3D9 mode, so without this it "

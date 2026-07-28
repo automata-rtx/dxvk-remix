@@ -39,6 +39,10 @@ namespace dxvk {
                     "Which revision of the game side bridge is running, so the Dusklight tab can tell an out of date game build from a broken one.\n"
                     "0 means the game predates rtx.dusklight.game.*, and every control in that tab will appear to do nothing because nothing is reading them. "
                     "Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, daytime, 0.0f, RtxOptionFlags::NoSave,
+                    "The game's clock in degrees, 0 to 360 over a whole day, so 15 is an hour. Written by the game's kankyo bridge.\n"
+                    "Quantized to a quarter of a degree, one in-game minute, because it changes every frame. This is the readout; "
+                    "rtx.dusklight.game.timeOfDay is the control.");
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, bloomEnable, true, RtxOptionFlags::NoSave,
                     "Whether the game's current environment palette wants bloom at all. Written by the game's kankyo bridge.");
     RTX_OPTION_FLAG("rtx.dusklight.env", float, bloomThreshold, 0.5f, RtxOptionFlags::NoSave,
