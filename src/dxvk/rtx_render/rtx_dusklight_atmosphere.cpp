@@ -422,15 +422,20 @@ namespace dxvk {
 
     constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
 
+    // Kept as a Vector3 as well as being written into the args: the shader side vec3 converts from
+    // Vector3 but not back to it, and the lookup table staleness check needs the engine type.
+    const Vector3 skyColorLinear = sRGBGammaToLinear(sanitizeColor(DusklightEnv::skyColor()));
+    const float clampedPaletteInfluence = std::clamp(paletteInfluence(), 0.0f, 1.0f);
+
     DusklightAtmosphereArgs pushArgs = {};
     pushArgs.sunAzimuthRadians = DusklightEnv::sunAzimuth() * kDegreesToRadians;
     pushArgs.sunElevationRadians = DusklightEnv::sunElevation() * kDegreesToRadians;
-    pushArgs.skyColor = sRGBGammaToLinear(sanitizeColor(DusklightEnv::skyColor()));
+    pushArgs.skyColor = skyColorLinear;
     pushArgs.intensity = std::max(skyIntensity(), 0.0f);
     pushArgs.kasumiInner = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiInner()));
     pushArgs.physicalWeight = std::clamp(d.physicalWeight, 0.0f, 1.0f);
     pushArgs.kasumiOuter = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiOuter()));
-    pushArgs.paletteInfluence = std::clamp(paletteInfluence(), 0.0f, 1.0f);
+    pushArgs.paletteInfluence = clampedPaletteInfluence;
     pushArgs.horizonSharpness = std::max(skyHorizonSharpness(), 1e-3f);
     pushArgs.groundFraction = std::clamp(skyGroundFraction(), 0.0f, 1.0f);
     pushArgs.mieAnisotropy = std::clamp(mieAnisotropy(), 0.0f, 0.95f);
@@ -446,7 +451,7 @@ namespace dxvk {
     // rebuilt only when the medium moves, which in this game means when the palette does. Rebuilding
     // them per frame would be most of the cost of the whole feature for no change in the result.
     const bool needsLutRebuild =
-      pushArgs.physicalWeight > 0.0f && mediumChangedSince(pushArgs.skyColor, pushArgs.paletteInfluence);
+      pushArgs.physicalWeight > 0.0f && mediumChangedSince(skyColorLinear, clampedPaletteInfluence);
 
     if (needsLutRebuild) {
       {
@@ -481,8 +486,8 @@ namespace dxvk {
         ctx->dispatch(groups.width, groups.height, groups.depth);
       }
 
-      m_lutSkyColor = pushArgs.skyColor;
-      m_lutPaletteInfluence = pushArgs.paletteInfluence;
+      m_lutSkyColor = skyColorLinear;
+      m_lutPaletteInfluence = clampedPaletteInfluence;
     }
 
     {
