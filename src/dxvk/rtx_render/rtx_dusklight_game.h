@@ -22,6 +22,7 @@
 #pragma once
 
 #include "rtx_option.h"
+#include "../../util/util_keybind.h"
 
 namespace dxvk {
 
@@ -36,6 +37,15 @@ namespace dxvk {
   //
   // These are ordinary saved options, so rtx.conf is the place to keep tuned values.
   struct DusklightGame {
+    // The game's own overlay opens on F1 and is never drawn in this rendering mode, so the same key
+    // opening ours keeps the muscle memory intact. Deliberately not Remix's own bind: these are two
+    // separate overlays and either can be up without the other.
+    inline static const VirtualKeys kDefaultDusklightMenuKeyBinds{ VirtualKey{VK_F1} };
+    RTX_OPTION("rtx.dusklight", VirtualKeys, menuKeyBinds, kDefaultDusklightMenuKeyBinds,
+               "Hotkey that opens the Dusklight overlay.\n"
+               "example override: 'rtx.dusklight.menuKeyBinds = CTRL, D'.\n"
+               "Full list of key names available in `src/util/util_keybind.h`.");
+
     RTX_OPTION("rtx.dusklight.game", bool, bridgeEnable, true,
                "Whether the game feeds its environment state to Remix at all.\n"
                "Turning this off stops every push and takes the game's sun, moon and local lights with it, which makes it the "

@@ -867,6 +867,13 @@ namespace dxvk {
     }
 
 
+    // The Dusklight overlay's own bind. Independent of Remix's on purpose: they are two overlays,
+    // either can be up without the other, and the game these settings belong to opened its own
+    // overlay on the same key before this rendering mode stopped drawing it.
+    if (checkHotkeyState(DusklightGame::menuKeyBinds())) {
+      m_dusklightWindowOpen = !m_dusklightWindowOpen;
+    }
+
     // Toggle ImGUI mouse cursor. Alt-Del
     if (io.KeyAlt && ImGui::IsKeyPressed(ImGui::GetKeyIndex(ImGuiKey_Delete))) {
       RtxOptions::showUICursor.setDeferred(!RtxOptions::showUICursor());
@@ -909,7 +916,17 @@ namespace dxvk {
       showReflexLatencyStats();
     }
 
-    if (showUI == UIType::None) {
+    // Deliberately outside the branch above: this window is not one of Remix's menus and does not
+    // hide with them.
+    if (m_dusklightWindowOpen) {
+      showDusklightOverlay(ctx);
+    }
+
+    // Either overlay being up has to keep the cursor, or opening this one alone would leave it
+    // unusable.
+    const bool anyOverlayOpen = showUI != UIType::None || m_dusklightWindowOpen;
+
+    if (!anyOverlayOpen) {
       ImGui::CloseCurrentPopup();
       ImGui::GetIO().MouseDrawCursor = false;
     } else {
@@ -1039,9 +1056,6 @@ namespace dxvk {
               break;
             case kTab_Enhancements:
               showEnhancementsWindow(ctx);
-              break;
-            case kTab_Dusklight:
-              showDusklightWindow(ctx);
               break;
             case kTab_About:
               m_about->show(ctx);
@@ -2524,6 +2538,19 @@ namespace dxvk {
 
     ImGui::NewLine();
     ImGui::PopID();
+  }
+
+  // A standalone window rather than a tab in Remix's menu. These settings belong to the game, not
+  // to this renderer, and keeping them in their own overlay means tuning the game does not require
+  // Remix's menu over the top of the thing being tuned - both can be up at once, or either alone.
+  void ImGUI::showDusklightOverlay(const Rc<DxvkContext>& ctx) {
+    ImGui::SetNextWindowSize(ImVec2(500, 640), ImGuiCond_FirstUseEver);
+
+    if (ImGui::Begin("Dusklight", &m_dusklightWindowOpen)) {
+      showDusklightWindow(ctx);
+    }
+
+    ImGui::End();
   }
 
   void ImGUI::showDusklightWindow(const Rc<DxvkContext>& ctx) {
