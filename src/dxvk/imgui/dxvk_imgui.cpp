@@ -2612,6 +2612,11 @@ namespace dxvk {
   }
 
   namespace {
+    // Matches the game's own warp menu. -1 is "you pick", and the game maps anything at or above
+    // 15 to the same thing, so 14 is the last layer that means itself.
+    constexpr int kMinWarpLayer = -1;
+    constexpr int kMaxWarpLayer = 14;
+
     // The game pushes its lists pipe delimited: one option carrying a list beats one option per
     // entry, and the destination table stays in the one place that owns it.
     std::vector<std::string> splitPipes(const std::string& packed) {
@@ -2682,12 +2687,14 @@ namespace dxvk {
       DusklightGame::mapIndex.setDeferred(0);
       DusklightGame::roomIndex.setDeferred(0);
       DusklightGame::pointIndex.setDeferred(0);
+      DusklightGame::layer.setDeferred(kMinWarpLayer);
     }
 
     if (comboFromList("Level", maps, mapIndex)) {
       DusklightGame::mapIndex.setDeferred(mapIndex);
       DusklightGame::roomIndex.setDeferred(0);
       DusklightGame::pointIndex.setDeferred(0);
+      DusklightGame::layer.setDeferred(kMinWarpLayer);
     }
 
     const bool canWarp = !maps.empty() && !rooms.empty() && !points.empty();
@@ -2723,11 +2730,13 @@ namespace dxvk {
 
       int layer = DusklightGame::layer();
       if (ImGui::InputInt("Layer", &layer)) {
-        DusklightGame::layer.setDeferred(std::clamp(layer, -1, 15));
+        DusklightGame::layer.setDeferred(std::clamp(layer, kMinWarpLayer, kMaxWarpLayer));
       }
       ImGui::TextWrapped(
         "Layer is how the game keeps several versions of one place - before and after a story "
-        "event, say. -1 asks it to pick.");
+        "event, say. -1, the default, asks the game to pick, which is nearly always what you want: "
+        "0 is a real layer rather than a no-preference, so pinning it lands in the wrong version of "
+        "anywhere whose default is not 0.");
       ImGui::Unindent();
     }
   }

@@ -62,7 +62,10 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.warp", int, mapIndex, 0, RtxOptionFlags::NoSave, "Selected warp level within the region. Set by the overlay.");
     RTX_OPTION_FLAG("rtx.dusklight.warp", int, roomIndex, 0, RtxOptionFlags::NoSave, "Selected room within the level. Set by the overlay.");
     RTX_OPTION_FLAG("rtx.dusklight.warp", int, pointIndex, 0, RtxOptionFlags::NoSave, "Selected spawn point within the room. Set by the overlay.");
-    RTX_OPTION_FLAG("rtx.dusklight.warp", int, layer, 0, RtxOptionFlags::NoSave, "Selected stage layer, which is how the game holds several versions of one place. Set by the overlay.");
+    RTX_OPTION_FLAG("rtx.dusklight.warp", int, layer, -1, RtxOptionFlags::NoSave,
+                    "Selected stage layer, which is how the game holds several versions of one place. Set by the overlay.\n"
+                    "-1, the default, lets the game choose, which is what its own warp menu does. Naming a layer instead pins that version, and 0 is a "
+                    "real layer rather than a 'no preference' - so leaving this at 0 would land in the wrong version of anywhere whose default is not 0.");
     RTX_OPTION_FLAG("rtx.dusklight.warp", int, commit, 0, RtxOptionFlags::NoSave,
                     "Incremented by the overlay to request a warp. The game acts on the change rather than the value, and latches the first one it sees "
                     "without acting, so connecting to a session that already has a non-zero count does not teleport anyone.");
