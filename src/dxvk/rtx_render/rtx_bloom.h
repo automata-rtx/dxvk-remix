@@ -58,6 +58,9 @@ namespace dxvk {
     Stage activeStage() const;
 
     void showImguiSettings();
+    // The Dusklight half, shown from the Dusklight tab instead. Same pass, same options; the two
+    // are split because one configures this renderer and the other reproduces a specific game.
+    void showDusklightImguiSettings();
 
   private:
     // Values the bloom actually runs with this dispatch: the manual options, or the game's

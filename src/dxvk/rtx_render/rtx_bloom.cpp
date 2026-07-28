@@ -120,37 +120,58 @@ namespace dxvk {
     ImGui::Indent();
     RemixGui::DragFloat("Intensity##bloom", &burnIntensityObject(), 0.05f, 0.f, 5.f, "%.2f");
 
-    RemixGui::Checkbox("Dusklight Bloom##bloom", &dusklightObject());
-
     if (dusklight()) {
-      ImGui::Indent();
-      RemixGui::Checkbox("Follow Game##bloomDusklight", &dusklightFollowGameObject());
-
-      const bool feedActive = dusklightFollowGame() && DusklightEnv::enable();
-      if (feedActive) {
-        ImGui::TextWrapped("Driven by the game's environment feed (rtx.dusklight.env.*).");
-        RemixGui::DragFloat("Threshold Scale##bloomDusklight", &dusklightThresholdScaleObject(), 0.01f, 0.f, 10.f, "%.2f");
-      } else {
-        RemixGui::DragFloat("Threshold##bloomDusklight", &dusklightThresholdObject(), 0.01f, 0.f, 100.f, "%.2f");
-        RemixGui::DragFloat("Blur Size##bloomDusklight", &dusklightBlurSizeObject(), 1.f, 0.f, 255.f, "%.0f");
-        RemixGui::DragFloat("Blur Ratio##bloomDusklight", &dusklightBlurRatioObject(), 1.f, 0.f, 255.f, "%.0f");
-        RemixGui::ColorEdit3("Tint##bloomDusklight", &dusklightTintObject());
-        RemixGui::Checkbox("Screen Blend##bloomDusklight", &dusklightScreenBlendObject());
-        RemixGui::DragFloat("Base Weight##bloomDusklight", &dusklightBaseWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
-        RemixGui::ColorEdit3("Mono Color##bloomDusklight", &dusklightMonoColorObject());
-        RemixGui::DragFloat("Mono Amount##bloomDusklight", &dusklightMonoAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
-      }
-
-      RemixGui::Checkbox("Display Referred##bloomDusklight", &dusklightDisplaySpaceObject());
-      RemixGui::Checkbox("Mono Uses Luminance##bloomDusklight", &dusklightMonoUseLuminanceObject());
-      RemixGui::DragFloat("Level Falloff##bloomDusklight", &dusklightFalloffObject(), 0.01f, 0.01f, 1.f, "%.2f");
-      RemixGui::DragFloat("Saturation Point##bloomDusklight", &dusklightSaturationPointObject(), 0.05f, 0.f, 100.f, "%.2f");
-      ImGui::Unindent();
+      ImGui::TextWrapped(
+        "Running the game's own bloom. Its controls live in the Dusklight tab, with the rest of the "
+        "settings that reproduce that game rather than configure this renderer.");
     } else {
       RemixGui::DragFloat("Threshold##bloom", &luminanceThresholdObject(), 0.05f, 0.f, 100.f, "%.2f");
     }
 
     RemixGui::SliderInt("Radius##bloom", &stepsObject(), 4, MaxBloomSteps);
+    ImGui::Unindent();
+    ImGui::Unindent();
+  }
+
+  // Shown from the Dusklight tab rather than next to the bloom settings above. The two are one
+  // pass and one option block, but they answer different questions - the settings above configure
+  // this renderer, and these reproduce a specific game - and mixing them made both harder to find.
+  void DxvkBloom::showDusklightImguiSettings() {
+    ImGui::Indent();
+    RemixGui::Checkbox("Dusklight Bloom##bloom", &dusklightObject());
+
+    if (!dusklight()) {
+      ImGui::TextWrapped(
+        "Off: Remix's own bloom is running instead. Its intensity and radius are under "
+        "Rendering > Post-Processing > Bloom.");
+      ImGui::Unindent();
+      return;
+    }
+
+    ImGui::Indent();
+    RemixGui::Checkbox("Follow Game##bloomDusklight", &dusklightFollowGameObject());
+
+    const bool feedActive = dusklightFollowGame() && DusklightEnv::enable();
+    if (feedActive) {
+      ImGui::TextWrapped("Driven by the game's environment feed (rtx.dusklight.env.*).");
+      RemixGui::DragFloat("Threshold Scale##bloomDusklight", &dusklightThresholdScaleObject(), 0.01f, 0.f, 10.f, "%.2f");
+    } else {
+      RemixGui::DragFloat("Threshold##bloomDusklight", &dusklightThresholdObject(), 0.01f, 0.f, 100.f, "%.2f");
+      RemixGui::DragFloat("Blur Size##bloomDusklight", &dusklightBlurSizeObject(), 1.f, 0.f, 255.f, "%.0f");
+      RemixGui::DragFloat("Blur Ratio##bloomDusklight", &dusklightBlurRatioObject(), 1.f, 0.f, 255.f, "%.0f");
+      RemixGui::ColorEdit3("Tint##bloomDusklight", &dusklightTintObject());
+      RemixGui::Checkbox("Screen Blend##bloomDusklight", &dusklightScreenBlendObject());
+      RemixGui::DragFloat("Base Weight##bloomDusklight", &dusklightBaseWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
+      RemixGui::ColorEdit3("Mono Color##bloomDusklight", &dusklightMonoColorObject());
+      RemixGui::DragFloat("Mono Amount##bloomDusklight", &dusklightMonoAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
+    }
+
+    RemixGui::Checkbox("Display Referred##bloomDusklight", &dusklightDisplaySpaceObject());
+    RemixGui::Checkbox("Mono Uses Luminance##bloomDusklight", &dusklightMonoUseLuminanceObject());
+    RemixGui::DragFloat("Level Falloff##bloomDusklight", &dusklightFalloffObject(), 0.01f, 0.01f, 1.f, "%.2f");
+    RemixGui::DragFloat("Saturation Point##bloomDusklight", &dusklightSaturationPointObject(), 0.05f, 0.f, 100.f, "%.2f");
+    RemixGui::DragFloat("Intensity##bloomDusklightShared", &burnIntensityObject(), 0.05f, 0.f, 5.f, "%.2f");
+    RemixGui::SliderInt("Radius##bloomDusklightShared", &stepsObject(), 4, MaxBloomSteps);
     ImGui::Unindent();
     ImGui::Unindent();
   }

@@ -2529,6 +2529,8 @@ namespace dxvk {
   void ImGUI::showDusklightWindow(const Rc<DxvkContext>& ctx) {
     ImGui::PushItemWidth(largeUiMode() ? m_largeWindowWidgetWidth : m_regularWindowWidgetWidth);
 
+    auto common = ctx->getCommonObjects();
+
     // These settings belong to the game, not to Remix. They live here because the game's own
     // debug UI is not drawn at all in the fixed function D3D9 mode this feature exists for, so
     // this tab is the only place they can be reached while the game runs. The game polls them
@@ -2620,10 +2622,11 @@ namespace dxvk {
         // Zero drawn has three quite different causes and they are indistinguishable from the
         // count alone, so the two states that separate them are spelled out rather than left to
         // be inferred.
-        if (!DusklightEnv::deviceRegistered()) {
+        if (!DusklightEnv::localLightsRunning()) {
           ImGui::TextWrapped(
-            "The game has not registered its D3D9 device with the Remix API, so no light of any "
-            "kind can be submitted - this one and the sun both. That is the thing to fix first.");
+            "The game is not running its light submission at all, so nothing here can reach Remix. "
+            "Either this switch is not reaching the game, or its D3D9 device never registered - the "
+            "Bridge section above says which.");
         } else if (DusklightEnv::localLightsFound() == 0) {
           ImGui::TextWrapped(
             "The game has no lights registered here at all, so there is nothing to submit. "
@@ -2640,7 +2643,7 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
-    if (RemixGui::CollapsingHeader("Geometry", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (RemixGui::CollapsingHeader("Geometry", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
       RemixGui::Checkbox("Disable Frustum Culling", &DusklightGame::disableFrustumCullingObject());
       RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
@@ -2655,11 +2658,23 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
+    if (RemixGui::CollapsingHeader("Bloom", collapsingHeaderClosedFlags)) {
+      common->metaBloom().showDusklightImguiSettings();
+    }
+
+    if (RemixGui::CollapsingHeader("Ambient Grade", collapsingHeaderClosedFlags)) {
+      common->metaDusklightGrade().showImguiSettings();
+    }
+
+    if (RemixGui::CollapsingHeader("Atmosphere - Fog and Sky", collapsingHeaderClosedFlags)) {
+      common->metaDusklightAtmosphere().showImguiSettings();
+    }
+
     if (RemixGui::CollapsingHeader("Environment Response", collapsingHeaderFlags)) {
       ImGui::Indent();
       ImGui::TextWrapped(
-        "How strongly Remix responds to the game's environment. The bloom lives under "
-        "Rendering > Post-Processing > Bloom; the ambient grade under Dusklight Ambient Grade.");
+        "What the game is reporting right now. Every control that responds to it is in the sections "
+        "above.");
       RemixGui::Separator();
 
       if (feedLive) {
@@ -4115,11 +4130,6 @@ namespace dxvk {
       if (RemixGui::CollapsingHeader("Bloom", collapsingHeaderClosedFlags))
         common->metaBloom().showImguiSettings();
 
-      if (RemixGui::CollapsingHeader("Dusklight Ambient Grade", collapsingHeaderClosedFlags))
-        common->metaDusklightGrade().showImguiSettings();
-
-      if (RemixGui::CollapsingHeader("Dusklight Atmosphere", collapsingHeaderClosedFlags))
-        common->metaDusklightAtmosphere().showImguiSettings();
 
       if (RemixGui::CollapsingHeader("Auto Exposure", collapsingHeaderClosedFlags))
         common->metaAutoExposure().showImguiSettings();
