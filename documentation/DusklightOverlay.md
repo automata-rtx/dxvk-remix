@@ -46,7 +46,7 @@ readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
 compares it against a `kRequiredProtocol` constant and says so in the tab when
-the game is older. **Currently 3.**
+the game is older. **Currently 4.**
 
 > **Standing rule, already paid for twice:** the game and the Remix DLL are one
 > protocol. Build both from the same point. Both directions of skew have cost
@@ -211,6 +211,51 @@ and **all four places it touches the layer agree on -1**:
 with `kMinLayer = -1`, `kMaxLayer = 14` (`warp.cpp:12-13`). Our bounds match on
 both sides of the wire; 15 would be a silent alias for -1, which is why the max
 is 14 rather than 15.
+
+#### 3.2.1 Time of day
+
+Shares the Warp tab because both answer "put me somewhere specific". A slider,
+four presets on the quarter points, and **Freeze Time**.
+
+```
+overlay → rtx.dusklight.game.{timeOfDay,timeCommit,freezeTime}
+game    → rtx.dusklight.env.daytime          (quantized to 0.25 deg = 1 minute)
+```
+
+The day is **360 degrees**, so 15 is an hour and a degree is four minutes.
+0 midnight, 90 sunrise, 180 noon, 270 sunset. The moon/sun handover sits around
+67–75 (`dKyr_moon_arrival_check` draws the moon when `daytime > 285 ||
+daytime < 67.5`).
+
+**Freeze is the point of the feature.** An A/B pair shot minutes apart has the
+sun in two places, so part of every difference measured before this landed was
+the clock rather than the setting under test.
+
+Three things here were each the second attempt, and the first would have been
+subtly wrong in a way that is hard to see:
+
+1. **Freeze sets the game's own `using_time_control_tag`** — what
+   `d_a_kytag11` sets for a stage whose sky must not move, and what
+   `setDaytime` already tests. Reusing it means the freeze rides a branch the
+   game exercises every frame. *Consequence:* it also holds the Twilight Realm
+   clock and skips the reset to midnight that entering twilight normally does.
+2. **A value plus a counter, not a bare value.** Acting on the value alone pins
+   the clock; acting on the value *changing* makes pressing the same preset
+   twice do nothing the second time. Same shape as the warp commit, including
+   latching the first count seen.
+3. **The counter lives in the UI, not read-modify-write off the option.** The
+   warp button can get away with `commit() + 1` because it fires at most once a
+   frame. A slider fires on consecutive frames, where that pattern only stays
+   monotonic if every deferred set lands before the next read.
+
+**The slider only syncs from the game while it is not held**
+(`ImGui::IsItemActive()`). Feed a slider the value returning over the bridge a
+frame or two late and it fights the hand holding it — the same class of bug as
+any round-trip-latency control.
+
+Clock arithmetic is in **integer minutes** deliberately: `dxvk_imgui.cpp` does
+not include `<cmath>`, and relying on a transitive one across three compilers
+is not worth a CI round.
 
 ### 3.3 Controls
 
