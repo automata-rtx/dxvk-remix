@@ -136,7 +136,8 @@ namespace dxvk {
                "Those are placed at a fixed offset from the camera, so they travel with the player. Any of them that Remix captures as ordinary world geometry "
                "becomes an occluder that follows you around - a candidate for shadowed areas appearing to wander as the camera moves, and one that would only "
                "show at night, since stars and the moon are the only sky billboards drawn then.\n"
-               "Tagging those textures as Sky is the real fix; this is here to test the theory in one click. It does remove the visible stars and moon.");
+               "This is the fix as well as the test, and it removes the visible stars and moon along with the occluder. These do carry textures, unlike the "
+               "sky dome, so tagging them as Sky rather than hiding them is possible and would keep them visible - worth doing only if you want them back.");
     RTX_OPTION("rtx.dusklight.game", bool, hideVrbox, false,
                "Stops the game drawing its own sky dome.\n"
                "The dome is painted by handing the hardware a handful of colours rather than by drawing a texture, so Remix has nothing "
