@@ -110,6 +110,11 @@ namespace dxvk {
                "sky from those same colours instead. Turn this on together with that, or the generated sky and the game's own dome will "
                "both be visible; leave it off and the atmosphere still lights the scene but you will be looking at the game's dome.\n"
                "Also set rtx.skyAutoDetect to None, otherwise the auto detected dome keeps feeding a second, dimmer sky into the same pixels.");
+    RTX_OPTION("rtx.dusklight.game", bool, recordingMode, false,
+               "The game's own recording mode: hides its HUD and silences its music.\n"
+               "It is a game setting rather than a Remix one, and the game's settings screen is not drawn in the fixed function D3D9 mode, so without this it "
+               "can only be changed by editing config.json and restarting - and only in one direction, since a value set there could not be turned back off "
+               "while running.");
     RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightRadius, 4.0f,
                     "Emitter radius of the game's local lights in world units, matching Remix's own default for converted point lights.\n"
                     "This changes brightness as well as softness: the radiance is solved so the light still reaches the same distance, so a larger "

@@ -2658,6 +2658,15 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
+    if (RemixGui::CollapsingHeader("Game", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Recording Mode", &DusklightGame::recordingModeObject());
+      ImGui::TextWrapped(
+        "Hides the game's HUD and silences its music. A game setting, not a Remix one - it is here "
+        "because the game's own settings screen is never drawn in this rendering mode.");
+      ImGui::Unindent();
+    }
+
     if (RemixGui::CollapsingHeader("Bloom", collapsingHeaderClosedFlags)) {
       common->metaBloom().showDusklightImguiSettings();
     }
