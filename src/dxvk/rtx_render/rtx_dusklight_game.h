@@ -46,6 +46,14 @@ namespace dxvk {
                "example override: 'rtx.dusklight.menuKeyBinds = CTRL, D'.\n"
                "Full list of key names available in `src/util/util_keybind.h`.");
 
+    RTX_OPTION("rtx.dusklight", bool, blockGameInput, true,
+               "Stops keyboard and controller input reaching the game while either overlay is open.\n"
+               "Remix's own rtx.blockInputToGameInUI cannot do this here: it works by sending a message across the 32 bit bridge, and a 64 bit game that "
+               "loads this d3d9.dll directly never receives it, so input has always fallen straight through to the game. This routes the same intent through "
+               "the Dusklight bridge instead, which the game is already listening to.");
+    RTX_OPTION_FLAG("rtx.dusklight", bool, uiActive, false, RtxOptionFlags::NoSave,
+                    "True while an overlay is up and wants the input to itself. Written by Remix, read by the game; do not set by hand.");
+
     RTX_OPTION("rtx.dusklight.game", bool, bridgeEnable, true,
                "Whether the game feeds its environment state to Remix at all.\n"
                "Turning this off stops every push and takes the game's sun, moon and local lights with it, which makes it the "

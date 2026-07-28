@@ -48,6 +48,9 @@
 #include "rtx_render/rtx_options.h"
 #include "rtx_render/rtx_dusklight_env.h"
 #include "rtx_render/rtx_dusklight_game.h"
+#include "rtx_render/rtx_global_volumetrics.h"
+#include "rtx_render/rtx_bloom.h"
+#include <functional>
 #include "rtx_render/rtx_terrain_baker.h"
 #include "rtx_render/rtx_neural_radiance_cache.h"
 #include "rtx_render/rtx_ray_reconstruction.h"
@@ -925,6 +928,15 @@ namespace dxvk {
     // Either overlay being up has to keep the cursor, or opening this one alone would leave it
     // unusable.
     const bool anyOverlayOpen = showUI != UIType::None || m_dusklightWindowOpen;
+
+    // Published for the game to read. Remix's own input blocking sends a message across the 32 bit
+    // bridge, which a 64 bit game loading this DLL directly never receives - so on this setup input
+    // has always reached the game straight through an open menu. The game is already listening to
+    // the Dusklight bridge, so the intent travels that way instead.
+    const bool wantsInput = anyOverlayOpen && DusklightGame::blockGameInput();
+    if (DusklightGame::uiActive() != wantsInput) {
+      DusklightGame::uiActive.setDeferred(wantsInput);
+    }
 
     if (!anyOverlayOpen) {
       ImGui::CloseCurrentPopup();
@@ -2553,10 +2565,113 @@ namespace dxvk {
     ImGui::End();
   }
 
+  namespace {
+    // One row of the requirements list: what is needed, whether it holds, and a button that sets
+    // it. Every one of these is a Remix rendering option that the Dusklight features depend on but
+    // do not own, so they are named here rather than left to be discovered.
+    void requirementRow(const char* label, bool met, const char* howToFix, const std::function<void()>& fix) {
+      ImGui::Text("%s %s", met ? "[ok]" : "[--]", label);
+      if (!met) {
+        ImGui::SameLine();
+        ImGui::PushID(label);
+        if (ImGui::SmallButton("Fix")) {
+          fix();
+        }
+        ImGui::PopID();
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("%s", howToFix);
+        }
+      }
+    }
+  }
+
   void ImGUI::showDusklightWindow(const Rc<DxvkContext>& ctx) {
     ImGui::PushItemWidth(largeUiMode() ? m_largeWindowWidgetWidth : m_regularWindowWidgetWidth);
 
     auto common = ctx->getCommonObjects();
+
+    if (ImGui::BeginTabBar("DusklightTabs", ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) {
+      if (ImGui::BeginTabItem("Dusklight Remix")) {
+        showDusklightRemixTab(ctx);
+        ImGui::EndTabItem();
+      }
+      if (ImGui::BeginTabItem("Warp")) {
+        showDusklightWarpTab(ctx);
+        ImGui::EndTabItem();
+      }
+      if (ImGui::BeginTabItem("Controls")) {
+        showDusklightControlsTab(ctx);
+        ImGui::EndTabItem();
+      }
+      ImGui::EndTabBar();
+    }
+
+    ImGui::PopItemWidth();
+  }
+
+  void ImGUI::showDusklightWarpTab(const Rc<DxvkContext>& ctx) {
+    ImGui::TextWrapped(
+      "Not built yet. The game's warp is a single call and its destination table already carries "
+      "plain English region and level names, so this will list them by name rather than by file "
+      "code. What it needs is a way for a selection made here to reach the game, which the bridge "
+      "can carry as indices with the names pushed back.");
+  }
+
+  void ImGUI::showDusklightControlsTab(const Rc<DxvkContext>& ctx) {
+    ImGui::TextWrapped(
+      "Not built yet, and the largest of the three. Remapping needs live key capture inside this "
+      "overlay, the game's binding table crossing the bridge in both directions, and a decision "
+      "about which side resolves conflicts. Being able to see the current bindings read-only is a "
+      "sensible first step.");
+  }
+
+  void ImGUI::showDusklightRemixTab(const Rc<DxvkContext>& ctx) {
+    auto common = ctx->getCommonObjects();
+
+    // Every Remix rendering option these features depend on but do not own. Named here, with their
+    // live state and a button, rather than left to be discovered by wondering why a switch did
+    // nothing - which is the failure this project has already paid for more than once.
+    if (RemixGui::CollapsingHeader("Requirements", collapsingHeaderFlags)) {
+      ImGui::Indent();
+
+      const bool volumetricsOn = RtxGlobalVolumetrics::enable();
+      const bool bloomOn = DxvkBloom::enable();
+      const bool skyDetectOff = RtxOptions::skyAutoDetect() == SkyAutoDetectMode::None;
+
+      requirementRow("Volumetrics enabled - the atmosphere's fog rides on it", volumetricsOn,
+                     "Sets rtx.volumetrics.enable. Without it the fog falls back to Remix's legacy depth ramp.",
+                     []() { RtxGlobalVolumetrics::enableObject().setDeferred(true); });
+      requirementRow("Bloom enabled - the Dusklight bloom is a mode of it", bloomOn,
+                     "Sets rtx.bloom.enable. The Dusklight bloom is that same pass, so it cannot run with the pass off.",
+                     []() { DxvkBloom::enableObject().setDeferred(true); });
+      requirementRow("Sky auto-detect off - or you get two skies", skyDetectOff,
+                     "Sets rtx.skyAutoDetect to None. The auto detected sky keeps rasterizing behind the generated one.",
+                     []() { RtxOptions::skyAutoDetect.setDeferred(SkyAutoDetectMode::None); });
+
+      ImGui::TextWrapped(
+        "These stay Remix's own settings on purpose - they are the renderer's, not the game's - so "
+        "they are reported and offered here rather than silently forced.");
+      ImGui::Unindent();
+    }
+
+    if (RemixGui::CollapsingHeader("What this overrides in Remix", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "While the atmosphere is enabled it takes these over. Changing them in Remix's own panels "
+        "will appear to do nothing, which is worth knowing before spending an evening on it:");
+      ImGui::BulletText("rtx.volumetrics.froxelMaxDistanceMeters - sized from the game's fog range instead");
+      ImGui::BulletText("rtx.volumetrics.transmittanceColor / transmittanceMeasurementDistanceMeters");
+      ImGui::BulletText("rtx.volumetrics.singleScatteringAlbedo - use the atmosphere's own instead");
+      ImGui::BulletText("rtx.volumetrics.enableFogRemap / enableFogColorRemap - bypassed entirely");
+      ImGui::BulletText("rtx.volumetrics.enableAtmosphere - forced on outdoors, since infinite lights need it");
+      ImGui::TextWrapped(
+        "And while the generated sky is on, rtx.skyBrightness stops mattering: it scales the probe "
+        "the dome light replaces. rtx.fogColorScale and rtx.maxFogDistance belong to the legacy "
+        "depth fog, which is skipped whenever volumetrics are running.");
+      ImGui::Unindent();
+    }
+
+    RemixGui::Separator();
 
     // These settings belong to the game, not to Remix. They live here because the game's own
     // debug UI is not drawn at all in the fixed function D3D9 mode this feature exists for, so
@@ -2694,16 +2809,38 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
-    if (RemixGui::CollapsingHeader("Bloom", collapsingHeaderClosedFlags)) {
-      common->metaBloom().showDusklightImguiSettings();
+    {
+      const bool bloomPassOn = DxvkBloom::enable();
+      if (RemixGui::CollapsingHeader("Bloom", collapsingHeaderClosedFlags)) {
+        if (!bloomPassOn) {
+          ImGui::TextWrapped(
+            "Greyed out: Remix's bloom pass is off, and the Dusklight bloom is a mode of that same "
+            "pass. Turn on rtx.bloom.enable - the Requirements section above has a button for it, "
+            "or it is under Rendering > Post-Processing > Bloom.");
+        }
+        ImGui::BeginDisabled(!bloomPassOn);
+        common->metaBloom().showDusklightImguiSettings();
+        ImGui::EndDisabled();
+      }
     }
 
     if (RemixGui::CollapsingHeader("Ambient Grade", collapsingHeaderClosedFlags)) {
       common->metaDusklightGrade().showImguiSettings();
     }
 
-    if (RemixGui::CollapsingHeader("Atmosphere - Fog and Sky", collapsingHeaderClosedFlags)) {
-      common->metaDusklightAtmosphere().showImguiSettings();
+    {
+      const bool volumetricsOnForFog = RtxGlobalVolumetrics::enable();
+      if (RemixGui::CollapsingHeader("Atmosphere - Fog and Sky", collapsingHeaderClosedFlags)) {
+        if (!volumetricsOnForFog) {
+          ImGui::TextWrapped(
+            "Greyed out: Remix's volumetrics are off, and the fog half of this rides on them. Turn "
+            "on rtx.volumetrics.enable - the Requirements section above has a button for it, or it "
+            "is under Rendering > Volumetrics.");
+        }
+        ImGui::BeginDisabled(!volumetricsOnForFog);
+        common->metaDusklightAtmosphere().showImguiSettings();
+        ImGui::EndDisabled();
+      }
     }
 
     if (RemixGui::CollapsingHeader("Environment Response", collapsingHeaderFlags)) {
@@ -2749,7 +2886,7 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
-    ImGui::PopItemWidth();
+
   }
 
   void ImGUI::showEnhancementsWindow(const Rc<DxvkContext>& ctx) {

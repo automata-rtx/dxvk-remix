@@ -251,6 +251,9 @@ namespace dxvk {
     void showDevelopmentSettings(const Rc<DxvkContext>& ctx);
 
     void showDusklightWindow(const Rc<DxvkContext>& ctx);
+    void showDusklightRemixTab(const Rc<DxvkContext>& ctx);
+    void showDusklightWarpTab(const Rc<DxvkContext>& ctx);
+    void showDusklightControlsTab(const Rc<DxvkContext>& ctx);
     void showDusklightOverlay(const Rc<DxvkContext>& ctx);
     bool m_dusklightWindowOpen = false;
 
