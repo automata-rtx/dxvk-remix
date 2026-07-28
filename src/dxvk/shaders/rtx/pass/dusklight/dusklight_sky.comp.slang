@@ -117,7 +117,7 @@ float3 evaluatePhysicalSky(float3 direction, float3 sunDirection)
     const float sunVisibility = dusklightRaySphere(position, sunDirection, kPlanetRadiusKm) > 0.0f ? 0.0f : 1.0f;
 
     const float3 phaseWeighted =
-      medium.rayleighScattering * rayleighPhase + medium.mieScattering.xxx * miePhase;
+      medium.rayleighScattering * rayleighPhase + float3(medium.mieScattering * miePhase);
 
     const float3 multiScatter =
       MultiScatterLut.SampleLevel(
