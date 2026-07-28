@@ -217,14 +217,16 @@ namespace dxvk {
                "rasterized into the game's own 8 bit target and so can never be brighter than 1, this is real high dynamic range: it can light the scene at the "
                "intensity an actual sky does.\n"
                "Turn on rtx.dusklight.game.hideVrbox with it, and set rtx.skyAutoDetect to None, or you will be looking at three skies at once.");
-    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyIntensity, 1.0f,
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyIntensity, 6.0f,
                     "Radiance of the generated sky, as a multiplier on the game's sky colours.\n"
-                    "This is the sky's brightness *and* how strongly it lights the world - one number, because they are the same thing. A useful anchor: a dome "
-                    "at radiance L and a distant light at radiance R deposit light in the same proportion as L to R, and a real midday sky is about a fifth of "
-                    "its sun. Against the default rtx.dusklight.game.sunIntensity of 5, that puts this near 1.\n"
-                    "UNVALIDATED: derived analytically, never measured against a running build.",
+                    "This is the sky's brightness *and* how strongly it lights the world - one number, because they are the same thing. A dome at radiance L and "
+                    "a distant light at radiance R deposit light in the same proportion as L to R, and a real midday sky is about a fifth of its sun.\n"
+                    "The multiplier is large because the palette colours it scales are small by the time they get here: they are authored as display colours, so "
+                    "they are decoded out of gamma first, which takes a mid blue of 0.5 down to about 0.2. Against the default sunIntensity of 5, landing the "
+                    "sky's share near a fifth therefore wants a multiplier around 6, not around 1. If you change sunIntensity, scale this with it to hold the "
+                    "ratio - the two are one relationship, not two settings.",
                     args.minValue = 0.0f,
-                    args.maxValue = 32.0f);
+                    args.maxValue = 64.0f);
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyHorizonSharpness, 2.5f,
                     "How tightly the horizon haze hugs the horizon.\n"
                     "The game's gradient is carried by the vertices of a dome model we do not have, so this stands in for its shape. Higher values keep the haze "

@@ -426,7 +426,7 @@ shows, and the first knob to reach for.
 
 | # | Compromise | How it will show | First knob |
 | :-- | :-- | :-- | :-- |
-| C0 | **The calibration pass was never run.** Phase 0 below was skipped, so `zHalfMin`, `froxelRangeScale` and `skyIntensity` are analytic first guesses that have never met a running build. | Fog uniformly too thick or too thin everywhere; sky too bright or too dim everywhere. A *uniform* error is this; a *per-area* error is not. | `rtx.dusklight.atmosphere.densityScale` first (one number, whole-scene), then the three above. Run Phase 0 properly before concluding anything else is wrong. |
+| C0 | ~~The calibration pass was never run.~~ **Run 2026-07-28. Phase A/B confirmed good in-game.** One constant was wrong: `skyIntensity` at 1.0 gave a visibly dim sky. The analytic anchor was right but the arithmetic behind it was not — it ignored that the palette colours are decoded out of gamma before they are scaled, which takes a mid blue from 0.5 to about 0.2, so the multiplier needed to be ~6× larger to land the same sky-to-sun ratio. Now 6.0. `zHalfMin` and `froxelRangeScale` were not reported as wrong. | — | — |
 | C11 | **A homogeneous medium cannot be clear near the camera.** The game's ramp is exactly zero before `fogStartZ`; an exponential medium starts extinguishing at the camera. With a large `fogStartZ` (say 50 m of clear air, then fog to 100 m) the derived medium is already ~35% opaque where the original is untouched. | Near-field haze in areas the original left crisp. Worst where `fogStartZ` is large relative to `fogEndZ`. | No single σ fixes it — it is the shape, not the level. `rtx.volumetrics.enableHeterogeneousFog` is the real answer: a density that ramps with distance rather than a constant one. Until then, `densityScale` trades near-field clarity against far-field weight. |
 | C10 | **Fog is composited in linear HDR, not the game's display space.** The original blended fog over a finished, display-referred image; here both halves of the range split happen pre-tonemap. | Fog reads with a different contrast curve than vanilla - typically holding its colour longer in the bright end. | `rtx.dusklight.atmosphere.fogRadianceScale`. The structural fix is moving the far ramp post-tonemap, the same correction the bloom needed. |
 | C1 | **Dusk saturation.** Physical twilight is more graduated and less saturated than TP's authored dusk. | Sunsets read calmer / less punchy than vanilla. | Lower `physicalWeight`'s `elevationTerm` at low sun; or add a saturation push applied to the *medium's* Rayleigh/Mie tint, not to output pixels. |
@@ -543,10 +543,14 @@ Churn in `d_kankyo.cpp` is limited to one capture call, matching the existing
 | Item | State |
 | :-- | :-- |
 | Design | this document, 2026-07-27 |
-| **Phase 0 calibration** | **NEVER RUN — see §13** |
-| Phase A (A1–A4) | implemented 2026-07-27, **untested** |
-| Phase B (B1–B2) | implemented 2026-07-27, **untested** |
-| Phase C | not started |
+| Phase 0 calibration | run 2026-07-28 — see §13 |
+| Phase A (A1–A4) | implemented 2026-07-27, **tested good 2026-07-28** |
+| Phase B (B1–B2) | implemented 2026-07-27, **tested good 2026-07-28**; `skyIntensity` raised 1.0 → 6.0 after it read dim |
+| Phase C | in progress |
+
+Still untested at the time of writing, all independent of the atmosphere:
+`rtx.dusklight.game.disableFrustumCulling`, `hideSkyBillboards`, and the local
+point lights.
 
 ### What landed
 
@@ -578,31 +582,86 @@ Everything defaults off, so a build with none of these set behaves as upstream.
 
 ---
 
-## 13. Phase 0 was skipped — read before tuning
+## 13. Phase 0 — the A/B calibration, and how to re-run it
 
-**The calibration pass in §10 was never run.** Phase A and B were implemented directly, so the following constants are
-analytic first guesses that have never been compared against a running build:
+Run 2026-07-28 and reported as clearly better than the pre-atmosphere build.
+Recorded here in unambiguous form, because the instructions given during
+development changed as the code landed and the older version is now wrong: the
+`rtx.volumetrics.enableFogRemap` family it used is **bypassed entirely** when
+the atmosphere is on, so setting those tests nothing.
 
-| Constant | Default | How it was chosen |
-| :-- | :-- | :-- |
-| `rtx.dusklight.atmosphere.zHalfMin` | 100 world units (1 m) | Reasoning about where a scripted whiteout's half-density point lands. Never measured. |
-| `rtx.dusklight.atmosphere.froxelRangeScale` | 1.0 | Assumes covering the whole fog range is right. The correct value depends on where the fog actually does its work, which is what Phase 0 would have shown. |
-| `rtx.dusklight.atmosphere.skyIntensity` | 1.0 | Derived from the sky:sun irradiance ratio against the default `sunIntensity` of 5. Sound reasoning, unverified number. |
+The comparison is one switch. Everything else stays put.
 
-We also do not know, empirically, **whether the original problem was range or curve shape.** That was the whole question
-Phase 0 existed to answer, and the answer changes what to tune first:
+### Set once, for both sides of the test
 
-- **If it was range** (the 20 m froxel grid), A4 alone fixes it and the range split in A3 is mostly insurance.
-- **If it was curve shape** (linear ramp versus exponential extinction), A3 is doing the real work and the handover
-  distance matters more than the density.
+```
+# The measurement itself
+rtx.volumetrics.enable            = True
+rtx.dusklight.game.bridgeEnable   = True
 
-**Doing Phase 0 now, on a build that has this change:** set `rtx.dusklight.atmosphere.enable = False` and
-`rtx.volumetrics.enable = True` to get the old behaviour with Remix's own remap, then flip the atmosphere on and compare.
-That is a better experiment than the original Phase 0 because both sides are now reachable from one build.
+# Sky (all three together, or you see more than one sky)
+rtx.dusklight.atmosphere.skyEnable = True
+rtx.dusklight.game.hideVrbox       = True
+rtx.skyAutoDetect                  = None
 
-Then run the measurement pass in `dusklight-ao/docs/kankyo-fog.md` §5 — the Dusklight tab now reports the game's live fog
-range and colour, which is the only way to learn what any given area actually asks for, since those numbers live in stage
-data rather than in code.
+# Hold exposure still, or every brightness difference is partly undone
+# before you can see it
+rtx.autoExposure.enabled = False
+```
 
-Judging results: a **uniform** error everywhere is one of the three constants above. A **per-area** error - right in the
-field, wrong in the mines - is the mapping, and that is a more interesting bug.
+### Must be OFF for a clean read
+
+```
+# Double-counts against real sky fill now that the dome lights the scene.
+# This is the one that will mislead you if left on.
+rtx.dusklight.grade.enable = False
+
+# Remix's own fog remap. Not merely redundant - it is dead code while the
+# atmosphere is on, so a value here is a false lead.
+rtx.volumetrics.enableFogRemap      = False
+rtx.volumetrics.enableFogColorRemap = False
+
+# The legacy depth-fog path. Superseded; it is skipped whenever volumetrics
+# are enabled, so these only matter if you turn volumetrics off.
+# rtx.maxFogDistance / rtx.fogColorScale - leave as they are.
+```
+
+### The A/B
+
+Flip **one** option and compare:
+
+```
+rtx.dusklight.atmosphere.enable = False   # A: Remix's own handling
+rtx.dusklight.atmosphere.enable = True    # B: the derived medium
+```
+
+Both are reachable without a rebuild, which is what makes this a better
+experiment than the original pre-implementation Phase 0.
+
+### Reading the result
+
+- A **uniform** error — thick or thin everywhere, bright or dim everywhere —
+  is a constant. Reach for `densityScale` first (one number, whole scene),
+  then `skyIntensity`, then `zHalfMin`.
+- A **per-area** error — right in the field, wrong in the mines — is the
+  mapping, and that is a real bug worth reporting rather than tuning around.
+
+### What the pass found
+
+`skyIntensity` at 1.0 read dim. The anchor was right — a real midday sky sits
+near a fifth of its sun — but the arithmetic behind it forgot that the palette
+colours are decoded out of gamma before being scaled, which takes a mid blue
+from 0.5 to about 0.2. The multiplier needed to be about six times larger to
+land the same ratio. Now 6.0.
+
+Nothing else was reported wrong, so `zHalfMin` (100) and `froxelRangeScale`
+(0.6) stand unchallenged rather than confirmed - they were simply not the
+thing that looked off.
+
+### The measurement pass is still worth doing
+
+The Dusklight tab reports the game's live `fogStartZ` / `fogEndZ` / `fogColor`
+and sky colours. Those values live in stage data rather than in source, so this
+readout is the only way to see what a given area actually asks for. Recording
+them at Hyrule Field, Faron, Lake Hylia, the Goron Mines and the Forest Temple
+turns any future tuning from guesswork into arithmetic.
