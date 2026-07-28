@@ -5,11 +5,16 @@ medium, derived once per frame from Twilight Princess's own environment state,
 driving **the visible sky, the sky's contribution to global illumination, and
 the fog** — so the three cannot disagree with each other.
 
-Companion doc on the game side: `dusklight-ao/docs/kankyo-fog.md` (what the
-game computes and what it pushes). The wider environment bridge is documented
-in `dusklight-ao/docs/kankyo-remix.md`.
+Companion docs:
 
-Everything below is grounded in code as of 2026-07-27. File references are
+- `DusklightOverlay.md` — the F1 overlay and the option wire that drives all of
+  this while the game runs. Read that one for anything about *controlling* the
+  system rather than what it computes.
+- `dusklight-ao/docs/kankyo-fog.md` — what the game computes and what it pushes.
+- `dusklight-ao/docs/kankyo-remix.md` — the wider environment bridge and its
+  verification log.
+
+Everything below is grounded in code as of 2026-07-28. File references are
 repo-relative; `dusklight-ao/` and `aurora-ao/` prefixes point at the other two
 repos.
 
@@ -575,11 +580,26 @@ Churn in `d_kankyo.cpp` is limited to one capture call, matching the existing
 | Phase 0 calibration | run 2026-07-28 — see §13 |
 | Phase A (A1–A4) | implemented 2026-07-27, **tested good 2026-07-28** |
 | Phase B (B1–B2) | implemented 2026-07-27, **tested good 2026-07-28**; `skyIntensity` raised 1.0 → 6.0 after it read dim |
-| Phase C (C1-C3) | implemented 2026-07-28, **untested** |
+| Phase C (C1-C3) | implemented 2026-07-28, CI green, **untested in game** |
+| Overlay, warp, input blocking | landed 2026-07-28, CI green — see `DusklightOverlay.md` |
 
-Still untested at the time of writing, all independent of the atmosphere:
-`rtx.dusklight.game.disableFrustumCulling`, `hideSkyBillboards`, and the local
-point lights.
+Owner's verdict on A + B after testing: *"a massive, frankly monumental
+success."* Range, shape and per-area fog scaling all validated; see §13's
+"What the pass found".
+
+**Still untested in game**, all independent of the atmosphere:
+
+- Phase C (the physical sky blend) — never seen running
+- `rtx.dusklight.game.hideSkyBillboards`
+- **local point lights — known broken**, see `DusklightOverlay.md` §6
+- warp
+
+`disableFrustumCulling` **is** now tested: it works and it visibly helps with
+light leakage.
+
+Settled by testing: `celestialNoonElevation` at **80** — the owner's choice,
+deliberately short of 90 because the azimuth flips instantaneously at exactly
+90.
 
 ### What landed
 
@@ -608,6 +628,117 @@ rtx.skyAutoDetect = None
 ```
 
 Everything defaults off, so a build with none of these set behaves as upstream.
+
+The full recommended configuration — including the game-side options and the
+values settled by testing — is in `dusklight-ao/docs/dx9-fixed-function.md`.
+
+---
+
+## 14. Facts that were expensive to learn
+
+Everything here was either wrong in an earlier draft of this document or cost a
+CI round, an evening, or a wrong conclusion. None of it is discoverable by
+reading the API.
+
+### 14.1 Remix's lighting model
+
+- **There is no dome light type.** `light_types.h` has Sphere = 0, Rect = 1,
+  Distant = 4 and no dome. A sky is therefore **never NEE-sampled** — it
+  contributes only through ray miss. This is the single most consequential fact
+  about the whole sky design and it is invisible from the API surface.
+- **Distant light irradiance is independent of angular diameter.**
+  `distant_light.slangh` sets `lightSample.radiance = radiance / sin²(halfAngle)`,
+  so irradiance ≈ π × radiance regardless of how wide you make the sun. Widening
+  `celestialAngle` softens shadows and changes *nothing* about brightness.
+- **Remix's `direction` is the direction light travels**, not the direction to
+  the body: `distant_light.slangh:78` samples at `position - direction·100000`.
+  Our `-toBody` is correct.
+- **Scene scale.** Remix's world unit is 1 cm;
+  `getMeterToWorldUnitScale() = 100 × sceneScale`. TP's units match closely
+  enough to use directly — Link is about 170 units tall.
+
+### 14.2 The atmosphere/fog relationship — the error at the centre of the first draft
+
+The original §1 claimed the atmosphere medium and the fog medium should be **one
+object with shared coefficients**. That was wrong, and implementing it literally
+would have deleted the fog.
+
+**Measured: real Rayleigh extinction over 100 m is 0.13%.** Air is transparent
+at the scale TP works at. The game's fog is an artistic device that reaches full
+opacity in tens of metres; nothing physical does that.
+
+The redesign (C3): **density stays the game's, colour is shared.** The far fog
+samples the generated dome for its colour, so the two agree on hue without the
+atmosphere dictating how thick anything is.
+
+Corollary worth holding onto: *any* future "just make it physical" instinct
+about the fog needs this number checked first.
+
+### 14.3 The sky brightness bug — and the general shape of it
+
+`skyIntensity` at 1.0 read dim in game. The anchor (a real midday sky sits near
+a fifth of its sun) was right; the arithmetic forgot that **the palette colours
+are sRGB-decoded before being scaled**, which takes a mid blue from 0.5 to about
+0.2. Six times larger was needed. Now 6.0.
+
+The general form: **the palette is authored in sRGB and every consumer of it
+decodes first.** Any anchor computed against the raw 0–255 or 0–1 values will be
+off by roughly the gamma curve at that value.
+
+### 14.4 Coordinate conventions
+
+`cartesianDirectionToLatLongSphere` uses `theta = acos(direction.z)` — a **+Z
+pole**. The world is **Y-up**. The swap lives in the dome light's `worldToLight`
+matrix and nowhere else:
+
+```cpp
+const Matrix4 kWorldToDomeLight {
+  1.0f, 0.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 1.0f, 0.0f,
+  0.0f, 1.0f, 0.0f, 0.0f,
+  0.0f, 0.0f, 0.0f, 1.0f,
+};
+```
+
+If the sky ever appears rotated 90° about the horizon, this is the first and
+almost certainly only place to look.
+
+### 14.5 Shader/host type conversions
+
+The shader-side `vec3` **converts from `Vector3` but not back**. Assigning a
+`vec3` expression into a `Vector3` fails to compile, and it failed twice in the
+same CI round before being fixed with an explicitly typed local. Watch for it
+anywhere host code reads back something a shader header declared.
+
+Slang compute shaders are auto-discovered by `compile_shaders.py` via
+`os.walk`, so a new `.comp.slang` needs no build-system edit — but it **also
+means a shader with a missing `#include` only fails at CI**, not locally. Our
+case: `math.slangh` omitted from `dusklight_sky.comp.slang` gave
+`undefined identifier 'pi' / 'twoPi' / 'square'`.
+
+### 14.6 Frame-latching a per-frame derivation
+
+The medium is resolved once per frame and cached against the frame id, so
+consumers can call in any order without re-deriving or racing:
+
+```cpp
+const uint32_t frameId = m_device->getCurrentFrameId();
+if (m_resolvedFrame == frameId) { return; }
+m_resolvedFrame = frameId;
+m_derived = resolve();
+```
+
+Any new consumer should call the same accessor rather than deriving its own.
+
+### 14.7 Don't trust a recon report you did not verify
+
+A reconnaissance pass claimed Lake Hylia "passes `start > end` deliberately".
+It does not — it is `start < end` with a **negative start**. Acting on that
+claim would have made Lake Hylia silently report no fog, in exactly the area
+whose extreme morning fog is one of the two remaining validation targets.
+
+Verify structural claims against the source before building a special case
+around them.
 
 ---
 
