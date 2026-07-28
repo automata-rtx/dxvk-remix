@@ -189,13 +189,28 @@ list is rebuilt *by the game* and pushed back — one or two frames. Selecting a
 new region resets level, room, point and layer rather than leaving them
 pointing at whatever sits at the same offset in a different region's list.
 
-**Layer: `-1` means "you pick", and `0` does not.** This bit us. The game's own
-warp menu (`src/dusk/ui/warp.cpp`) defaults to `kMinLayer = -1` and resets to
-it on every selection change. `dComIfGp_setNextStage` folds anything `>= 15` to
-`-1`, but **nothing folds 0 to -1** — 0 is a real layer. Defaulting to 0 lands
-you in the wrong version of anywhere whose default layer is not 0, which shows
-up as a stage in the wrong story state. Bounds are `[-1, 14]` on both sides,
-matching the game; 15 would be a silent alias for -1.
+**Layer: `-1` means "you pick", and `0` does not.** This bit us, and it is
+counter-intuitive enough to have been questioned twice, so the evidence is
+recorded rather than the conclusion alone.
+
+`dComIfGp_setNextStage` folds anything `>= 15` to `-1`, but **nothing folds 0
+to -1** — 0 is a real layer. Defaulting to 0 lands you in the wrong version of
+anywhere whose default layer is not 0, which shows up as a stage in the wrong
+story state.
+
+The game's own warp menu (`dusklight-ao/src/dusk/ui/warp.cpp`) is the reference,
+and **all four places it touches the layer agree on -1**:
+
+| Site | Value |
+| :-- | :-- |
+| `WarpSelectionState` struct initializer, `warp.cpp:20` | `int layer = -1` |
+| `reset_selection`, `warp.cpp:109` | `state.layer = kMinLayer` |
+| the layer picker list, `warp.cpp:292` | iterates from `kMinLayer` |
+| every `clamp_indices` path | `std::clamp(layer, kMinLayer, kMaxLayer)` |
+
+with `kMinLayer = -1`, `kMaxLayer = 14` (`warp.cpp:12-13`). Our bounds match on
+both sides of the wire; 15 would be a silent alias for -1, which is why the max
+is 14 rather than 15.
 
 ### 3.3 Controls
 
