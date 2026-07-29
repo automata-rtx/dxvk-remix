@@ -55,6 +55,28 @@ struct DusklightCompositeArgs {
   // two describe different weather. Carrying the same weight the sky was blended with is what keeps
   // them the same weather.
   float skyColorWeight;
+
+  // How much of the medium a ray that hits no geometry is allowed to pick up.
+  //
+  // The far ramp above already refuses to run on a sky pixel - it would drive the sky to full fog
+  // and replace it with a flat colour. The froxel grid was never told the same thing: it attenuates
+  // the dome by the transmittance of its whole depth and adds that depth's in-scatter on top, so
+  // the sky arrives dimmed and tinted towards the fog colour while the terrain in front of it,
+  // which fades towards the sky via skyColorWeight, does not. Two descriptions of one day.
+  //
+  // It bites here far harder than it would upstream because this medium is an artistic quantity,
+  // not air: the game's fog closes over tens of metres, so exp(-sigma * gridDepth) is a large
+  // number and every bit of it lands on the sky.
+  //
+  // 0 = Off, the untreated behaviour, kept as the A/B baseline.
+  // 1 = Exempt, sky ignores the medium entirely. What the original did - it drew its sky dome with
+  //     fog switched off, at any density.
+  // 2 = Weighted, sky picks up skyFogAmount of the medium, so a genuinely foggy day still veils it.
+  uint skyFogMode;
+  // Only read in Weighted mode. 0 matches Exempt, 1 matches Off.
+  float skyFogAmount;
+  float pad0;
+  float pad1;
 };
 
 #endif  // DUSKLIGHT_COMPOSITE_ARGS_H

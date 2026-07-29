@@ -70,6 +70,23 @@ namespace dxvk {
                     "Incremented by the overlay to request a warp. The game acts on the change rather than the value, and latches the first one it sees "
                     "without acting, so connecting to a session that already has a non-zero count does not teleport anyone.");
 
+    // Action binds, driven from the overlay's Controls tab. Indices and commit counters only: the
+    // game owns the bind table, resolves conflicts, and pushes back both the resulting table and a
+    // line of prose describing what happened. Nothing here decides anything - see
+    // documentation/DusklightOverlay.md section 3.3.
+    // All NoSave, for the same reason the warp commits are: a capture request that survived a
+    // restart would arm itself on next launch.
+    RTX_OPTION_FLAG("rtx.dusklight.bind", int, port, 0, RtxOptionFlags::NoSave,
+                    "Controller port whose binds the Controls tab is showing, 0 to 3. Set by the overlay.");
+    RTX_OPTION_FLAG("rtx.dusklight.bind", int, actionIndex, 0, RtxOptionFlags::NoSave,
+                    "Which action the Controls tab has selected, as an index into rtx.dusklight.env.bindActions. Set by the overlay.");
+    RTX_OPTION_FLAG("rtx.dusklight.bind", int, captureCommit, 0, RtxOptionFlags::NoSave,
+                    "Incremented by the overlay to ask the game to capture the next key or button press for the selected action.\n"
+                    "The game acts on the change rather than the value and latches the first one it sees without acting, so connecting to a session that "
+                    "already has a non-zero count does not arm a capture nobody asked for.");
+    RTX_OPTION_FLAG("rtx.dusklight.bind", int, clearCommit, 0, RtxOptionFlags::NoSave,
+                    "Incremented by the overlay to unbind the selected action. Same change-not-value rule as captureCommit.");
+
     RTX_OPTION("rtx.dusklight.game", bool, bridgeEnable, true,
                "Whether the game feeds its environment state to Remix at all.\n"
                "Turning this off stops every push and takes the game's sun, moon and local lights with it, which makes it the "
@@ -108,11 +125,15 @@ namespace dxvk {
                "Mirrors the game's own point lights - torches, braziers, lanterns, campfires and the dungeon lights - into Remix as sphere lights.\n"
                "The game's D3D9 path does not forward its lights, so without this Remix sees no light from the game at all: outdoors the sun covers "
                "that, but interiors and night fall through to Remix's fallback light.");
-    RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightIntensity, 1.0f,
-                    "Scales the game's local lights. At 1.0 each light is as bright as Remix's own conversion would make a legacy light that reached "
-                    "as far as the game's influence radius.\n"
-                    "The game's attenuation curve actually carries further than that radius - about 19 here reproduces that reading instead, which is "
-                    "the number to try if the torches look weak.",
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightIntensity, 19.0f,
+                    "Scales the game's local lights.\n"
+                    "At 1.0 each light is as bright as Remix's own conversion would make a legacy light that reached exactly as far as the game's "
+                    "influence radius. That reading is too conservative, because the radius is not where the light ends: the game loads its attenuation "
+                    "so that the radius is where brightness falls to about a ninth of peak, and the curve carries roughly four times further. Applying "
+                    "Remix's own end threshold to that curve instead gives about 19, and testing picked the same number independently as the least that "
+                    "lights a room usefully.\n"
+                    "Set together with rtx.dusklight.game.localLightRadius: the radiance is solved so the light still reaches the same distance, so a "
+                    "larger emitter needs less of it and changing one alone moves brightness as well as softness.",
                     args.minValue = 0.0f,
                     args.maxValue = 32.0f);
     RTX_OPTION("rtx.dusklight.game", bool, disableFrustumCulling, false,
@@ -138,6 +159,17 @@ namespace dxvk {
                "show at night, since stars and the moon are the only sky billboards drawn then.\n"
                "This is the fix as well as the test, and it removes the visible stars and moon along with the occluder. These do carry textures, unlike the "
                "sky dome, so tagging them as Sky rather than hiding them is possible and would keep them visible - worth doing only if you want them back.");
+    RTX_OPTION("rtx.dusklight.game", bool, perBladeGrass, false,
+               "Draws each blade of grass as its own instance instead of batching a whole room into one.\n"
+               "The game merges every blade in a room into a single dynamic vertex stream, already transformed into world "
+               "space. That is right for a rasterizer and wrong here: Remix identifies geometry by hashing vertex positions "
+               "among other things, so a batch whose positions change the moment any blade sways, is cut or regrows has no "
+               "stable identity at all. Such an instance cannot be tagged in the texture categorization screen, cannot be "
+               "replaced with authored geometry, and carries no denoiser or ReSTIR history - which is why grass lighting "
+               "lags behind the rest of the scene and can settle on the wrong answer.\n"
+               "Per blade, each one is static display list geometry plus its own transform, so its hash holds still. The "
+               "cost is exactly what the batching was saving: one draw call per blade rather than a few per room, paid on "
+               "the CPU in dense grass. Off by default for that reason.");
     RTX_OPTION("rtx.dusklight.game", bool, hideVrbox, false,
                "Stops the game drawing its own sky dome.\n"
                "The dome is painted by handing the hardware a handful of colours rather than by drawing a texture, so Remix has nothing "
@@ -172,10 +204,11 @@ namespace dxvk {
                "It is a game setting rather than a Remix one, and the game's settings screen is not drawn in the fixed function D3D9 mode, so without this it "
                "can only be changed by editing config.json and restarting - and only in one direction, since a value set there could not be turned back off "
                "while running.");
-    RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightRadius, 4.0f,
-                    "Emitter radius of the game's local lights in world units, matching Remix's own default for converted point lights.\n"
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightRadius, 10.0f,
+                    "Emitter radius of the game's local lights in world units.\n"
                     "This changes brightness as well as softness: the radiance is solved so the light still reaches the same distance, so a larger "
-                    "emitter needs less of it. Large radii on lights sitting inside wall sconces will clip through the geometry.",
+                    "emitter needs less of it. Large radii on lights sitting inside wall sconces will clip through the geometry, which is what bounds "
+                    "this from above - 10 was tested against the Forest Temple light posts and clears them.",
                     args.minValue = 0.5f,
                     args.maxValue = 64.0f);
   };

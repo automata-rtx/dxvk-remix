@@ -51,22 +51,35 @@ git push -u origin <session-branch>
 git push origin HEAD:Fixed-Function-dev
 ```
 
-Do not wait to be asked. `claude/*` branches are disposable and get deleted;
-`Fixed-Function-dev` is where the work lives.
+**REVOKED by the owner on 2026-07-29 — the mirroring instruction above no
+longer applies.** The owner merges to `Fixed-Function-dev` themselves, at
+milestones they choose. Push only the session branch:
 
-> **This rule was written because it was nearly violated here.** On 2026-07-28
-> this repo's `Fixed-Function-dev` was found **19 commits behind** its `claude/*`
+```
+git push -u origin <session-branch>        # yes
+git push origin HEAD:Fixed-Function-dev    # NO - the owner does this
+```
+
+If a session branch is about to be deleted and its work is not yet merged,
+**say so and stop** rather than mirroring it.
+
+> **The containment check survives, and matters more now.** On 2026-07-28 this
+> repo's `Fixed-Function-dev` was found **19 commits behind** its `claude/*`
 > branch, immediately before that branch was to be deleted. Deleting it would
 > have destroyed the entire atmosphere, overlay, warp and clock work. Before
 > anyone deletes a branch:
 > `git rev-list --count origin/Fixed-Function-dev..origin/<branch>` must be `0`.
+>
+> With auto-mirror off, a non-zero count is the **normal** state between
+> milestones rather than an anomaly — so this check is no longer a formality,
+> it is the only thing standing between a routine cleanup and lost work.
 
 ## The one coupling that has cost evenings
 
 **The game and this DLL are a single protocol.** The game pushes
 `rtx.dusklight.env.protocol`; this fork compares it against `kRequiredProtocol`
 in `showDusklightRemixTab` (`src/dxvk/imgui/dxvk_imgui.cpp`).
-**Protocol is at 4.** Build both sides from the same commit point, and bump
+**Protocol is at 6.** Build both sides from the same commit point, and bump
 both in the same commit. Skew in either direction has cost an evening twice.
 The Dusklight tab reports which side is old — read it before debugging
 anything else.

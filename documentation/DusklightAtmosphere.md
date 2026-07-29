@@ -580,24 +580,84 @@ Churn in `d_kankyo.cpp` is limited to one capture call, matching the existing
 | Phase 0 calibration | run 2026-07-28 — see §13 |
 | Phase A (A1–A4) | implemented 2026-07-27, **tested good 2026-07-28** |
 | Phase B (B1–B2) | implemented 2026-07-27, **tested good 2026-07-28**; `skyIntensity` raised 1.0 → 6.0 after it read dim |
-| Phase C (C1-C3) | implemented 2026-07-28, CI green, **untested in game** |
-| Overlay, warp, input blocking | landed 2026-07-28, CI green — see `DusklightOverlay.md` |
-| Time-of-day scrub + freeze | landed 2026-07-28, CI green, **untested** — `DusklightOverlay.md` §3.2.1 |
+| Phase C (C1-C3) | implemented 2026-07-28, **run 2026-07-29 — scattering confirmed, verdict blocked by the sky/fog defect below** |
+| Overlay, warp, input blocking | landed 2026-07-28, **tested good 2026-07-29** |
+| Time-of-day scrub + freeze | landed 2026-07-28, **tested good 2026-07-29** — `DusklightOverlay.md` §3.2.1 |
 
 Owner's verdict on A + B after testing: *"a massive, frankly monumental
 success."* Range, shape and per-area fog scaling all validated; see §13's
 "What the pass found".
 
-**Still untested in game**, all independent of the atmosphere:
+**The 2026-07-29 session cleared this list.** `hideSkyBillboards`, warp, the
+time-of-day slider and Freeze Time all work; local point lights work (they need
+`localLightIntensity` 19 and `localLightRadius` 10 — see
+`dusklight-ao/docs/kankyo-remix.md` open issue 3); and `hideSkyBillboards`
+**fixed the night shadow wandering**, confirming the moon-quad cause rather than
+merely masking it.
 
-- Phase C (the physical sky blend) — never seen running
-- `rtx.dusklight.game.hideSkyBillboards`
-- **local point lights — known broken**, see `DusklightOverlay.md` §6
-- warp
-- the time-of-day slider and Freeze Time
+**Still untested:** the ambient grade only — and it should stay untested until
+the defect below is fixed, because grading on top of a wrongly-lit sky is tuning
+against a moving target.
 
-`disableFrustumCulling` **is** now tested: it works and it visibly helps with
+`disableFrustumCulling` **is** tested: it works and it visibly helps with
 light leakage.
+
+### The live defect: the medium dims the generated sky
+
+Found 2026-07-29. Frozen noon with `physicalSky` on, and worse in Lake Hylia
+morning fog with it off: the visible sky reads dim and dingy, and there is a
+seam where distant terrain is convincingly blue while the sky just above the
+silhouette is duller. Lowering `densityScale` improves it markedly.
+
+**Verified cause — the two halves of our fog disagree about the sky:**
+
+| Half | What it does to a sky pixel |
+| :-- | :-- |
+| Far ramp, `applyFog` (`composite.comp.slang:625`) | **Exempts it.** `if (primaryMiss) return;` — the comment there says running the ramp on the sky "would drive it to full fog and replace the sky with a flat colour" |
+| Volumetric half, `applySkyContribution` (`:585`) | **Fogs it.** `domeLightArgs.radiance * sampleDomeLightTexture(...) * volumeAttenuation` over the *whole* froxel grid, with the in-scatter already in `radianceOutput` |
+
+A sky pixel therefore comes out as *(in-scatter over the full grid)* + *(dome ×
+transmittance over the full grid)*. The far ramp was carefully taught not to do
+this; the volumetric path does it anyway by another route.
+
+**Why it hurts us more than stock Remix:** §14.2. Our medium is deliberately far
+denser than air, so `exp(-σ · gridDepth)` is large — and all of it lands on the
+sky. Remix's near-clear default medium would barely show it.
+
+**Why the seam looks the way it does:** distant terrain fades toward the far
+ramp's colour, which per C3 samples the dome in the view direction — the right
+colour. The sky beside it is attenuated dome plus `fog_col`-tinted in-scatter. Two
+descriptions of one day, which is exactly what §0 exists to prevent, arriving
+through the one path §0 did not cover.
+
+**Not fixable by tagging *this*** — but read §14.9 before repeating the wider
+claim, which was wrong. Category flags apply to *instances*; the generated sky
+is a dome light sampled on ray miss, so nothing here can be categorised and the
+exemption still has to happen in the composite. What was wrong was the reason
+recorded for ruling tagging out **everywhere else**.
+
+**FIXED 2026-07-29 — and deliberately fixed twice,
+`rtx.dusklight.atmosphere.skyFogMode`.** Both candidate treatments are built and
+mutually exclusive, so the choice can be made by looking rather than by
+argument. One of them is meant to be **deleted** once it has been.
+
+| Mode | What it does | What it costs |
+| :-- | :-- | :-- |
+| 0 Off | The untreated behaviour | Nothing — it is the defect, kept as the A/B baseline |
+| 1 **Exempt** (default) | Sky ignores the medium entirely, which is what the original did — it drew its dome with fog switched off at any density | Light shafts that would have been visible **against the sky**, since those are the same in-scatter |
+| 2 Weighted | Sky picks up `skyFogAmount` (0.15) of the medium | Nothing structural; needs one number tuned |
+
+**Where the fix had to go, and why not where it looked like it should.** The
+obvious site is `applySkyContribution`, since that is where the dome is
+multiplied by `volumeAttenuation`. That would be half a fix: the sky is dimmed
+by the transmittance *and* tinted by the in-scatter that was added to
+`radianceOutput` before it. Treating only the first leaves the sky the right
+brightness and still the wrong colour. Both are settled immediately after
+`integrateVolumetricNEE`, before either is used, so they cannot disagree.
+
+Touching `volumeAttenuation` on a miss is safe: its only other consumer is
+`remodulatedTotalPrimaryRadiance`, which is what the primary ray hit, and on a
+miss it hit nothing.
 
 Settled by testing: `celestialNoonElevation` at **80** — the owner's choice,
 deliberately short of 90 because the azimuth flips instantaneously at exactly
@@ -624,7 +684,7 @@ table, is in `dusklight-ao/docs/kankyo-remix.md` §"Test session playbook".
 Bridge protocol went **1 → 2** for this work. A game build older than the
 fork's `kRequiredProtocol` shows the "game build is older than this Remix
 build" notice in the Dusklight tab rather than silently doing nothing.
-**Protocol has since advanced to 4** (3 = overlay + warp, 4 = the clock), so
+**Protocol has since advanced to 5** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass), so
 that number is the historical one for phases A/B, not the current requirement.
 
 ### To turn it on
@@ -742,6 +802,166 @@ m_derived = resolve();
 
 Any new consumer should call the same accessor rather than deriving its own.
 
+### 14.8 The sky is fogged by two paths, and only one of them knows it
+
+Found 2026-07-29, written up in §12. The short form, because it is the kind of
+thing that will be rediscovered otherwise:
+
+**`applyFog` exempting `primaryMiss` is not the same as "the sky is not fogged".**
+The composite reaches the sky twice. `applyFog` skips it deliberately and says so
+in a comment. `applySkyContribution` (`composite.comp.slang:585`) multiplies the
+dome by `volumeAttenuation` — the froxel transmittance over the full grid — and
+by then the froxel in-scatter is already sitting in `radianceOutput`. Reading the
+first and concluding the sky is exempt is wrong, and the comment at the exemption
+site actively encourages that misreading.
+
+Two general lessons in it:
+
+1. **A guard in one path is not a guarantee across the system.** The consistency
+   §0 promises is only structural where every consumer goes through one
+   derivation. The fog does not: it has a near half and a far half, and they were
+   given different rules about infinity.
+2. **Density and visibility of the sky are coupled here in a way they are not
+   upstream.** Because our σ is an artistic quantity rather than air (§14.2), any
+   Remix code that attenuates something by the full grid depth behaves very
+   differently for us than it does for stock. Worth checking the same question
+   anywhere else `volumeAttenuation` is applied to a distant or infinite source.
+
+### 14.9 "No texture, therefore untaggable" was wrong — there are three routes, not one
+
+Corrected 2026-07-29, after an NVIDIA engineer working on upstream Remix pointed
+at `REMIXAPI_INSTANCE_CATEGORY_BIT_SKY`. Verified in this fork.
+
+This document, `kankyo-remix.md`, and `dx9-fixed-function.md` all carried the
+same reasoning: *the vrbox is painted with vertex colours, so there is no
+texture, so Remix can never hash it, so it can never be categorised as Sky.*
+The first three clauses are true. **The conclusion does not follow**, because
+texture hashing is only one of three ways a category is assigned:
+
+| Route | Mechanism | Needs a texture? |
+| :-- | :-- | :-- |
+| `rtx.skyBoxTextures` | texture hash on a captured draw (`rtx_types.cpp:409`) | **yes** — the only one that does |
+| `rtx.skyBoxGeometries` | **geometry/asset hash** on a captured draw, via `geometryAssetHashRule` (`rtx_types.cpp:416`, option at `rtx_options.h:191`) | no |
+| `REMIXAPI_INSTANCE_CATEGORY_BIT_SKY` | declared outright on geometry submitted through the API (`remix_c.h:457` → `rtx_remix_api.cpp:647`, on `remixapi_InstanceInfo.categoryFlags` for `DrawInstance`) | no |
+
+So the game's own untextured sky dome **can** be tagged — by geometry hash,
+today, with a config line and no code — and any geometry we submit ourselves can
+simply declare the category. An instance tagged Sky also gets `CameraType::Sky`
+(`rtx_remix_api.cpp:637`) and is excluded from visibility rays, which is the
+same property that makes the painted moon safe.
+
+**What this does and does not change.**
+
+- It does **not** invalidate the dome light (B1) — but the reason given for B1
+  in the first revision of this section was **also wrong**, and it is corrected
+  in §14.10 below. The generated dome is not an instance, so no category flag
+  reaches it, and the §12 composite fix is still the fix for the fog defect.
+- It does mean **the reason we stopped considering tagging was wrong**, and any
+  future "we can't tag that, it has no texture" should be checked against this
+  table first.
+- §8.5's other objection — that the sky probe is rasterized in the game's own
+  8-bit format and clamped — is weaker than recorded too: `rtx.skyForceHDR`
+  (`rtx_sky.h:156`) forces `B10G11R11_UFLOAT` for exactly that reason.
+
+**Also surfaced while checking:** `rtx.fogIgnoreSky` (default false) makes fog
+capture skip sky-categorised draws. That is about *which draw's fog state wins
+the frame* — the old §2.5 lottery — not about exempting sky pixels from fog, so
+it is not a second fix for §12. Worth knowing now that sky draws can actually be
+categorised.
+
+The general lesson, and it is the same one as §14.7: a true premise chained to
+a plausible inference is still not a verified conclusion. "There is no texture"
+was checked. "Therefore it cannot be categorised" never was.
+
+### 13.1 The moon, painted into the dome
+
+Built 2026-07-29, `rtx.dusklight.atmosphere.skyMoonEnable`, default **on**.
+Untested.
+
+`hideSkyBillboards` is confirmed as the fix for the wandering night shadows, and
+it takes the visible moon with it. This gives the moon back without giving the
+billboard back: a disc painted into the generated sky is correctly placed, moves
+with the sky rather than with the camera, and cannot cast a shadow because it is
+not geometry.
+
+| Choice | Value | Why |
+| :-- | :-- | :-- |
+| Size | **5.7°** (`skyMoonAngularDiameterDegrees`) | The game's own — an 8000-unit quad at an 80000 orbit radius. Eleven times the real moon, and what a player of this game is used to |
+| Brightness | 4.0 (`skyMoonIntensity`), applied **after** the sky's intensity | Absolute rather than a multiple of the palette, so it does not swing with the weather. Appearance only — the moonlight is the distant light |
+| Edge | 0.15 of the radius (`skyMoonEdgeSoftness`) | A hard circle aliases badly in a lat-long map, whose angular sampling rate varies with latitude |
+
+Three implementation points worth keeping:
+
+1. **Only the moon.** The sun stays out of this image deliberately — it is
+   analytic and NEE-sampled, and baking something that bright into an image only
+   ever reached by ray miss would double count it and sample it terribly (§8.5).
+2. **It reuses the pushed celestial direction.** The game sends one direction —
+   whichever body is driving the light — so `sunAzimuth`/`sunElevation` *is* the
+   moon's direction while `sunIsDay` is false, and no second pair was needed.
+3. **Faded by `sunFade`, not by an elevation threshold.** That value already
+   falls to zero across the dawn and dusk handovers, which is exactly where the
+   pushed direction stops meaning the moon. Keying off elevation instead would
+   have snapped it out while it was still on screen.
+
+The sky image is dispatched unconditionally every frame (only the two LUTs are
+staleness-gated), which is what lets the moon move and fade at all — worth
+knowing before anyone adds a cache there.
+
+### 14.10 The stated advantages of the dome light over the sky probe were both false
+
+Corrected 2026-07-29, immediately after §14.9, and by the same owner question.
+§14.9 said the dome light was still right "for HDR sky radiance feeding GI,
+which a rasterized probe does not give". Both halves of that are wrong.
+
+**The sky probe feeds GI exactly as the dome light does.**
+`integrator_indirect.slangh:371-379` — the *indirect* integrator — is a plain
+if/else, and both branches add to `emissiveRadiance` on ray miss:
+
+```hlsl
+if (cb.domeLightArgs.active)  skyRadiance = domeLightArgs.radiance * sampleDomeLightTexture(...);
+else                          skyRadiance = cb.skyBrightness * SkyProbe.SampleLevel(...);
+emissiveRadiance += skyRadiance * radianceAttenuation;
+```
+
+There is no GI difference. There never was one; the claim was inferred from
+"there is no dome light *type* in `light_types.h`, so a sky is never
+NEE-sampled" (§14.1, which is true) and then wrongly extended into "so the probe
+does not light the scene". Ray miss *is* how both of them light the scene.
+
+**The 8-bit clamp is inherited, not intrinsic.** `rtx_sky.h:152` takes the sky
+render target's format from *the game's own bound render target*, which is why
+a game with an LDR backbuffer gets an LDR sky. Two things follow: `skyForceHDR`
+overrides it outright (`:156`, forcing `B10G11R11_UFLOAT`), and a sky whose
+content we supply is not bound by whatever format the game happened to be
+rendering into.
+
+**And sky geometry may not be rasterized at all.** `rtx_sky.h:165-192` routes
+sky-categorised draws two ways: rasterized into the cubemap, or pushed to
+`m_delayedRayTracedSky` and reprojected from sky camera space into the main
+camera's. Which one depends on `rtx.skyReprojectToMainCameraSpace` (default
+**false**, so today it rasterizes) and on whether the draw is a skybox quad.
+
+**What actually remains in the dome light's favour**, stated honestly because
+the previous version of this list was invented rather than measured:
+
+- It is **tested and working**, which the alternative is not.
+- It is infinitely far and non-occluding *by construction* rather than by
+  category — there is no draw to accidentally intersect anything.
+- It is one texture we already generate, with no second geometry path to keep
+  alive.
+
+Those are real but they are a different argument, and none of them says the
+sky-categorised route would look worse. That is now an open question to settle
+by looking, which is what the toggles being added exist for.
+
+**`rtx.fogIgnoreSky` is inert for us.** It sets a sky draw's `fogState.mode` to
+`D3DFOG_NONE` so sky draws are skipped when Remix picks the frame's fog values
+(`d3d9_rtx.cpp:733`). We do not use captured fog state at all while the
+atmosphere is on — `applyFogOverride` (`rtx_scene_manager.cpp:2073`) replaces it
+wholesale. So it is dead code on this path, in the same way
+`rtx.volumetrics.enableFogRemap` is, and setting it will look like it does
+nothing because it does.
+
 ### 14.7 Don't trust a recon report you did not verify
 
 A reconnaissance pass claimed Lake Hylia "passes `start > end` deliberately".
@@ -846,12 +1066,28 @@ sentence of the pass, because it confirms three things at once:
   one scale-free expression, no per-area code anywhere;
 - the froxel grid really is resizing per area (A4).
 
-**Still uncovered: the dense end.** Everything confirmed so far is the thin and
-mid regime. `zHalfMin` only does anything where the half-density point falls
-behind the camera, which happens in a scripted fog bank and nowhere else, so it
-remains untested rather than confirmed. Lake Hylia in the morning and the Goron
-Mines are the two visits that would close that gap. `froxelRangeScale` (0.6) is
-likewise unchallenged rather than validated.
+**The dense end — half covered as of 2026-07-29.** Lake Hylia in the morning was
+visited and its fog is *"suitably intense"*, which is the first real evidence
+that the σ mapping holds at the dense end and not just in the thin and mid
+regimes.
+
+Two cautions against reading it as more than that:
+
+- **It does not isolate `zHalfMin`.** That clamp only bites where the
+  half-density point falls behind the camera. Lake Hylia's kytag01 passes a
+  *negative* start with `start < end` (§14.7 — the opposite of what an earlier
+  recon claimed), so whether the clamp actually fired in that visit is not
+  established. "The dense case looks right" and "the clamp is correct" are
+  different claims and only the first has evidence.
+- **The Goron Mines are still unvisited**, and they are the other regime — near
+  and dense rather than scripted and dense.
+
+`froxelRangeScale` (0.6) remains unchallenged rather than validated.
+
+**And the Lake Hylia visit surfaced something bigger than fog density:** it is
+where the sky/fog defect in §12 shows worst, because it is the densest medium
+the game asks for. Any future dense-fog reading is partly measuring that defect
+until it is fixed.
 
 ### The measurement pass is still worth doing
 

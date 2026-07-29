@@ -375,6 +375,8 @@ namespace dxvk {
     // the palette's fog colour stops describing it, and letting the fog keep the old colour would
     // leave the horizon one weather and the air in front of it another.
     args.skyColorWeight = skyActive() ? std::clamp(d.physicalWeight, 0.0f, 1.0f) : 0.0f;
+    args.skyFogMode = static_cast<uint32_t>(std::clamp(skyFogMode(), 0, 2));
+    args.skyFogAmount = std::clamp(skyFogAmount(), 0.0f, 1.0f);
   }
 
   void DxvkDusklightAtmosphere::prepareSceneData(Rc<RtxContext> ctx, SceneManager& sceneManager) {
@@ -440,6 +442,23 @@ namespace dxvk {
     pushArgs.groundFraction = std::clamp(skyGroundFraction(), 0.0f, 1.0f);
     pushArgs.mieAnisotropy = std::clamp(mieAnisotropy(), 0.0f, 0.95f);
     pushArgs.multiScatterScale = std::max(multiScatterScale(), 0.0f);
+
+    // The moon. The game pushes one celestial direction - whichever body is currently driving the
+    // light - so sunAzimuth/sunElevation *is* the moon's direction while sunIsDay is false, and
+    // the shader can reuse them rather than needing a second pair.
+    //
+    // Faded by the game's own handover weight rather than by a threshold on elevation: sunFade
+    // already falls to zero across dawn and dusk, which is exactly where the pushed direction jumps
+    // from one body to the other. Keying off it means the moon fades out as the direction becomes
+    // meaningless instead of snapping while it is still visible.
+    const bool moonVisible = skyMoonEnable() && !DusklightEnv::sunIsDay() && DusklightEnv::sunActive();
+    const float moonFade = moonVisible ? std::clamp(DusklightEnv::sunFade(), 0.0f, 1.0f) : 0.0f;
+
+    pushArgs.moonColor = Vector3(1.0f, 1.0f, 1.0f);
+    pushArgs.moonRadiance = std::max(skyMoonIntensity(), 0.0f) * moonFade;
+    pushArgs.moonAngularRadiusRadians =
+      std::max(skyMoonAngularDiameterDegrees(), 0.0f) * 0.5f * kDegreesToRadians;
+    pushArgs.moonEdgeSoftness = std::clamp(skyMoonEdgeSoftness(), 0.0f, 1.0f);
 
     ctx->setFramePassStage(RtxFramePassStage::FrameBegin);
     ctx->setPushConstantBank(DxvkPushConstantBank::RTX);
@@ -554,6 +573,46 @@ namespace dxvk {
     RemixGui::DragFloat("Sky Intensity##dusklightAtmo", &skyIntensityObject(), 0.05f, 0.f, 32.f, "%.2f");
     RemixGui::DragFloat("Horizon Sharpness##dusklightAtmo", &skyHorizonSharpnessObject(), 0.05f, 0.25f, 16.f, "%.2f");
     RemixGui::DragFloat("Ground Fraction##dusklightAtmo", &skyGroundFractionObject(), 0.01f, 0.f, 1.f, "%.2f");
+
+    RemixGui::Checkbox("Paint Moon##dusklightAtmo", &skyMoonEnableObject());
+    if (skyMoonEnable()) {
+      RemixGui::DragFloat("Moon Size##dusklightAtmo", &skyMoonAngularDiameterDegreesObject(), 0.1f, 0.1f, 30.f, "%.1f deg");
+      RemixGui::DragFloat("Moon Brightness##dusklightAtmo", &skyMoonIntensityObject(), 0.1f, 0.f, 64.f, "%.2f");
+      RemixGui::DragFloat("Moon Edge##dusklightAtmo", &skyMoonEdgeSoftnessObject(), 0.01f, 0.f, 1.f, "%.2f");
+      ImGui::TextWrapped("Gives back the moon that Hide Sky Billboards removes, without the camera-anchored quad that "
+                         "made shadows wander at night. Appearance only - the moonlight comes from the distant light, so "
+                         "this does not change how bright the night is to stand in.");
+    }
+
+    // Two candidate fixes for one defect, side by side so they can be compared rather than argued
+    // about. One of them is meant to be deleted once the comparison has been made.
+    {
+      static const char* kSkyFogModes[] = { "Off (untreated)", "Exempt", "Weighted" };
+      static int mode;
+      mode = std::clamp(skyFogMode(), 0, 2);
+      if (RemixGui::Combo("Fog On Sky##dusklightAtmo", &mode, kSkyFogModes, IM_ARRAYSIZE(kSkyFogModes))) {
+        skyFogMode.setDeferred(mode);
+      }
+      if (mode == 2) {
+        RemixGui::DragFloat("Sky Fog Amount##dusklightAtmo", &skyFogAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
+      }
+      switch (mode) {
+      case 0:
+        ImGui::TextWrapped("The defect, on purpose: the sky is dimmed by the whole depth of the froxel grid and tinted "
+                           "towards the fog colour, so it reads dingy against terrain that fades towards the sky's own "
+                           "colour. Here to be compared against, not to be used.");
+        break;
+      case 1:
+        ImGui::TextWrapped("Faithful to the original, which drew its sky with fog switched off at any density. Costs any "
+                           "light shaft that would have been visible against the sky - that is the same in-scatter.");
+        break;
+      default:
+        ImGui::TextWrapped("A foggy day still veils the sky, and shafts against it survive in proportion, but the sky is "
+                           "not erased by a medium calibrated to close in tens of metres. Raise until weather reads, and "
+                           "stop before the horizon seam comes back.");
+        break;
+      }
+    }
 
     RemixGui::Separator();
     ImGui::TextUnformatted("Physical sky");

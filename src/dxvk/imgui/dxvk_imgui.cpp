@@ -2836,11 +2836,89 @@ namespace dxvk {
   }
 
   void ImGUI::showDusklightControlsTab(const Rc<DxvkContext>& ctx) {
+    // This tab decides nothing. It sends indices and two commit counters; the game captures the
+    // press, resolves the conflict and pushes back both the resulting table and a line describing
+    // what it did. Everything below is display.
+    //
+    // The ownership is the whole design and it is worth stating where it is easiest to break.
+    // The overlay cannot see the game's whole input picture - only the binds it is handed - so a
+    // check made here would allow a conflict with anything outside that list. Checking in both
+    // places would be worse: two rules that can disagree now and will drift the first time one is
+    // edited.
+    const bool feedLive = DusklightEnv::enable();
+    if (!feedLive) {
+      ImGui::TextWrapped("Waiting for the game's environment feed. The bind table lives in the game, so there is "
+                         "nothing to show until it connects.");
+      return;
+    }
+
+    const std::vector<std::string> actions = splitPipes(DusklightEnv::bindActions());
+    const std::vector<std::string> buttons = splitPipes(DusklightEnv::bindButtons());
+
+    if (actions.empty()) {
+      ImGui::TextWrapped("The game has not sent its bind table yet. A frame or two of lag after connecting is "
+                         "expected; longer than that means the game build predates this tab.");
+      return;
+    }
+
+    int port = std::clamp(DusklightGame::port(), 0, 3);
+    static const char* kPorts[] = { "Port 1", "Port 2", "Port 3", "Port 4" };
+    if (RemixGui::Combo("Controller##dusklightBind", &port, kPorts, IM_ARRAYSIZE(kPorts))) {
+      DusklightGame::port.setDeferred(port);
+    }
+    ImGui::TextWrapped(DusklightEnv::bindKeyboard()
+                       ? "This port is driven by a keyboard, so binds are keys."
+                       : "This port is driven by a gamepad, so binds are controller buttons.");
+
+    RemixGui::Separator();
+
+    const int selected = std::clamp(DusklightGame::actionIndex(), 0, static_cast<int>(actions.size()) - 1);
+    const bool capturing = DusklightEnv::bindCapturing();
+
+    // Whichever action is selected is the one Rebind and Clear act on, so the selection has to be
+    // visible at a glance rather than inferred from a dropdown somewhere else.
+    for (size_t i = 0; i < actions.size(); ++i) {
+      const bool isSelected = static_cast<int>(i) == selected;
+      const std::string bound = i < buttons.size() ? buttons[i] : std::string("?");
+
+      ImGui::PushID(static_cast<int>(i));
+      if (ImGui::Selectable(actions[i].c_str(), isSelected, 0, ImVec2(220.0f, 0.0f))) {
+        DusklightGame::actionIndex.setDeferred(static_cast<int>(i));
+      }
+      ImGui::SameLine(240.0f);
+      ImGui::TextUnformatted(bound.c_str());
+      ImGui::PopID();
+    }
+
+    RemixGui::Separator();
+
+    ImGui::BeginDisabled(capturing);
+    if (ImGui::Button("Rebind")) {
+      DusklightGame::captureCommit.setDeferred(DusklightGame::captureCommit() + 1);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) {
+      DusklightGame::clearCommit.setDeferred(DusklightGame::clearCommit() + 1);
+    }
+    ImGui::EndDisabled();
+
+    if (capturing) {
+      ImGui::SameLine();
+      ImGui::TextUnformatted("listening...");
+    }
+
+    const std::string status = DusklightEnv::bindStatus();
+    if (!status.empty()) {
+      ImGui::TextWrapped("%s", status.c_str());
+    }
+
     ImGui::TextWrapped(
-      "Not built yet, and the largest of the three. Remapping needs live key capture inside this "
-      "overlay, the game's binding table crossing the bridge in both directions, and a decision "
-      "about which side resolves conflicts. Being able to see the current bindings read-only is a "
-      "sensible first step.");
+      "Binding displaces rather than refuses: the key you press is always taken, and whatever else "
+      "held it on this port is left unbound and named above. Refusing instead would leave you "
+      "pressing a key and watching nothing happen, with no way to tell why.");
+    ImGui::TextWrapped(
+      "Capture keeps working while this overlay is blocking input from the game, because the game "
+      "reads the device directly for this one purpose.");
   }
 
   void ImGUI::showDusklightRemixTab(const Rc<DxvkContext>& ctx) {
@@ -2901,7 +2979,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 4;
+    constexpr int kRequiredProtocol = 6;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -3008,6 +3086,7 @@ namespace dxvk {
       RemixGui::Checkbox("Disable Frustum Culling", &DusklightGame::disableFrustumCullingObject());
       RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
       RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
+      RemixGui::Checkbox("Per-Blade Grass", &DusklightGame::perBladeGrassObject());
       ImGui::TextWrapped(
         "The game drops geometry outside the camera's view, which a path tracer still needs: a wall "
         "culled because you turned away stops occluding, and light leaks through where it was. Costs "
@@ -3015,6 +3094,11 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Hide the sky dome once Remix is generating its own (Rendering > Dusklight Atmosphere), or you "
         "will be looking at both.");
+      ImGui::TextWrapped(
+        "Per-blade grass gives every blade a stable hash, so it can be tagged, replaced with real "
+        "geometry, and hold denoiser history - the batched form cannot, because its vertex positions "
+        "change whenever any blade moves. It costs one draw call per blade, so expect a CPU cost in "
+        "dense grass.");
       ImGui::Unindent();
     }
 

@@ -210,6 +210,25 @@ void main(uint2 ipos : SV_DispatchThreadID)
 
   color *= cb.intensity;
 
+  // The moon, after the sky's intensity so its radiance is absolute rather than a multiple of
+  // however bright the palette happens to be, and after the ground attenuation so a moon below the
+  // horizon is not dimmed into a smear - it simply is not drawn, because the host sends 0.
+  if (cb.moonRadiance > 0.0f)
+  {
+    const float cosMoonElevation = cos(cb.sunElevationRadians);
+    const float3 moonDirection = float3(cosMoonElevation * sin(cb.sunAzimuthRadians),
+                                        cosMoonElevation * cos(cb.sunAzimuthRadians),
+                                        sin(cb.sunElevationRadians));
+
+    const float angle = acos(clamp(dot(direction, moonDirection), -1.0f, 1.0f));
+    const float edge = max(cb.moonEdgeSoftness, 1e-4f) * cb.moonAngularRadiusRadians;
+    const float disc = 1.0f - smoothstep(cb.moonAngularRadiusRadians - edge,
+                                         cb.moonAngularRadiusRadians + edge,
+                                         angle);
+
+    color += cb.moonColor * (cb.moonRadiance * disc);
+  }
+
   // The game's palettes reach zero on both colours in areas with no sky, and a negative or
   // non-finite radiance here would poison every ray that misses geometry.
   color = max(color, float3(0.0f, 0.0f, 0.0f));

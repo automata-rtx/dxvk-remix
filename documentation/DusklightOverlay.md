@@ -46,7 +46,7 @@ readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
 compares it against a `kRequiredProtocol` constant and says so in the tab when
-the game is older. **Currently 4.**
+the game is older. **Currently 6.**
 
 > **Standing rule, already paid for twice:** the game and the Remix DLL are one
 > protocol. Build both from the same point. Both directions of skew have cost
@@ -119,7 +119,7 @@ turned off without turning off the overlay.
 ```
 Dusklight  ├─ Dusklight Remix   everything that changes the image
            ├─ Warp              travel to any level
-           └─ Controls          placeholder
+           └─ Controls          rebind the game's actions
 ```
 
 ### 3.1 Dusklight Remix
@@ -259,14 +259,61 @@ is not worth a CI round.
 
 ### 3.3 Controls
 
-**Placeholder.** Nothing built. What it needs, when it is picked up:
+**Built 2026-07-29, protocol 6.** A controller-port selector, the six
+rebindable actions with what each is currently bound to, and Rebind / Clear.
 
-- live key capture in ImGui, then bindings crossing the bridge in both
-  directions (the game owns the current binds; the overlay has to read them
-  before it can show them)
-- a decision on **conflict-resolution ownership** — if the overlay lets you
-  bind a key the game already uses for something else, who refuses? Doing it in
-  both places means two different answers.
+**The game owns every decision. This tab decides nothing.**
+
+```
+overlay → rtx.dusklight.bind.{port,actionIndex,captureCommit,clearCommit}
+game    → rtx.dusklight.env.{bindActions,bindButtons,bindStatus,bindCapturing,bindKeyboard}
+```
+
+The overlay sends two indices and two commit counters. The game captures the
+press, resolves the conflict, applies it, and pushes back both the resulting
+table and a line of prose saying what it did. Everything the tab renders is a
+string the game sent.
+
+**Why ownership sits there** — this was the open question and it has a real
+answer. The overlay only knows the binds it is *handed*. Anything hardcoded or
+context-sensitive is invisible to it, so a check made here would cheerfully
+allow a conflict with something outside the rebindable list. The game is the
+only side that can be right. Validating in *both* places would be worse than
+either: two rules that can disagree today and will certainly drift the first
+time one of them is edited.
+
+Round-trip lag is the price, and it is the same price the warp list pays. It is
+acceptable here for the same reason: the thing being displayed is by
+construction the thing in force.
+
+**Displace, not reject.** The key you press is always taken; whatever else held
+it on that port is left unbound and named in the status line. Rejecting was the
+alternative and is worse in practice — it leaves someone pressing a key and
+watching nothing happen, with nothing on screen explaining why.
+
+**Capture works while input is blocked, and that is not luck.**
+`PADGetNativeButtonPressed` and SDL's keyboard state read the device directly
+and never consult the flag `PADBlockInput` sets (`aurora-ao/lib/dolphin/pad/pad.cpp`
+— the block is checked in the `PADRead` path, not the native polling one). So
+the input this overlay is busy blocking from the game is still visible to the
+one part of the game that needs it, and **no carve-out in the input blocking
+was required**. Worth knowing before anyone "fixes" that asymmetry.
+
+Two details that would otherwise be bugs:
+
+1. **Capture waits for neutral first.** The click or keypress that pressed
+   Rebind is still held on the frame after, and without the wait it would be
+   captured as the new bind immediately.
+2. **The stored value means different things per port** — an SDL scancode where
+   the port is keyboard-driven, a native gamepad button otherwise, with both
+   spelling "unbound" as -1. That is why the game sends finished display
+   strings rather than raw numbers: it is the only side that knows which kind a
+   given port holds.
+
+**Escape unbinds** during capture, matching the game's own controller config
+screen rather than inventing a second convention.
+
+**Untested in game.**
 
 ---
 
@@ -316,49 +363,72 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Requirements / overrides sections | landed 2026-07-28, CI green |
 | Input blocking via `PADBlockInput` | landed 2026-07-28, CI green |
 | Recording mode toggle | landed 2026-07-28, CI green |
-| Warp | landed 2026-07-28, CI green — **not yet run in game** |
-| Time of day: slider, presets, Freeze Time | landed 2026-07-28, CI green — **not yet run in game** |
-| Controls tab | placeholder only |
+| Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
+| Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
+| Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
 
-**Protocol is at 4** (3 = overlay + warp, 4 = the clock). `kRequiredProtocol`
+Both of the two designs this document argues for at length are now confirmed in
+practice: the **commit counter** (a preset pressed twice works the second time)
+and **layer `-1`** (warps land in the right story version). The round-trip list
+rebuild behaved as described, lag and all.
+
+**Protocol is at 6** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open
 
-- **Local point lights do not work.** Toggling `rtx.dusklight.game.localLights`
-  changes nothing; the tab reported `drawn: 0, tracked: 0` in both states.
-  Confirmed *not* the cause: device registration (reports yes) and the sun/moon
-  distant light (works). Static analysis says a torch (`d_a_ep`,
-  `mColor = (175,93,0)`, `mPow = 500 × strength`) should pass the brightness
-  and reach test.
+- **Local point lights: RESOLVED 2026-07-29.** Forest Temple first room reads
+  `Registered by the game: 5   drawn this frame: 4   tracked: 4`.
 
-  Diagnostics were added so the next build **names which of three states it is
-  in** rather than reporting a bare zero:
+  The diagnostics did their job — the visit that used them took minutes and
+  named the state immediately, where the bare-zero report before them could not
+  distinguish three different failures. Worth keeping as the template: **when a
+  readout cannot distinguish its failure modes, the fix is another readout, not
+  another guess.**
 
-  | Readout | Meaning |
-  | :-- | :-- |
-  | `localLightsRunning = false` | never reached the submit loop — the switch is not reaching the game, or the device did not register |
-  | `localLightsFound = 0` | the game has no lights registered here at all |
-  | `localLightsDrawn = 0` with `found > 0` | lights exist and are being **rejected on the way through** |
+  What did not happen is a proven root cause. The lights simply work in the
+  build that carries the diagnostics, most plausibly because that same change
+  added the `efplight[0..4]` array the first implementation never read, or
+  because of the NaN guards landed alongside. Recorded as unresolved rather than
+  dressed up: if they regress, re-check both arrays first.
 
-  `found` is counted **ahead of every gate**, over both arrays
-  (`env->pointlight[100]` and `env->efplight[5]`), so it stays truthful
-  whichever gate turns the loop back. Note that rejection happens *before* the
-  vector push, so `tracked: 0` is equally consistent with "loop never ran" and
-  "every light rejected" — which is exactly why `localLightsRunning` had to be
-  added separately.
+  Two settings came out of the visit and **neither is the default** —
+  `localLightIntensity` **19** and `localLightRadius` **10**. The 19 is the
+  derived reading of the game's attenuation curve, not a taste value. See
+  `dusklight-ao/docs/kankyo-remix.md` open issue 3.
 
-  **Next step: read the three values from a build with these diagnostics while
-  stood at a lit torch.** Warp to Forest Temple (`D_MN05`) — `d_a_ep` registers
-  its light on actor init whether or not the flame is lit — set
-  `rtx.fallbackLightMode = 0` so an unlit room goes black, and **tick the
-  checkbox before reading**: `found` is counted before the enable gate but
-  `running` is set after it, so reading with the box unticked always reports
-  "not running its light submission", which is expected and not the bug.
-- Warp untested in game.
-- Time-of-day slider and Freeze Time untested in game. Test these **first** —
-  every A/B comparison in the backlog is worth more with the clock stopped.
-- Controls tab not started.
+  Loose end: `found 5` but `drawn 4`. One light is being rejected on the way
+  through, and "harmless" is currently an assumption.
+- **The wolf-senses overlay covers the screen.** Black heavy surround, pure
+  white centre where the see-through region belongs. Not investigated. It blocks
+  the wolf-senses route to testing the mono overlay and base weight — but not
+  the **twilight** route, which reaches the same code through bloom tables 1/2
+  and is how that test should now be done.
+- **World-space UI billboards appear only intermittently — the RTX injection
+  boundary.** Investigated 2026-07-29. The targeting arrow and torch fire
+  billboards appear together, inconsistently, and only while the letterbox bars
+  are up (necessary, not sufficient).
+
+  The mechanism is in this repo, not in aurora: `isRenderingUI()`
+  (`src/d3d9/d3d9_rtx.cpp:559`) classifies the first orthographic,
+  z-write-disabled draw on the primary RT as UI and **triggers RTX injection**
+  (`makeDrawCallType`, `:519`). After that, `internalPrepareDraw` early-returns
+  for every remaining draw in the frame (`:576-591`), so those draws never enter
+  the raytraced scene and **never reach texture categorization**.
+
+  That is the "not in the categorization screen" symptom, and it makes the
+  natural fix unavailable: `rtx.uiTextures` is consulted *inside*
+  `isRenderingUI()`, which only runs before injection — so a draw cannot be
+  tagged UI precisely when it needs to be. Same shape of trap as the vrbox sky.
+
+  The game draws the targeting cursor (a real perspective-projected J3D model,
+  not UI) at `m_Do_graphic.cpp:2689`, the 2D game particles at `:2714`, and the
+  letterbox bars — an ortho, z-write-off draw — at `:2717`. Since the bars come
+  *after* both, they cannot be the trigger that rescues them; something else
+  correlated with letterbox must inject earlier. Full analysis, ruled-out
+  candidates and the three settling experiments are in `kankyo-remix.md`
+  open issue 6.
+- Controls tab landed but untested in game.
 
 The full step-by-step for all of the above, with baseline `rtx.conf` and
 failure tables, is in `dusklight-ao/docs/kankyo-remix.md` §"Test session

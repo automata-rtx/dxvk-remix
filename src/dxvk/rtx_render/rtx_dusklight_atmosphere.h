@@ -305,6 +305,60 @@ namespace dxvk {
                     "sitting on the ground.",
                     args.minValue = 0.0f,
                     args.maxValue = 1.0f);
+
+    RTX_OPTION("rtx.dusklight.atmosphere", bool, skyMoonEnable, true,
+               "Paints the moon into the generated sky.\n"
+               "The game hangs its moon on a billboard anchored to the camera, which under a path tracer becomes an occluder that travels with the "
+               "player - the measured cause of shadow coverage appearing to wander at night. rtx.dusklight.game.hideSkyBillboards removes it and fixes "
+               "that, and takes the visible moon with it. This gives the moon back without giving the problem back: a disc painted into the dome is "
+               "correctly placed, moves with the sky rather than with the camera, and cannot cast a shadow because it is not geometry.\n"
+               "Only the moon. The sun stays out of this image deliberately - it is an analytic distant light, and baking something that bright into a "
+               "dome only ever reached by ray miss would double count it and sample it badly.\n"
+               "Inert unless rtx.dusklight.atmosphere.skyEnable is on, and drawn only while the game's celestial body is the moon.");
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyMoonAngularDiameterDegrees, 5.7f,
+                    "Apparent size of the painted moon, in degrees.\n"
+                    "The default matches the game's own: its moon quad is 8000 units across at an orbit radius of 80000, which subtends about 5.7 "
+                    "degrees - roughly eleven times the real moon, and what a player of this game is used to seeing.",
+                    args.minValue = 0.1f,
+                    args.maxValue = 30.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyMoonIntensity, 4.0f,
+                    "Radiance of the painted moon.\n"
+                    "Absolute rather than a multiple of the sky's brightness, so it does not swing with the palette. This is appearance only - the "
+                    "moonlight itself comes from the distant light the bridge drives (rtx.dusklight.game.moonIntensity), so raising this makes the moon "
+                    "brighter to look at without making the night any brighter to stand in.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 64.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyMoonEdgeSoftness, 0.15f,
+                    "Softness of the moon's edge, as a fraction of its radius.\n"
+                    "A hard edge aliases badly here: the dome is a lat-long map, so its angular sampling rate varies with latitude and a crisp circle "
+                    "crawls as the moon moves.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+
+    // Two candidate fixes for the same defect, kept side by side deliberately so they can be
+    // compared in game rather than argued about. One of them is meant to be deleted once the
+    // comparison has been made.
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", int, skyFogMode, 1,
+                    "How much of the fog a ray that hits nothing - the visible sky - is allowed to pick up.\n"
+                    "The distance ramp already refuses to run on the sky, because it would drive it to full fog and leave a flat colour where the sky "
+                    "should be. The froxel grid was never told the same thing: it dims the sky by the transmittance of its whole depth and adds that "
+                    "depth's fog colour on top. The result is a sky that reads dim and dingy while the terrain in front of it, which correctly fades "
+                    "towards the sky's own colour, does not - a seam along the horizon that gets worse the denser the fog.\n"
+                    "It matters more here than it would in another game because this fog is an artistic quantity rather than air: it closes over tens "
+                    "of metres, so there is a great deal of it to apply and all of it lands on the sky.\n"
+                    "0: Off. The untreated behaviour, kept so the defect can be seen on demand.\n"
+                    "1: Exempt. The sky ignores the fog entirely, which is what the original did - it drew its sky with fog switched off at any density. "
+                    "Costs light shafts that would have been visible against the sky, since those are the same in-scatter.\n"
+                    "2: Weighted. The sky picks up rtx.dusklight.atmosphere.skyFogAmount of the fog, so a genuinely foggy day still veils it and shafts "
+                    "against the sky survive in proportion.",
+                    args.minValue = 0,
+                    args.maxValue = 2);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyFogAmount, 0.15f,
+                    "In Weighted mode, how much of the fog the sky picks up. 0 matches Exempt, 1 matches Off.\n"
+                    "Low by construction: the point is that the sky should be veiled by weather rather than erased by a medium calibrated to close in "
+                    "tens of metres. Read only when rtx.dusklight.atmosphere.skyFogMode is 2.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
   };
 
 }
