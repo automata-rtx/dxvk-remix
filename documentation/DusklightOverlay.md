@@ -357,12 +357,30 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
   the wolf-senses route to testing the mono overlay and base weight — but not
   the **twilight** route, which reaches the same code through bloom tables 1/2
   and is how that test should now be done.
-- **World-space UI billboards appear only intermittently.** The targeting arrow
-  and torch fire billboards appear together, inconsistently, and depend on
-  player/camera position; the arrow dims under shadow as though lit as ordinary
-  geometry. Neither shows in Remix's texture categorization screen at all, which
-  points at the capture path rather than at categorization — partly an aurora
-  question. See `kankyo-remix.md` open issue 6.
+- **World-space UI billboards appear only intermittently — the RTX injection
+  boundary.** Investigated 2026-07-29. The targeting arrow and torch fire
+  billboards appear together, inconsistently, and only while the letterbox bars
+  are up (necessary, not sufficient).
+
+  The mechanism is in this repo, not in aurora: `isRenderingUI()`
+  (`src/d3d9/d3d9_rtx.cpp:559`) classifies the first orthographic,
+  z-write-disabled draw on the primary RT as UI and **triggers RTX injection**
+  (`makeDrawCallType`, `:519`). After that, `internalPrepareDraw` early-returns
+  for every remaining draw in the frame (`:576-591`), so those draws never enter
+  the raytraced scene and **never reach texture categorization**.
+
+  That is the "not in the categorization screen" symptom, and it makes the
+  natural fix unavailable: `rtx.uiTextures` is consulted *inside*
+  `isRenderingUI()`, which only runs before injection — so a draw cannot be
+  tagged UI precisely when it needs to be. Same shape of trap as the vrbox sky.
+
+  The game draws the targeting cursor (a real perspective-projected J3D model,
+  not UI) at `m_Do_graphic.cpp:2689`, the 2D game particles at `:2714`, and the
+  letterbox bars — an ortho, z-write-off draw — at `:2717`. Since the bars come
+  *after* both, they cannot be the trigger that rescues them; something else
+  correlated with letterbox must inject earlier. Full analysis, ruled-out
+  candidates and the three settling experiments are in `kankyo-remix.md`
+  open issue 6.
 - Controls tab not started.
 
 The full step-by-step for all of the above, with baseline `rtx.conf` and
