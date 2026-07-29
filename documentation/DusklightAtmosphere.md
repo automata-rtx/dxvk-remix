@@ -852,10 +852,10 @@ same property that makes the painted moon safe.
 
 **What this does and does not change.**
 
-- It does **not** invalidate the dome light (B1). That was chosen for HDR sky
-  radiance feeding GI, and it is tested and working. The generated dome is not
-  an instance, so no category flag reaches it, and the §12 composite fix is
-  still the fix for the fog defect.
+- It does **not** invalidate the dome light (B1) — but the reason given for B1
+  in the first revision of this section was **also wrong**, and it is corrected
+  in §14.10 below. The generated dome is not an instance, so no category flag
+  reaches it, and the §12 composite fix is still the fix for the fog defect.
 - It does mean **the reason we stopped considering tagging was wrong**, and any
   future "we can't tag that, it has no texture" should be checked against this
   table first.
@@ -872,6 +872,61 @@ categorised.
 The general lesson, and it is the same one as §14.7: a true premise chained to
 a plausible inference is still not a verified conclusion. "There is no texture"
 was checked. "Therefore it cannot be categorised" never was.
+
+### 14.10 The stated advantages of the dome light over the sky probe were both false
+
+Corrected 2026-07-29, immediately after §14.9, and by the same owner question.
+§14.9 said the dome light was still right "for HDR sky radiance feeding GI,
+which a rasterized probe does not give". Both halves of that are wrong.
+
+**The sky probe feeds GI exactly as the dome light does.**
+`integrator_indirect.slangh:371-379` — the *indirect* integrator — is a plain
+if/else, and both branches add to `emissiveRadiance` on ray miss:
+
+```hlsl
+if (cb.domeLightArgs.active)  skyRadiance = domeLightArgs.radiance * sampleDomeLightTexture(...);
+else                          skyRadiance = cb.skyBrightness * SkyProbe.SampleLevel(...);
+emissiveRadiance += skyRadiance * radianceAttenuation;
+```
+
+There is no GI difference. There never was one; the claim was inferred from
+"there is no dome light *type* in `light_types.h`, so a sky is never
+NEE-sampled" (§14.1, which is true) and then wrongly extended into "so the probe
+does not light the scene". Ray miss *is* how both of them light the scene.
+
+**The 8-bit clamp is inherited, not intrinsic.** `rtx_sky.h:152` takes the sky
+render target's format from *the game's own bound render target*, which is why
+a game with an LDR backbuffer gets an LDR sky. Two things follow: `skyForceHDR`
+overrides it outright (`:156`, forcing `B10G11R11_UFLOAT`), and a sky whose
+content we supply is not bound by whatever format the game happened to be
+rendering into.
+
+**And sky geometry may not be rasterized at all.** `rtx_sky.h:165-192` routes
+sky-categorised draws two ways: rasterized into the cubemap, or pushed to
+`m_delayedRayTracedSky` and reprojected from sky camera space into the main
+camera's. Which one depends on `rtx.skyReprojectToMainCameraSpace` (default
+**false**, so today it rasterizes) and on whether the draw is a skybox quad.
+
+**What actually remains in the dome light's favour**, stated honestly because
+the previous version of this list was invented rather than measured:
+
+- It is **tested and working**, which the alternative is not.
+- It is infinitely far and non-occluding *by construction* rather than by
+  category — there is no draw to accidentally intersect anything.
+- It is one texture we already generate, with no second geometry path to keep
+  alive.
+
+Those are real but they are a different argument, and none of them says the
+sky-categorised route would look worse. That is now an open question to settle
+by looking, which is what the toggles being added exist for.
+
+**`rtx.fogIgnoreSky` is inert for us.** It sets a sky draw's `fogState.mode` to
+`D3DFOG_NONE` so sky draws are skipped when Remix picks the frame's fog values
+(`d3d9_rtx.cpp:733`). We do not use captured fog state at all while the
+atmosphere is on — `applyFogOverride` (`rtx_scene_manager.cpp:2073`) replaces it
+wholesale. So it is dead code on this path, in the same way
+`rtx.volumetrics.enableFogRemap` is, and setting it will look like it does
+nothing because it does.
 
 ### 14.7 Don't trust a recon report you did not verify
 
