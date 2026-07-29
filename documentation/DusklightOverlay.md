@@ -293,6 +293,7 @@ conversion, not a warning to be silenced.
 | Piece | Where |
 | :-- | :-- |
 | Overlay window, tabs, all three tab bodies | `src/dxvk/imgui/dxvk_imgui.cpp` (`showDusklightOverlay` → `showDusklightWindow` → `showDusklight{Remix,Warp,Controls}Tab`) |
+| Time of day (called from the Warp tab, and from its early-return path too, so the clock survives the destination list lagging) | `showDusklightTimeOfDay` in the same file |
 | Game-owned settings, hosted in Remix | `src/dxvk/rtx_render/rtx_dusklight_game.h` |
 | Game-pushed readouts | `src/dxvk/rtx_render/rtx_dusklight_env.h` |
 | Bloom's Dusklight-mode settings, split out for reuse | `src/dxvk/rtx_render/rtx_bloom.{h,cpp}` (`showDusklightImguiSettings`) |
@@ -316,7 +317,11 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Input blocking via `PADBlockInput` | landed 2026-07-28, CI green |
 | Recording mode toggle | landed 2026-07-28, CI green |
 | Warp | landed 2026-07-28, CI green — **not yet run in game** |
+| Time of day: slider, presets, Freeze Time | landed 2026-07-28, CI green — **not yet run in game** |
 | Controls tab | placeholder only |
+
+**Protocol is at 4** (3 = overlay + warp, 4 = the clock). `kRequiredProtocol`
+lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open
 
@@ -344,6 +349,17 @@ resolve by re-applying a call, not by re-deriving a tab.
   added separately.
 
   **Next step: read the three values from a build with these diagnostics while
-  stood at a lit torch.**
+  stood at a lit torch.** Warp to Forest Temple (`D_MN05`) — `d_a_ep` registers
+  its light on actor init whether or not the flame is lit — set
+  `rtx.fallbackLightMode = 0` so an unlit room goes black, and **tick the
+  checkbox before reading**: `found` is counted before the enable gate but
+  `running` is set after it, so reading with the box unticked always reports
+  "not running its light submission", which is expected and not the bug.
 - Warp untested in game.
+- Time-of-day slider and Freeze Time untested in game. Test these **first** —
+  every A/B comparison in the backlog is worth more with the clock stopped.
 - Controls tab not started.
+
+The full step-by-step for all of the above, with baseline `rtx.conf` and
+failure tables, is in `dusklight-ao/docs/kankyo-remix.md` §"Test session
+playbook". It is kept there rather than here because it spans all three repos.

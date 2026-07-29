@@ -582,6 +582,7 @@ Churn in `d_kankyo.cpp` is limited to one capture call, matching the existing
 | Phase B (B1–B2) | implemented 2026-07-27, **tested good 2026-07-28**; `skyIntensity` raised 1.0 → 6.0 after it read dim |
 | Phase C (C1-C3) | implemented 2026-07-28, CI green, **untested in game** |
 | Overlay, warp, input blocking | landed 2026-07-28, CI green — see `DusklightOverlay.md` |
+| Time-of-day scrub + freeze | landed 2026-07-28, CI green, **untested** — `DusklightOverlay.md` §3.2.1 |
 
 Owner's verdict on A + B after testing: *"a massive, frankly monumental
 success."* Range, shape and per-area fog scaling all validated; see §13's
@@ -593,6 +594,7 @@ success."* Range, shape and per-area fog scaling all validated; see §13's
 - `rtx.dusklight.game.hideSkyBillboards`
 - **local point lights — known broken**, see `DusklightOverlay.md` §6
 - warp
+- the time-of-day slider and Freeze Time
 
 `disableFrustumCulling` **is** now tested: it works and it visibly helps with
 light leakage.
@@ -600,6 +602,13 @@ light leakage.
 Settled by testing: `celestialNoonElevation` at **80** — the owner's choice,
 deliberately short of 90 because the azimuth flips instantaneously at exactly
 90.
+
+**Test Freeze Time before testing Phase C.** The blend is driven by sun
+elevation, so a Phase C A/B needs the sun held in one place — otherwise part of
+the difference between the two shots is the clock. Freeze at **180 (noon)**,
+where the sun is well above the 28° full-strength threshold, and A/B
+`physicalMaxWeight` 0 ↔ 1. The step-by-step version, including the failure
+table, is in `dusklight-ao/docs/kankyo-remix.md` §"Test session playbook".
 
 ### What landed
 
@@ -612,8 +621,11 @@ deliberately short of 90 because the azimuth flips instantaneously at exactly
 | B1 generated sky | `dusklight_sky.{h,comp.slang}`, `DxvkDusklightAtmosphere::prepareSceneData` |
 | B2 dome suppression | game `d_a_vrbox.cpp`, `d_a_vrbox2.cpp`, `settings.{h,cpp}` |
 
-Bridge protocol went **1 → 2**. A game build older than that will show the "game build is older than this Remix build"
-notice in the Dusklight tab rather than silently doing nothing.
+Bridge protocol went **1 → 2** for this work. A game build older than the
+fork's `kRequiredProtocol` shows the "game build is older than this Remix
+build" notice in the Dusklight tab rather than silently doing nothing.
+**Protocol has since advanced to 4** (3 = overlay + warp, 4 = the clock), so
+that number is the historical one for phases A/B, not the current requirement.
 
 ### To turn it on
 
