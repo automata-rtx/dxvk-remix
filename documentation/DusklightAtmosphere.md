@@ -668,7 +668,7 @@ table, is in `dusklight-ao/docs/kankyo-remix.md` §"Test session playbook".
 Bridge protocol went **1 → 2** for this work. A game build older than the
 fork's `kRequiredProtocol` shows the "game build is older than this Remix
 build" notice in the Dusklight tab rather than silently doing nothing.
-**Protocol has since advanced to 4** (3 = overlay + warp, 4 = the clock), so
+**Protocol has since advanced to 5** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass), so
 that number is the historical one for phases A/B, not the current requirement.
 
 ### To turn it on

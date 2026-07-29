@@ -138,6 +138,17 @@ namespace dxvk {
                "show at night, since stars and the moon are the only sky billboards drawn then.\n"
                "This is the fix as well as the test, and it removes the visible stars and moon along with the occluder. These do carry textures, unlike the "
                "sky dome, so tagging them as Sky rather than hiding them is possible and would keep them visible - worth doing only if you want them back.");
+    RTX_OPTION("rtx.dusklight.game", bool, perBladeGrass, false,
+               "Draws each blade of grass as its own instance instead of batching a whole room into one.\n"
+               "The game merges every blade in a room into a single dynamic vertex stream, already transformed into world "
+               "space. That is right for a rasterizer and wrong here: Remix identifies geometry by hashing vertex positions "
+               "among other things, so a batch whose positions change the moment any blade sways, is cut or regrows has no "
+               "stable identity at all. Such an instance cannot be tagged in the texture categorization screen, cannot be "
+               "replaced with authored geometry, and carries no denoiser or ReSTIR history - which is why grass lighting "
+               "lags behind the rest of the scene and can settle on the wrong answer.\n"
+               "Per blade, each one is static display list geometry plus its own transform, so its hash holds still. The "
+               "cost is exactly what the batching was saving: one draw call per blade rather than a few per room, paid on "
+               "the CPU in dense grass. Off by default for that reason.");
     RTX_OPTION("rtx.dusklight.game", bool, hideVrbox, false,
                "Stops the game drawing its own sky dome.\n"
                "The dome is painted by handing the hardware a handful of colours rather than by drawing a texture, so Remix has nothing "

@@ -2901,7 +2901,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 4;
+    constexpr int kRequiredProtocol = 5;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -3008,6 +3008,7 @@ namespace dxvk {
       RemixGui::Checkbox("Disable Frustum Culling", &DusklightGame::disableFrustumCullingObject());
       RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
       RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
+      RemixGui::Checkbox("Per-Blade Grass", &DusklightGame::perBladeGrassObject());
       ImGui::TextWrapped(
         "The game drops geometry outside the camera's view, which a path tracer still needs: a wall "
         "culled because you turned away stops occluding, and light leaks through where it was. Costs "
@@ -3015,6 +3016,11 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Hide the sky dome once Remix is generating its own (Rendering > Dusklight Atmosphere), or you "
         "will be looking at both.");
+      ImGui::TextWrapped(
+        "Per-blade grass gives every blade a stable hash, so it can be tagged, replaced with real "
+        "geometry, and hold denoiser history - the batched form cannot, because its vertex positions "
+        "change whenever any blade moves. It costs one draw call per blade, so expect a CPU cost in "
+        "dense grass.");
       ImGui::Unindent();
     }
 
