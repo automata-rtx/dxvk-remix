@@ -630,11 +630,11 @@ colour. The sky beside it is attenuated dome plus `fog_col`-tinted in-scatter. T
 descriptions of one day, which is exactly what §0 exists to prevent, arriving
 through the one path §0 did not cover.
 
-**Not fixable by tagging.** The natural instinct is that the sky needs
-`InstanceCategories::Sky`. It cannot: the generated sky is a dome light sampled
-on ray miss, not captured geometry, so there is nothing to hash or categorise —
-the same reason B1 exists at all (§ the superseded tagging plan in
-`kankyo-remix.md`). The exemption has to happen in the composite.
+**Not fixable by tagging *this*** — but read §14.9 before repeating the wider
+claim, which was wrong. Category flags apply to *instances*; the generated sky
+is a dome light sampled on ray miss, so nothing here can be categorised and the
+exemption still has to happen in the composite. What was wrong was the reason
+recorded for ruling tagging out **everywhere else**.
 
 **FIXED 2026-07-29 — and deliberately fixed twice,
 `rtx.dusklight.atmosphere.skyFogMode`.** Both candidate treatments are built and
@@ -826,6 +826,52 @@ Two general lessons in it:
    Remix code that attenuates something by the full grid depth behaves very
    differently for us than it does for stock. Worth checking the same question
    anywhere else `volumeAttenuation` is applied to a distant or infinite source.
+
+### 14.9 "No texture, therefore untaggable" was wrong — there are three routes, not one
+
+Corrected 2026-07-29, after an NVIDIA engineer working on upstream Remix pointed
+at `REMIXAPI_INSTANCE_CATEGORY_BIT_SKY`. Verified in this fork.
+
+This document, `kankyo-remix.md`, and `dx9-fixed-function.md` all carried the
+same reasoning: *the vrbox is painted with vertex colours, so there is no
+texture, so Remix can never hash it, so it can never be categorised as Sky.*
+The first three clauses are true. **The conclusion does not follow**, because
+texture hashing is only one of three ways a category is assigned:
+
+| Route | Mechanism | Needs a texture? |
+| :-- | :-- | :-- |
+| `rtx.skyBoxTextures` | texture hash on a captured draw (`rtx_types.cpp:409`) | **yes** — the only one that does |
+| `rtx.skyBoxGeometries` | **geometry/asset hash** on a captured draw, via `geometryAssetHashRule` (`rtx_types.cpp:416`, option at `rtx_options.h:191`) | no |
+| `REMIXAPI_INSTANCE_CATEGORY_BIT_SKY` | declared outright on geometry submitted through the API (`remix_c.h:457` → `rtx_remix_api.cpp:647`, on `remixapi_InstanceInfo.categoryFlags` for `DrawInstance`) | no |
+
+So the game's own untextured sky dome **can** be tagged — by geometry hash,
+today, with a config line and no code — and any geometry we submit ourselves can
+simply declare the category. An instance tagged Sky also gets `CameraType::Sky`
+(`rtx_remix_api.cpp:637`) and is excluded from visibility rays, which is the
+same property that makes the painted moon safe.
+
+**What this does and does not change.**
+
+- It does **not** invalidate the dome light (B1). That was chosen for HDR sky
+  radiance feeding GI, and it is tested and working. The generated dome is not
+  an instance, so no category flag reaches it, and the §12 composite fix is
+  still the fix for the fog defect.
+- It does mean **the reason we stopped considering tagging was wrong**, and any
+  future "we can't tag that, it has no texture" should be checked against this
+  table first.
+- §8.5's other objection — that the sky probe is rasterized in the game's own
+  8-bit format and clamped — is weaker than recorded too: `rtx.skyForceHDR`
+  (`rtx_sky.h:156`) forces `B10G11R11_UFLOAT` for exactly that reason.
+
+**Also surfaced while checking:** `rtx.fogIgnoreSky` (default false) makes fog
+capture skip sky-categorised draws. That is about *which draw's fog state wins
+the frame* — the old §2.5 lottery — not about exempting sky pixels from fog, so
+it is not a second fix for §12. Worth knowing now that sky draws can actually be
+categorised.
+
+The general lesson, and it is the same one as §14.7: a true premise chained to
+a plausible inference is still not a verified conclusion. "There is no texture"
+was checked. "Therefore it cannot be categorised" never was.
 
 ### 14.7 Don't trust a recon report you did not verify
 
