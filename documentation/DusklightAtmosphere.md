@@ -873,6 +873,40 @@ The general lesson, and it is the same one as §14.7: a true premise chained to
 a plausible inference is still not a verified conclusion. "There is no texture"
 was checked. "Therefore it cannot be categorised" never was.
 
+### 13.1 The moon, painted into the dome
+
+Built 2026-07-29, `rtx.dusklight.atmosphere.skyMoonEnable`, default **on**.
+Untested.
+
+`hideSkyBillboards` is confirmed as the fix for the wandering night shadows, and
+it takes the visible moon with it. This gives the moon back without giving the
+billboard back: a disc painted into the generated sky is correctly placed, moves
+with the sky rather than with the camera, and cannot cast a shadow because it is
+not geometry.
+
+| Choice | Value | Why |
+| :-- | :-- | :-- |
+| Size | **5.7°** (`skyMoonAngularDiameterDegrees`) | The game's own — an 8000-unit quad at an 80000 orbit radius. Eleven times the real moon, and what a player of this game is used to |
+| Brightness | 4.0 (`skyMoonIntensity`), applied **after** the sky's intensity | Absolute rather than a multiple of the palette, so it does not swing with the weather. Appearance only — the moonlight is the distant light |
+| Edge | 0.15 of the radius (`skyMoonEdgeSoftness`) | A hard circle aliases badly in a lat-long map, whose angular sampling rate varies with latitude |
+
+Three implementation points worth keeping:
+
+1. **Only the moon.** The sun stays out of this image deliberately — it is
+   analytic and NEE-sampled, and baking something that bright into an image only
+   ever reached by ray miss would double count it and sample it terribly (§8.5).
+2. **It reuses the pushed celestial direction.** The game sends one direction —
+   whichever body is driving the light — so `sunAzimuth`/`sunElevation` *is* the
+   moon's direction while `sunIsDay` is false, and no second pair was needed.
+3. **Faded by `sunFade`, not by an elevation threshold.** That value already
+   falls to zero across the dawn and dusk handovers, which is exactly where the
+   pushed direction stops meaning the moon. Keying off elevation instead would
+   have snapped it out while it was still on screen.
+
+The sky image is dispatched unconditionally every frame (only the two LUTs are
+staleness-gated), which is what lets the moon move and fade at all — worth
+knowing before anyone adds a cache there.
+
 ### 14.10 The stated advantages of the dome light over the sky probe were both false
 
 Corrected 2026-07-29, immediately after §14.9, and by the same owner question.
