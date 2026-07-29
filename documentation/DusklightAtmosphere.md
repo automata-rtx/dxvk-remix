@@ -580,24 +580,68 @@ Churn in `d_kankyo.cpp` is limited to one capture call, matching the existing
 | Phase 0 calibration | run 2026-07-28 — see §13 |
 | Phase A (A1–A4) | implemented 2026-07-27, **tested good 2026-07-28** |
 | Phase B (B1–B2) | implemented 2026-07-27, **tested good 2026-07-28**; `skyIntensity` raised 1.0 → 6.0 after it read dim |
-| Phase C (C1-C3) | implemented 2026-07-28, CI green, **untested in game** |
-| Overlay, warp, input blocking | landed 2026-07-28, CI green — see `DusklightOverlay.md` |
-| Time-of-day scrub + freeze | landed 2026-07-28, CI green, **untested** — `DusklightOverlay.md` §3.2.1 |
+| Phase C (C1-C3) | implemented 2026-07-28, **run 2026-07-29 — scattering confirmed, verdict blocked by the sky/fog defect below** |
+| Overlay, warp, input blocking | landed 2026-07-28, **tested good 2026-07-29** |
+| Time-of-day scrub + freeze | landed 2026-07-28, **tested good 2026-07-29** — `DusklightOverlay.md` §3.2.1 |
 
 Owner's verdict on A + B after testing: *"a massive, frankly monumental
 success."* Range, shape and per-area fog scaling all validated; see §13's
 "What the pass found".
 
-**Still untested in game**, all independent of the atmosphere:
+**The 2026-07-29 session cleared this list.** `hideSkyBillboards`, warp, the
+time-of-day slider and Freeze Time all work; local point lights work (they need
+`localLightIntensity` 19 and `localLightRadius` 10 — see
+`dusklight-ao/docs/kankyo-remix.md` open issue 3); and `hideSkyBillboards`
+**fixed the night shadow wandering**, confirming the moon-quad cause rather than
+merely masking it.
 
-- Phase C (the physical sky blend) — never seen running
-- `rtx.dusklight.game.hideSkyBillboards`
-- **local point lights — known broken**, see `DusklightOverlay.md` §6
-- warp
-- the time-of-day slider and Freeze Time
+**Still untested:** the ambient grade only — and it should stay untested until
+the defect below is fixed, because grading on top of a wrongly-lit sky is tuning
+against a moving target.
 
-`disableFrustumCulling` **is** now tested: it works and it visibly helps with
+`disableFrustumCulling` **is** tested: it works and it visibly helps with
 light leakage.
+
+### The live defect: the medium dims the generated sky
+
+Found 2026-07-29. Frozen noon with `physicalSky` on, and worse in Lake Hylia
+morning fog with it off: the visible sky reads dim and dingy, and there is a
+seam where distant terrain is convincingly blue while the sky just above the
+silhouette is duller. Lowering `densityScale` improves it markedly.
+
+**Verified cause — the two halves of our fog disagree about the sky:**
+
+| Half | What it does to a sky pixel |
+| :-- | :-- |
+| Far ramp, `applyFog` (`composite.comp.slang:625`) | **Exempts it.** `if (primaryMiss) return;` — the comment there says running the ramp on the sky "would drive it to full fog and replace the sky with a flat colour" |
+| Volumetric half, `applySkyContribution` (`:585`) | **Fogs it.** `domeLightArgs.radiance * sampleDomeLightTexture(...) * volumeAttenuation` over the *whole* froxel grid, with the in-scatter already in `radianceOutput` |
+
+A sky pixel therefore comes out as *(in-scatter over the full grid)* + *(dome ×
+transmittance over the full grid)*. The far ramp was carefully taught not to do
+this; the volumetric path does it anyway by another route.
+
+**Why it hurts us more than stock Remix:** §14.2. Our medium is deliberately far
+denser than air, so `exp(-σ · gridDepth)` is large — and all of it lands on the
+sky. Remix's near-clear default medium would barely show it.
+
+**Why the seam looks the way it does:** distant terrain fades toward the far
+ramp's colour, which per C3 samples the dome in the view direction — the right
+colour. The sky beside it is attenuated dome plus `fog_col`-tinted in-scatter. Two
+descriptions of one day, which is exactly what §0 exists to prevent, arriving
+through the one path §0 did not cover.
+
+**Not fixable by tagging.** The natural instinct is that the sky needs
+`InstanceCategories::Sky`. It cannot: the generated sky is a dome light sampled
+on ray miss, not captured geometry, so there is nothing to hash or categorise —
+the same reason B1 exists at all (§ the superseded tagging plan in
+`kankyo-remix.md`). The exemption has to happen in the composite.
+
+**Fix shape, not yet written.** Bound the sky's volume attenuation rather than
+applying the full grid depth. Exempting `primaryMiss` outright matches the far
+ramp and is the smallest change; a `skyFogWeight` scalar is better, because a
+genuinely foggy day *should* veil the sky — just not by the amount an
+artistic medium calibrated to close in tens of metres implies. Either is one
+guarded branch in the §11 style.
 
 Settled by testing: `celestialNoonElevation` at **80** — the owner's choice,
 deliberately short of 90 because the azimuth flips instantaneously at exactly
@@ -742,6 +786,31 @@ m_derived = resolve();
 
 Any new consumer should call the same accessor rather than deriving its own.
 
+### 14.8 The sky is fogged by two paths, and only one of them knows it
+
+Found 2026-07-29, written up in §12. The short form, because it is the kind of
+thing that will be rediscovered otherwise:
+
+**`applyFog` exempting `primaryMiss` is not the same as "the sky is not fogged".**
+The composite reaches the sky twice. `applyFog` skips it deliberately and says so
+in a comment. `applySkyContribution` (`composite.comp.slang:585`) multiplies the
+dome by `volumeAttenuation` — the froxel transmittance over the full grid — and
+by then the froxel in-scatter is already sitting in `radianceOutput`. Reading the
+first and concluding the sky is exempt is wrong, and the comment at the exemption
+site actively encourages that misreading.
+
+Two general lessons in it:
+
+1. **A guard in one path is not a guarantee across the system.** The consistency
+   §0 promises is only structural where every consumer goes through one
+   derivation. The fog does not: it has a near half and a far half, and they were
+   given different rules about infinity.
+2. **Density and visibility of the sky are coupled here in a way they are not
+   upstream.** Because our σ is an artistic quantity rather than air (§14.2), any
+   Remix code that attenuates something by the full grid depth behaves very
+   differently for us than it does for stock. Worth checking the same question
+   anywhere else `volumeAttenuation` is applied to a distant or infinite source.
+
 ### 14.7 Don't trust a recon report you did not verify
 
 A reconnaissance pass claimed Lake Hylia "passes `start > end` deliberately".
@@ -846,12 +915,28 @@ sentence of the pass, because it confirms three things at once:
   one scale-free expression, no per-area code anywhere;
 - the froxel grid really is resizing per area (A4).
 
-**Still uncovered: the dense end.** Everything confirmed so far is the thin and
-mid regime. `zHalfMin` only does anything where the half-density point falls
-behind the camera, which happens in a scripted fog bank and nowhere else, so it
-remains untested rather than confirmed. Lake Hylia in the morning and the Goron
-Mines are the two visits that would close that gap. `froxelRangeScale` (0.6) is
-likewise unchallenged rather than validated.
+**The dense end — half covered as of 2026-07-29.** Lake Hylia in the morning was
+visited and its fog is *"suitably intense"*, which is the first real evidence
+that the σ mapping holds at the dense end and not just in the thin and mid
+regimes.
+
+Two cautions against reading it as more than that:
+
+- **It does not isolate `zHalfMin`.** That clamp only bites where the
+  half-density point falls behind the camera. Lake Hylia's kytag01 passes a
+  *negative* start with `start < end` (§14.7 — the opposite of what an earlier
+  recon claimed), so whether the clamp actually fired in that visit is not
+  established. "The dense case looks right" and "the clamp is correct" are
+  different claims and only the first has evidence.
+- **The Goron Mines are still unvisited**, and they are the other regime — near
+  and dense rather than scripted and dense.
+
+`froxelRangeScale` (0.6) remains unchallenged rather than validated.
+
+**And the Lake Hylia visit surfaced something bigger than fog density:** it is
+where the sky/fog defect in §12 shows worst, because it is the densest medium
+the game asks for. Any future dense-fog reading is partly measuring that defect
+until it is fixed.
 
 ### The measurement pass is still worth doing
 

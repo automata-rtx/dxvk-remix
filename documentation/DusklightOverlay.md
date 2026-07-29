@@ -316,48 +316,53 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Requirements / overrides sections | landed 2026-07-28, CI green |
 | Input blocking via `PADBlockInput` | landed 2026-07-28, CI green |
 | Recording mode toggle | landed 2026-07-28, CI green |
-| Warp | landed 2026-07-28, CI green — **not yet run in game** |
-| Time of day: slider, presets, Freeze Time | landed 2026-07-28, CI green — **not yet run in game** |
+| Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
+| Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | placeholder only |
+
+Both of the two designs this document argues for at length are now confirmed in
+practice: the **commit counter** (a preset pressed twice works the second time)
+and **layer `-1`** (warps land in the right story version). The round-trip list
+rebuild behaved as described, lag and all.
 
 **Protocol is at 4** (3 = overlay + warp, 4 = the clock). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open
 
-- **Local point lights do not work.** Toggling `rtx.dusklight.game.localLights`
-  changes nothing; the tab reported `drawn: 0, tracked: 0` in both states.
-  Confirmed *not* the cause: device registration (reports yes) and the sun/moon
-  distant light (works). Static analysis says a torch (`d_a_ep`,
-  `mColor = (175,93,0)`, `mPow = 500 × strength`) should pass the brightness
-  and reach test.
+- **Local point lights: RESOLVED 2026-07-29.** Forest Temple first room reads
+  `Registered by the game: 5   drawn this frame: 4   tracked: 4`.
 
-  Diagnostics were added so the next build **names which of three states it is
-  in** rather than reporting a bare zero:
+  The diagnostics did their job — the visit that used them took minutes and
+  named the state immediately, where the bare-zero report before them could not
+  distinguish three different failures. Worth keeping as the template: **when a
+  readout cannot distinguish its failure modes, the fix is another readout, not
+  another guess.**
 
-  | Readout | Meaning |
-  | :-- | :-- |
-  | `localLightsRunning = false` | never reached the submit loop — the switch is not reaching the game, or the device did not register |
-  | `localLightsFound = 0` | the game has no lights registered here at all |
-  | `localLightsDrawn = 0` with `found > 0` | lights exist and are being **rejected on the way through** |
+  What did not happen is a proven root cause. The lights simply work in the
+  build that carries the diagnostics, most plausibly because that same change
+  added the `efplight[0..4]` array the first implementation never read, or
+  because of the NaN guards landed alongside. Recorded as unresolved rather than
+  dressed up: if they regress, re-check both arrays first.
 
-  `found` is counted **ahead of every gate**, over both arrays
-  (`env->pointlight[100]` and `env->efplight[5]`), so it stays truthful
-  whichever gate turns the loop back. Note that rejection happens *before* the
-  vector push, so `tracked: 0` is equally consistent with "loop never ran" and
-  "every light rejected" — which is exactly why `localLightsRunning` had to be
-  added separately.
+  Two settings came out of the visit and **neither is the default** —
+  `localLightIntensity` **19** and `localLightRadius` **10**. The 19 is the
+  derived reading of the game's attenuation curve, not a taste value. See
+  `dusklight-ao/docs/kankyo-remix.md` open issue 3.
 
-  **Next step: read the three values from a build with these diagnostics while
-  stood at a lit torch.** Warp to Forest Temple (`D_MN05`) — `d_a_ep` registers
-  its light on actor init whether or not the flame is lit — set
-  `rtx.fallbackLightMode = 0` so an unlit room goes black, and **tick the
-  checkbox before reading**: `found` is counted before the enable gate but
-  `running` is set after it, so reading with the box unticked always reports
-  "not running its light submission", which is expected and not the bug.
-- Warp untested in game.
-- Time-of-day slider and Freeze Time untested in game. Test these **first** —
-  every A/B comparison in the backlog is worth more with the clock stopped.
+  Loose end: `found 5` but `drawn 4`. One light is being rejected on the way
+  through, and "harmless" is currently an assumption.
+- **The wolf-senses overlay covers the screen.** Black heavy surround, pure
+  white centre where the see-through region belongs. Not investigated. It blocks
+  the wolf-senses route to testing the mono overlay and base weight — but not
+  the **twilight** route, which reaches the same code through bloom tables 1/2
+  and is how that test should now be done.
+- **World-space UI billboards appear only intermittently.** The targeting arrow
+  and torch fire billboards appear together, inconsistently, and depend on
+  player/camera position; the arrow dims under shadow as though lit as ordinary
+  geometry. Neither shows in Remix's texture categorization screen at all, which
+  points at the capture path rather than at categorization — partly an aurora
+  question. See `kankyo-remix.md` open issue 6.
 - Controls tab not started.
 
 The full step-by-step for all of the above, with baseline `rtx.conf` and
