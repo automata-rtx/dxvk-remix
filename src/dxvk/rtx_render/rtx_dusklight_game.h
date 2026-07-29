@@ -108,11 +108,15 @@ namespace dxvk {
                "Mirrors the game's own point lights - torches, braziers, lanterns, campfires and the dungeon lights - into Remix as sphere lights.\n"
                "The game's D3D9 path does not forward its lights, so without this Remix sees no light from the game at all: outdoors the sun covers "
                "that, but interiors and night fall through to Remix's fallback light.");
-    RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightIntensity, 1.0f,
-                    "Scales the game's local lights. At 1.0 each light is as bright as Remix's own conversion would make a legacy light that reached "
-                    "as far as the game's influence radius.\n"
-                    "The game's attenuation curve actually carries further than that radius - about 19 here reproduces that reading instead, which is "
-                    "the number to try if the torches look weak.",
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightIntensity, 19.0f,
+                    "Scales the game's local lights.\n"
+                    "At 1.0 each light is as bright as Remix's own conversion would make a legacy light that reached exactly as far as the game's "
+                    "influence radius. That reading is too conservative, because the radius is not where the light ends: the game loads its attenuation "
+                    "so that the radius is where brightness falls to about a ninth of peak, and the curve carries roughly four times further. Applying "
+                    "Remix's own end threshold to that curve instead gives about 19, and testing picked the same number independently as the least that "
+                    "lights a room usefully.\n"
+                    "Set together with rtx.dusklight.game.localLightRadius: the radiance is solved so the light still reaches the same distance, so a "
+                    "larger emitter needs less of it and changing one alone moves brightness as well as softness.",
                     args.minValue = 0.0f,
                     args.maxValue = 32.0f);
     RTX_OPTION("rtx.dusklight.game", bool, disableFrustumCulling, false,
@@ -183,10 +187,11 @@ namespace dxvk {
                "It is a game setting rather than a Remix one, and the game's settings screen is not drawn in the fixed function D3D9 mode, so without this it "
                "can only be changed by editing config.json and restarting - and only in one direction, since a value set there could not be turned back off "
                "while running.");
-    RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightRadius, 4.0f,
-                    "Emitter radius of the game's local lights in world units, matching Remix's own default for converted point lights.\n"
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightRadius, 10.0f,
+                    "Emitter radius of the game's local lights in world units.\n"
                     "This changes brightness as well as softness: the radiance is solved so the light still reaches the same distance, so a larger "
-                    "emitter needs less of it. Large radii on lights sitting inside wall sconces will clip through the geometry.",
+                    "emitter needs less of it. Large radii on lights sitting inside wall sconces will clip through the geometry, which is what bounds "
+                    "this from above - 10 was tested against the Forest Temple light posts and clears them.",
                     args.minValue = 0.5f,
                     args.maxValue = 64.0f);
   };

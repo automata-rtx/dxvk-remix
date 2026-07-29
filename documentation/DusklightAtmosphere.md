@@ -636,12 +636,28 @@ on ray miss, not captured geometry, so there is nothing to hash or categorise �
 the same reason B1 exists at all (§ the superseded tagging plan in
 `kankyo-remix.md`). The exemption has to happen in the composite.
 
-**Fix shape, not yet written.** Bound the sky's volume attenuation rather than
-applying the full grid depth. Exempting `primaryMiss` outright matches the far
-ramp and is the smallest change; a `skyFogWeight` scalar is better, because a
-genuinely foggy day *should* veil the sky — just not by the amount an
-artistic medium calibrated to close in tens of metres implies. Either is one
-guarded branch in the §11 style.
+**FIXED 2026-07-29 — and deliberately fixed twice,
+`rtx.dusklight.atmosphere.skyFogMode`.** Both candidate treatments are built and
+mutually exclusive, so the choice can be made by looking rather than by
+argument. One of them is meant to be **deleted** once it has been.
+
+| Mode | What it does | What it costs |
+| :-- | :-- | :-- |
+| 0 Off | The untreated behaviour | Nothing — it is the defect, kept as the A/B baseline |
+| 1 **Exempt** (default) | Sky ignores the medium entirely, which is what the original did — it drew its dome with fog switched off at any density | Light shafts that would have been visible **against the sky**, since those are the same in-scatter |
+| 2 Weighted | Sky picks up `skyFogAmount` (0.15) of the medium | Nothing structural; needs one number tuned |
+
+**Where the fix had to go, and why not where it looked like it should.** The
+obvious site is `applySkyContribution`, since that is where the dome is
+multiplied by `volumeAttenuation`. That would be half a fix: the sky is dimmed
+by the transmittance *and* tinted by the in-scatter that was added to
+`radianceOutput` before it. Treating only the first leaves the sky the right
+brightness and still the wrong colour. Both are settled immediately after
+`integrateVolumetricNEE`, before either is used, so they cannot disagree.
+
+Touching `volumeAttenuation` on a miss is safe: its only other consumer is
+`remodulatedTotalPrimaryRadiance`, which is what the primary ray hit, and on a
+miss it hit nothing.
 
 Settled by testing: `celestialNoonElevation` at **80** — the owner's choice,
 deliberately short of 90 because the azimuth flips instantaneously at exactly

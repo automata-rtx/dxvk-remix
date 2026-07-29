@@ -438,6 +438,26 @@ void applyVolumetricLighting(
       randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
       cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, primaryMiss, cameraGetWorldPosition(cb.camera), viewDistance, primaryRayDirections.worldDirection,
       volumetricPreintegratedRadiance, volumeAttenuation);
+
+    // Keep the medium off the sky (dusklight_composite_args.h, skyFogMode).
+    //
+    // Done here rather than at applySkyContribution because the sky is fogged by two quantities,
+    // not one: the transmittance the dome is multiplied by, and the in-scatter that is added on
+    // top of it. Treating only the first leaves the sky the right brightness and still the wrong
+    // colour. Both are settled here, before either is used, so they cannot disagree.
+    //
+    // Safe to touch volumeAttenuation on a miss: the only other consumer is
+    // remodulatedTotalPrimaryRadiance, which is what the primary ray hit, and on a miss it hit
+    // nothing.
+    if (primaryMiss && cb.dusklightArgs.enable != 0 && cb.dusklightArgs.skyFogMode != 0)
+    {
+      const float skyFog = (cb.dusklightArgs.skyFogMode == 1)
+        ? 0.0f
+        : saturate(cb.dusklightArgs.skyFogAmount);
+
+      volumetricPreintegratedRadiance *= skyFog;
+      volumeAttenuation = lerp(vec3(1.0f), volumeAttenuation, skyFog);
+    }
   }
 
   // Stochastic alpha blend
