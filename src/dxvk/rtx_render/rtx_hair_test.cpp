@@ -58,8 +58,9 @@ namespace dxvk {
         ACCELERATION_STRUCTURE(HAIR_TEST_BINDING_TLAS)
         STRUCTURED_BUFFER(HAIR_TEST_BINDING_SEGMENT_POSITIONS_INPUT)
         STRUCTURED_BUFFER(HAIR_TEST_BINDING_SEGMENT_RADII_INPUT)
-        SAMPLER2D(HAIR_TEST_BINDING_DEPTH_INPUT)
-        RW_TEXTURE2D(HAIR_TEST_BINDING_OUTPUT)
+        RW_TEXTURE2D(HAIR_TEST_BINDING_DEPTH_INPUT_OUTPUT)
+        RW_TEXTURE2D(HAIR_TEST_BINDING_COMPOSITE_INPUT_OUTPUT)
+        RW_TEXTURE2D(HAIR_TEST_BINDING_MOTION_VECTOR_OUTPUT)
       END_PARAMETER()
     };
 
@@ -590,8 +591,8 @@ namespace dxvk {
 
     buildTlas(ctx);
 
-    const Resources::Resource& output = rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite);
-    const VkExtent3D outputExtent = output.image->info().extent;
+    const Resources::Resource& output = rtOutput.m_compositeOutput.resource(Resources::AccessType::ReadWrite);
+    const VkExtent3D outputExtent = rtOutput.m_compositeOutputExtent;
 
     // Fill the pass constants.
     if (m_constants.ptr() == nullptr) {
@@ -608,9 +609,18 @@ namespace dxvk {
     const Vector3 rawLightDirection = lightDirection();
     const float lightDirectionLength = std::max(length(rawLightDirection), 1e-6f);
 
+    const Vector3 currentSpherePosition = spherePosition();
+    const Vector3 sphereMotion = m_hasPreviousSpherePosition
+      ? currentSpherePosition - m_previousSpherePosition
+      : Vector3(0.0f, 0.0f, 0.0f);
+    m_previousSpherePosition = currentSpherePosition;
+    m_hasPreviousSpherePosition = true;
+
     HairTestConstants constants = {};
-    constants.spherePosition = spherePosition();
+    constants.spherePosition = currentSpherePosition;
     constants.sphereRadius = sphereRadius();
+    constants.sphereMotion = sphereMotion;
+    constants.pad0 = 0.0f;
     constants.lightDirection = rawLightDirection / lightDirectionLength;
     constants.lightIntensity = lightIntensity();
     constants.lightColor = lightColor();
@@ -642,16 +652,13 @@ namespace dxvk {
 
     ctx->bindCommonRayTracingResources(rtOutput);
 
-    Rc<DxvkSampler> linearSampler = ctx->getResourceManager().getSampler(
-      VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
-
     ctx->bindResourceBuffer(HAIR_TEST_BINDING_CONSTANTS, DxvkBufferSlice(m_constants));
     ctx->bindAccelerationStructure(HAIR_TEST_BINDING_TLAS, m_tlas);
     ctx->bindResourceBuffer(HAIR_TEST_BINDING_SEGMENT_POSITIONS_INPUT, DxvkBufferSlice(m_segmentPositions));
     ctx->bindResourceBuffer(HAIR_TEST_BINDING_SEGMENT_RADII_INPUT, DxvkBufferSlice(m_segmentRadii));
-    ctx->bindResourceView(HAIR_TEST_BINDING_DEPTH_INPUT, rtOutput.m_primaryDepth.view, nullptr);
-    ctx->bindResourceSampler(HAIR_TEST_BINDING_DEPTH_INPUT, linearSampler);
-    ctx->bindResourceView(HAIR_TEST_BINDING_OUTPUT, output.view, nullptr);
+    ctx->bindResourceView(HAIR_TEST_BINDING_DEPTH_INPUT_OUTPUT, rtOutput.m_primaryDepth.view, nullptr);
+    ctx->bindResourceView(HAIR_TEST_BINDING_COMPOSITE_INPUT_OUTPUT, output.view, nullptr);
+    ctx->bindResourceView(HAIR_TEST_BINDING_MOTION_VECTOR_OUTPUT, rtOutput.m_primaryScreenSpaceMotionVector.view, nullptr);
 
     ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, HairTestShader::getShader());
 
@@ -666,7 +673,8 @@ namespace dxvk {
 
     ImGui::TextWrapped(
       "Tech demo: a hair-covered test sphere ray traced with the RTX Character Rendering SDK's "
-      "Linear Swept Sphere hair system, composited over the final image.");
+      "Linear Swept Sphere hair system. Rendered into the scene at render resolution before "
+      "upscaling, with hair depth and motion vectors feeding the upscaler.");
     ImGui::Dummy({ 0, 2 });
 
     ImGui::Text("Hardware LSS (VK_NV_ray_tracing_linear_swept_spheres): %s", lssSupported ? "supported" : "not supported");

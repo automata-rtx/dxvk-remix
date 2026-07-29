@@ -22,12 +22,14 @@
 
 // LSS Hair Test pass.
 //
-// A self-contained tech-demo pass that ray traces a hair-covered test sphere
-// against its own acceleration structure (Linear Swept Sphere primitives from
+// Tech-demo pass that ray traces a hair-covered test sphere against its own
+// acceleration structure (Linear Swept Sphere primitives from
 // VK_NV_ray_tracing_linear_swept_spheres when available, DOTS triangles
 // otherwise) and shades hits with the RTX Character Rendering SDK's strand
-// hair BCSDFs, compositing the result over the final image with a depth test
-// against the primary G-buffer depth.
+// hair BCSDFs. The hair is rendered into the composite output at render
+// resolution before upscaling, depth-tested against the primary G-buffer, and
+// writes its own depth and motion vectors for covered pixels so DLSS/TAAU and
+// later passes treat it as part of the scene rather than an overlay.
 
 #include "rtx/pass/hair_test/hair_test_bindings.slangh"
 #include "rtx/pass/hair_test/hair_test_lss_geometry.slangh"
@@ -277,15 +279,31 @@ float3 shadeDebugMode(float3 rayDirection, float3 hitPosition, HairSegment segme
   }
 }
 
-// Device depth of a world position under the primary camera, comparable
-// against the primary G-buffer depth (same convention the dust particle pass
-// uses when depth-testing against m_primaryDepth).
+// Device depth of a world position under the primary camera, matching the
+// convention the geometry resolver uses when writing the primary G-buffer
+// depth (jittered projection, z/w).
 float worldPositionToDeviceDepth(float3 worldPosition)
 {
-  const float4 viewPosition = mul(cb.camera.worldToView, float4(worldPosition, 1.0f));
-  const float4 clipPosition = mul(cb.camera.viewToProjection, viewPosition);
+  const float4 clipPosition = mul(cb.camera.worldToProjectionJittered, float4(worldPosition, 1.0f));
 
   return clipPosition.w != 0.0f ? clipPosition.z / clipPosition.w : 0.0f;
+}
+
+// Screen-space motion vector for a hair hit, matching the geometry resolver's
+// convention: (previous NDC - current NDC) * (0.5, -0.5) * resolution. The
+// hair is static in sphere-local space, so its world motion is exactly the
+// test sphere's motion since the previous frame.
+float2 computeHairMotionVector(uint2 pixelCoordinate, float3 hitPosition)
+{
+  const float3 prevWorldPosition = hitPosition - hairCb.sphereMotion;
+  const float4 prevClip = mul(cb.camera.prevWorldToProjection, float4(prevWorldPosition, 1.0f));
+  const float2 prevNDC = prevClip.w != 0.0f ? prevClip.xy / prevClip.w : float2(0.0f, 0.0f);
+
+  const float2 ndc = cameraPixelCoordinateToNDC(cb.camera, ivec2(pixelCoordinate));
+  const float2 motionVectorNDC = prevNDC - ndc;
+  const float2 motionVectorUVOffset = motionVectorNDC * float2(0.5f, -0.5f);
+
+  return motionVectorUVOffset * cb.camera.resolution;
 }
 
 static const float2 kSampleOffsets[4] = {
@@ -307,17 +325,27 @@ void main(uint2 ipos : SV_DispatchThreadID)
   const float3 cameraPosition = cameraGetWorldPosition(cb.camera);
   const uint sampleCount = clamp(hairCb.aaSamples, 1, 4);
 
+  // Scene depth at this pixel, read once; hair behind primary geometry is
+  // rejected, hair in front of it takes the pixel over.
+  const float sceneDepth = PrimaryDepth[ipos];
+
   float3 accumulatedRadiance = float3(0.0f, 0.0f, 0.0f);
   uint hitCount = 0;
+  float closestHairDepth = 0.0f;
+  float closestHitT = 1e30f;
+  float3 closestHitPosition = float3(0.0f, 0.0f, 0.0f);
 
   for (uint sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
   {
-    // Stratified subpixel positions: a single sample lands on the unjittered
-    // pixel center, multiple samples land on 2x2 strata centers.
+    // Stratified subpixel positions: a single sample lands on the pixel
+    // center, multiple samples land on 2x2 strata centers. The camera jitter
+    // is applied on top (via the jittered projection) so temporal upscalers
+    // can resolve sub-pixel strand detail across frames, matching how the
+    // primary G-buffer rays are generated.
     const float2 subPixel = sampleCount > 1 ? kSampleOffsets[sampleIndex] : float2(0.25f, 0.25f);
     const float2 screenUV = (float2(ipos) + 0.25f + subPixel) * hairCb.outputResolutionInv;
 
-    const CameraDirections cameraDirections = cameraScreenUVToDirection(cb.camera, screenUV, false);
+    const CameraDirections cameraDirections = cameraScreenUVToDirection(cb.camera, screenUV, true);
     const float3 rayDirection = cameraDirections.worldDirection;
 
     float hitT;
@@ -330,7 +358,6 @@ void main(uint2 ipos : SV_DispatchThreadID)
     const float3 hitPosition = cameraPosition + rayDirection * hitT;
 
     // Depth test against the scene: reject hair hits behind primary geometry.
-    const float sceneDepth = PrimaryDepth.SampleLevel(screenUV, 0);
     const float hairDepth = worldPositionToDeviceDepth(hitPosition);
 
     if (sceneDepth > 0.0f && sceneDepth <= hairDepth)
@@ -344,6 +371,14 @@ void main(uint2 ipos : SV_DispatchThreadID)
       segment.p0, segment.p1, segment.r0, segment.r1);
 
     accumulatedRadiance += shadeDebugMode(rayDirection, hitPosition, segment, shadingNormal);
+
+    if (hitT < closestHitT)
+    {
+      closestHitT = hitT;
+      closestHitPosition = hitPosition;
+      closestHairDepth = hairDepth;
+    }
+
     ++hitCount;
   }
 
@@ -355,6 +390,15 @@ void main(uint2 ipos : SV_DispatchThreadID)
   const float coverage = float(hitCount) / float(sampleCount);
   const float3 hairRadiance = accumulatedRadiance / float(hitCount);
 
-  const float4 background = HairOutput[ipos];
-  HairOutput[ipos] = float4(lerp(background.rgb, hairRadiance, coverage), background.a);
+  const float4 background = CompositeOutput[ipos];
+  CompositeOutput[ipos] = float4(lerp(background.rgb, hairRadiance, coverage), background.a);
+
+  // Pixels the hair majority-covers join the G-buffer: their depth and motion
+  // vectors now describe the hair so upscalers reproject and later passes
+  // depth-test against it as scene geometry.
+  if (hitCount * 2 >= sampleCount)
+  {
+    PrimaryDepth[ipos] = closestHairDepth;
+    ScreenSpaceMotionVector[ipos] = computeHairMotionVector(ipos, closestHitPosition);
+  }
 }

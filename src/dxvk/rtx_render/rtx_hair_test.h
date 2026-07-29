@@ -40,9 +40,12 @@ namespace dxvk {
   // VK_NV_ray_tracing_linear_swept_spheres the strands are ray traced as
   // native LSS primitives; otherwise they fall back to the SDK's Disjoint
   // Orthogonal Triangle Strips (DOTS) tessellation of the same segments.
-  // The pass is fully self-contained: it builds its own BLAS/TLAS and shades
-  // in a compute pass composited over the final image, leaving the main path
-  // tracer untouched.
+  // The pass builds its own BLAS/TLAS and renders into the Remix scene at
+  // render resolution: hair is traced into the composite output after
+  // denoising and before upscaling, depth-tested against the primary
+  // G-buffer, and writes hair depth and motion vectors for covered pixels so
+  // upscalers and downstream passes treat it as scene geometry. The main path
+  // tracer itself is untouched.
   class RtxHairTest {
   public:
     explicit RtxHairTest(DxvkDevice* device);
@@ -56,7 +59,8 @@ namespace dxvk {
     void showImguiSettings();
 
     // Builds/refreshes the hair acceleration structures and runs the shading
-    // pass. Call after the final output image exists (post-upscale, pre-bloom).
+    // pass. Call after the composite pass and before upscaling, while the
+    // scene image, primary depth and motion vectors are at render resolution.
     void dispatch(RtxContext* ctx, const Resources::RaytracingOutput& rtOutput);
 
     static bool isLssSupported(const DxvkDevice& device);
@@ -69,8 +73,10 @@ namespace dxvk {
 
     RTX_OPTION("rtx.hairTest", bool, enable, false,
                "Enables the LSS hair rendering test: a hair-covered sphere ray traced against its own acceleration structure "
-               "and shaded with the RTX Character Rendering SDK hair BCSDFs, composited over the final image.\n"
-               "This is a tech demo for evaluating Linear Swept Sphere hair in Remix; it does not interact with the main path tracer.");
+               "and shaded with the RTX Character Rendering SDK hair BCSDFs.\n"
+               "The hair is rendered into the scene at render resolution before upscaling, depth-tested against the primary G-buffer, "
+               "and contributes depth and motion vectors so upscalers treat it as scene geometry.\n"
+               "This is a tech demo for evaluating Linear Swept Sphere hair in Remix; it does not modify the main path tracer.");
     RTX_OPTION("rtx.hairTest", int, geometryMode, 0,
                "Curve representation used for the hair acceleration structure. 0: Automatic (native Linear Swept Spheres when the driver "
                "supports VK_NV_ray_tracing_linear_swept_spheres, otherwise DOTS triangles), 1: Force LSS, 2: Force DOTS.\n"
@@ -215,5 +221,10 @@ namespace dxvk {
     XXH64_hash_t m_generationHash = 0;
     ActiveGeometry m_activeGeometry = ActiveGeometry::None;
     uint32_t m_segmentCount = 0;
+
+    // Sphere position from the previous frame, for hair motion vectors while
+    // the sphere is being moved.
+    Vector3 m_previousSpherePosition = Vector3(0.0f, 0.0f, 0.0f);
+    bool m_hasPreviousSpherePosition = false;
   };
 }

@@ -43,6 +43,11 @@ struct HairTestConstants {
   vec3 spherePosition;
   float sphereRadius;
 
+  // World-space movement of the test sphere since the previous frame, used to
+  // produce correct motion vectors while the sphere is being dragged around.
+  vec3 sphereMotion;
+  float pad0;
+
   vec3 lightDirection;             // Normalized, direction the light travels.
   float lightIntensity;
 
@@ -81,12 +86,16 @@ struct HairTestConstants {
 
 // Inputs
 
-#define HAIR_TEST_BINDING_CONSTANTS               40
-#define HAIR_TEST_BINDING_TLAS                    41
-#define HAIR_TEST_BINDING_SEGMENT_POSITIONS_INPUT 42
-#define HAIR_TEST_BINDING_SEGMENT_RADII_INPUT     43
-#define HAIR_TEST_BINDING_DEPTH_INPUT             44
+#define HAIR_TEST_BINDING_CONSTANTS                    40
+#define HAIR_TEST_BINDING_TLAS                         41
+#define HAIR_TEST_BINDING_SEGMENT_POSITIONS_INPUT      42
+#define HAIR_TEST_BINDING_SEGMENT_RADII_INPUT          43
+
+// Inputs/Outputs
+
+#define HAIR_TEST_BINDING_DEPTH_INPUT_OUTPUT           44
+#define HAIR_TEST_BINDING_COMPOSITE_INPUT_OUTPUT       45
 
 // Outputs
 
-#define HAIR_TEST_BINDING_OUTPUT                  45
+#define HAIR_TEST_BINDING_MOTION_VECTOR_OUTPUT         46

@@ -41,10 +41,20 @@ StructuredBuffer<float> HairSegmentPositions;
 layout(binding = HAIR_TEST_BINDING_SEGMENT_RADII_INPUT)
 StructuredBuffer<float> HairSegmentRadii;
 
-layout(binding = HAIR_TEST_BINDING_DEPTH_INPUT)
-Sampler2D<float> PrimaryDepth;
+// Inputs/Outputs
+
+// Primary G-buffer depth at render resolution: read for scene occlusion,
+// written where hair covers the pixel so upscalers and later passes treat the
+// hair as scene geometry.
+layout(binding = HAIR_TEST_BINDING_DEPTH_INPUT_OUTPUT)
+RWTexture2D<float> PrimaryDepth;
+
+// Composite output (denoised scene radiance, render resolution, linear HDR)
+// that the hair is rendered into before upscaling.
+layout(binding = HAIR_TEST_BINDING_COMPOSITE_INPUT_OUTPUT)
+RWTexture2D<float4> CompositeOutput;
 
 // Outputs
 
-layout(binding = HAIR_TEST_BINDING_OUTPUT)
-RWTexture2D<float4> HairOutput;
+layout(binding = HAIR_TEST_BINDING_MOTION_VECTOR_OUTPUT)
+RWTexture2D<float2> ScreenSpaceMotionVector;

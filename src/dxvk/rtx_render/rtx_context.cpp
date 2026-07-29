@@ -690,6 +690,12 @@ namespace dxvk {
         // Composition
         dispatchComposite(rtOutput);
 
+        // LSS hair rendering test (RTX Character Rendering SDK integration).
+        // Renders into the composite output at render resolution before
+        // upscaling, and writes hair depth and motion vectors so upscalers
+        // treat the hair as part of the scene.
+        m_common->metaHairTest().dispatch(this, rtOutput);
+
         // Post composite Debug View that may overwrite Composite output
         dispatchReplaceCompositeWithDebugView(rtOutput);
         
@@ -730,11 +736,6 @@ namespace dxvk {
 
         RtxDustParticles& dust = m_common->metaDustParticles();
         dust.simulateAndDraw(this, m_state, rtOutput);
-
-        // LSS hair rendering test (RTX Character Rendering SDK integration).
-        // Runs on the final output before bloom/tonemapping so the hair is
-        // shaded in linear HDR space at display resolution.
-        m_common->metaHairTest().dispatch(this, rtOutput);
 
         dispatchBloom(rtOutput);
 
