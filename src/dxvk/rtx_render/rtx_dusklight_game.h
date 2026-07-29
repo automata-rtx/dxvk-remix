@@ -70,6 +70,23 @@ namespace dxvk {
                     "Incremented by the overlay to request a warp. The game acts on the change rather than the value, and latches the first one it sees "
                     "without acting, so connecting to a session that already has a non-zero count does not teleport anyone.");
 
+    // Action binds, driven from the overlay's Controls tab. Indices and commit counters only: the
+    // game owns the bind table, resolves conflicts, and pushes back both the resulting table and a
+    // line of prose describing what happened. Nothing here decides anything - see
+    // documentation/DusklightOverlay.md section 3.3.
+    // All NoSave, for the same reason the warp commits are: a capture request that survived a
+    // restart would arm itself on next launch.
+    RTX_OPTION_FLAG("rtx.dusklight.bind", int, port, 0, RtxOptionFlags::NoSave,
+                    "Controller port whose binds the Controls tab is showing, 0 to 3. Set by the overlay.");
+    RTX_OPTION_FLAG("rtx.dusklight.bind", int, actionIndex, 0, RtxOptionFlags::NoSave,
+                    "Which action the Controls tab has selected, as an index into rtx.dusklight.env.bindActions. Set by the overlay.");
+    RTX_OPTION_FLAG("rtx.dusklight.bind", int, captureCommit, 0, RtxOptionFlags::NoSave,
+                    "Incremented by the overlay to ask the game to capture the next key or button press for the selected action.\n"
+                    "The game acts on the change rather than the value and latches the first one it sees without acting, so connecting to a session that "
+                    "already has a non-zero count does not arm a capture nobody asked for.");
+    RTX_OPTION_FLAG("rtx.dusklight.bind", int, clearCommit, 0, RtxOptionFlags::NoSave,
+                    "Incremented by the overlay to unbind the selected action. Same change-not-value rule as captureCommit.");
+
     RTX_OPTION("rtx.dusklight.game", bool, bridgeEnable, true,
                "Whether the game feeds its environment state to Remix at all.\n"
                "Turning this off stops every push and takes the game's sun, moon and local lights with it, which makes it the "

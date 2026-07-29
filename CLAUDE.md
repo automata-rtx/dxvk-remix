@@ -79,7 +79,7 @@ If a session branch is about to be deleted and its work is not yet merged,
 **The game and this DLL are a single protocol.** The game pushes
 `rtx.dusklight.env.protocol`; this fork compares it against `kRequiredProtocol`
 in `showDusklightRemixTab` (`src/dxvk/imgui/dxvk_imgui.cpp`).
-**Protocol is at 5.** Build both sides from the same commit point, and bump
+**Protocol is at 6.** Build both sides from the same commit point, and bump
 both in the same commit. Skew in either direction has cost an evening twice.
 The Dusklight tab reports which side is old — read it before debugging
 anything else.

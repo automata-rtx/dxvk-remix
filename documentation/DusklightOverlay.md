@@ -46,7 +46,7 @@ readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
 compares it against a `kRequiredProtocol` constant and says so in the tab when
-the game is older. **Currently 5.**
+the game is older. **Currently 6.**
 
 > **Standing rule, already paid for twice:** the game and the Remix DLL are one
 > protocol. Build both from the same point. Both directions of skew have cost
@@ -119,7 +119,7 @@ turned off without turning off the overlay.
 ```
 Dusklight  ├─ Dusklight Remix   everything that changes the image
            ├─ Warp              travel to any level
-           └─ Controls          placeholder
+           └─ Controls          rebind the game's actions
 ```
 
 ### 3.1 Dusklight Remix
@@ -259,14 +259,61 @@ is not worth a CI round.
 
 ### 3.3 Controls
 
-**Placeholder.** Nothing built. What it needs, when it is picked up:
+**Built 2026-07-29, protocol 6.** A controller-port selector, the six
+rebindable actions with what each is currently bound to, and Rebind / Clear.
 
-- live key capture in ImGui, then bindings crossing the bridge in both
-  directions (the game owns the current binds; the overlay has to read them
-  before it can show them)
-- a decision on **conflict-resolution ownership** — if the overlay lets you
-  bind a key the game already uses for something else, who refuses? Doing it in
-  both places means two different answers.
+**The game owns every decision. This tab decides nothing.**
+
+```
+overlay → rtx.dusklight.bind.{port,actionIndex,captureCommit,clearCommit}
+game    → rtx.dusklight.env.{bindActions,bindButtons,bindStatus,bindCapturing,bindKeyboard}
+```
+
+The overlay sends two indices and two commit counters. The game captures the
+press, resolves the conflict, applies it, and pushes back both the resulting
+table and a line of prose saying what it did. Everything the tab renders is a
+string the game sent.
+
+**Why ownership sits there** — this was the open question and it has a real
+answer. The overlay only knows the binds it is *handed*. Anything hardcoded or
+context-sensitive is invisible to it, so a check made here would cheerfully
+allow a conflict with something outside the rebindable list. The game is the
+only side that can be right. Validating in *both* places would be worse than
+either: two rules that can disagree today and will certainly drift the first
+time one of them is edited.
+
+Round-trip lag is the price, and it is the same price the warp list pays. It is
+acceptable here for the same reason: the thing being displayed is by
+construction the thing in force.
+
+**Displace, not reject.** The key you press is always taken; whatever else held
+it on that port is left unbound and named in the status line. Rejecting was the
+alternative and is worse in practice — it leaves someone pressing a key and
+watching nothing happen, with nothing on screen explaining why.
+
+**Capture works while input is blocked, and that is not luck.**
+`PADGetNativeButtonPressed` and SDL's keyboard state read the device directly
+and never consult the flag `PADBlockInput` sets (`aurora-ao/lib/dolphin/pad/pad.cpp`
+— the block is checked in the `PADRead` path, not the native polling one). So
+the input this overlay is busy blocking from the game is still visible to the
+one part of the game that needs it, and **no carve-out in the input blocking
+was required**. Worth knowing before anyone "fixes" that asymmetry.
+
+Two details that would otherwise be bugs:
+
+1. **Capture waits for neutral first.** The click or keypress that pressed
+   Rebind is still held on the frame after, and without the wait it would be
+   captured as the new bind immediately.
+2. **The stored value means different things per port** — an SDL scancode where
+   the port is keyboard-driven, a native gamepad button otherwise, with both
+   spelling "unbound" as -1. That is why the game sends finished display
+   strings rather than raw numbers: it is the only side that knows which kind a
+   given port holds.
+
+**Escape unbinds** during capture, matching the game's own controller config
+screen rather than inventing a second convention.
+
+**Untested in game.**
 
 ---
 
@@ -318,14 +365,14 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Recording mode toggle | landed 2026-07-28, CI green |
 | Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
-| Controls tab | placeholder only |
+| Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
 
 Both of the two designs this document argues for at length are now confirmed in
 practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 5** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass). `kRequiredProtocol`
+**Protocol is at 6** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open
@@ -381,7 +428,7 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
   correlated with letterbox must inject earlier. Full analysis, ruled-out
   candidates and the three settling experiments are in `kankyo-remix.md`
   open issue 6.
-- Controls tab not started.
+- Controls tab landed but untested in game.
 
 The full step-by-step for all of the above, with baseline `rtx.conf` and
 failure tables, is in `dusklight-ao/docs/kankyo-remix.md` §"Test session

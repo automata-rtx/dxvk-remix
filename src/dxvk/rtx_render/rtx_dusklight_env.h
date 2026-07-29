@@ -165,6 +165,21 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", std::string, warpStage, "", RtxOptionFlags::NoSave,
                     "The stage file the current selection resolves to - the name the warp actually travels on. Written by the game's kankyo bridge.");
 
+    // Action binds, pushed by the game for the Controls tab to display. The game is the only side
+    // that can name a bind correctly - the stored value is an SDL scancode on a keyboard driven
+    // port and a native gamepad button otherwise - so it sends finished strings rather than raw
+    // values, and the overlay never has to know the difference.
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, bindActions, "", RtxOptionFlags::NoSave,
+                    "Pipe delimited names of the game's rebindable actions, in the order the overlay's indices refer to.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, bindButtons, "", RtxOptionFlags::NoSave,
+                    "Pipe delimited display names of what each action is currently bound to on the selected port, aligned with bindActions.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, bindStatus, "", RtxOptionFlags::NoSave,
+                    "What the game did with the last bind request, in prose - including which action lost its bind when one was displaced.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, bindCapturing, false, RtxOptionFlags::NoSave,
+                    "True while the game is waiting for a key or button press to bind.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, bindKeyboard, false, RtxOptionFlags::NoSave,
+                    "True when the selected port is driven by a keyboard, which is what decides whether a bind is a scancode or a gamepad button.");
+
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, localLightsRunning, false, RtxOptionFlags::NoSave,
                     "True when the game got past every gate and actually ran its light submission loop. Written by the game's kankyo bridge.\n"
                     "Without this an option that reads false and an area with no lights in it are indistinguishable from the other side, since both report zero.");
