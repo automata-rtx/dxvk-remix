@@ -339,6 +339,10 @@ namespace dxvk {
     // NV-DXVK end
     DxvkExt nvRayTracingInvocationReorder     = { VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME,      DxvkExtMode::Optional };
 
+    // NV-DXVK start: Linear Swept Spheres (RTXCR hair test)
+    DxvkExt nvRayTracingLinearSweptSpheres    = { VK_NV_RAY_TRACING_LINEAR_SWEPT_SPHERES_EXTENSION_NAME,    DxvkExtMode::Optional };
+    // NV-DXVK end
+
     // Opacity micromap
     DxvkExt khrSynchronization2               = { VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,                  DxvkExtMode::Optional };
     DxvkExt extOpacityMicromap                = { VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME,                   DxvkExtMode::Optional };

@@ -106,6 +106,7 @@ namespace dxvk {
       kTab_Enhancements,
       kTab_About,
       kTab_Development,
+      kTab_HairTest,
       kTab_Count
     };
     template<Tabs tab>
@@ -199,7 +200,7 @@ namespace dxvk {
     bool m_lastRenderVsyncStatus = false;
     std::unique_ptr<RtxGraphGUI> m_graphGUI;
 
-    static constexpr const char* tabNames[] = { "Rendering", "Game Setup", "Enhancements", "About" , "Dev Settings"};
+    static constexpr const char* tabNames[] = { "Rendering", "Game Setup", "Enhancements", "About" , "Dev Settings", "Hair Test"};
     Tabs m_curTab = kTab_Count;
     Tabs m_triggerTab = kTab_Count;
     void triggerTab(const Tabs tab) {

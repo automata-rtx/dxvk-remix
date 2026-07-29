@@ -198,6 +198,9 @@ namespace dxvk {
     checkNeuralRadianceCacheSupport();
     reportCpuSimdSupport();
 
+    Logger::info(str::format("[RTX info] Linear Swept Spheres (VK_NV_ray_tracing_linear_swept_spheres): ",
+                             RtxHairTest::isLssSupported(*m_device) ? "supported" : "not supported"));
+
     GlobalTime::get().init(RtxOptions::timeDeltaBetweenFrames() * 0.001f);
     GlobalTime::get().setAdvanceTime(RtxOptions::advanceTime());
   }
@@ -727,6 +730,11 @@ namespace dxvk {
 
         RtxDustParticles& dust = m_common->metaDustParticles();
         dust.simulateAndDraw(this, m_state, rtOutput);
+
+        // LSS hair rendering test (RTX Character Rendering SDK integration).
+        // Runs on the final output before bloom/tonemapping so the hair is
+        // shaded in linear HDR space at display resolution.
+        m_common->metaHairTest().dispatch(this, rtOutput);
 
         dispatchBloom(rtOutput);
 

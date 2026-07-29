@@ -61,6 +61,10 @@ namespace dxvk {
     // NV-DXVK start: opacity micromap
     VkPhysicalDeviceSynchronization2FeaturesKHR               khrSynchronization2;
     // NV-DXVK end
+
+    // NV-DXVK start: Linear Swept Spheres (RTXCR hair test)
+    VkPhysicalDeviceRayTracingLinearSweptSpheresFeaturesNV    nvRayTracingLinearSweptSpheres;
+    // NV-DXVK end
   };
 
 }

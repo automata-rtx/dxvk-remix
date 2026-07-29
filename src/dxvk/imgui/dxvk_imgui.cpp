@@ -1044,6 +1044,9 @@ namespace dxvk {
             case kTab_Development:
               showDevelopmentSettings(ctx);
               break;
+            case kTab_HairTest:
+              ctx->getCommonObjects()->metaHairTest().showImguiSettings();
+              break;
             case kTab_Count:
               assert(false && "kTab_Count hit in ImGUI::showMainMenu");
               break;

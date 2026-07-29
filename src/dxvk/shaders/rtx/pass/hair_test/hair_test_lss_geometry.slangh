@@ -1,0 +1,117 @@
+/*
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+ *
+ * NVIDIA CORPORATION and its licensors retain all intellectual property
+ * and proprietary rights in and to this software, related documentation
+ * and any modifications thereto.  Any use, reproduction, disclosure or
+ * distribution of this software and related documentation without an express
+ * license agreement from NVIDIA CORPORATION is strictly prohibited.
+ */
+
+// Vendored from the RTX Character Rendering SDK's Geometry Library
+// (shaders/include/rtxcr/geometry.hlsli). Provides the analytic rounded-cone
+// intersector used to reconstruct smooth shading normals for Linear Swept
+// Sphere (LSS) hair segments, and for the Disjoint Orthogonal Triangle Strip
+// (DOTS) fallback representation of the same curves.
+
+#pragma once
+
+// The MIT License
+// Copyright (c) 2018 Inigo Quilez
+/*
+Permission is hereby granted, free of charge,
+to any person obtaining a copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all copies
+or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+*/
+
+// This version forked and modified from IQ's rounded cone https://www.shadertoy.com/view/MlKfzm
+
+// Intersection of a ray and an infinite cone oriented in an arbitrary direction
+// List of ray-surface intersectors at https://www.shadertoy.com/playlist/l3dXRf
+// and https://iquilezles.org/articles/intersectors
+
+static const float kLssIntersectionMiss = float(0xDEADBEEF);
+
+float4 IntersectInfiniteCone(float3 ro, float3 rd, float3 pa, float3 pb, float ra, float rb)
+{
+  // Move ray origin closer to the cone to minimize floating-point arithmetic issues
+  // Method inspired by Ray Tracing Gems II, chapter 34
+  float3 oa = ro - pa;
+  float tOffset = -dot(rd, oa);
+  float3 roOffset = tOffset * rd;
+  oa = ro + roOffset - pa;
+
+  float3 ba = pb - pa;
+  float rr = ra - rb;
+  float m0 = dot(ba, ba);
+  float m1 = dot(ba, oa);
+  float m2 = dot(ba, rd);
+  float m3 = dot(rd, oa);
+  float m5 = dot(oa, oa);
+
+  float d2 = m0 - rr * rr;
+
+  float k2 = d2      - m2 * m2;
+  float k1 = d2 * m3 - m1 * m2 + m2 * rr * ra;
+  float k0 = d2 * m5 - m1 * m1 + m1 * rr * ra * 2.0f - m0 * ra * ra;
+
+  float h = k1 * k1 - k0 * k2;
+  if (h < 0.0f)
+  {
+    return float4(kLssIntersectionMiss, 0.0f, 0.0f, 0.0f);
+  }
+
+  float t = (-sqrt(h) - k1) / k2;
+  if (t + tOffset < 0.0f)
+  {
+    return float4(kLssIntersectionMiss, 0.0f, 0.0f, 0.0f);
+  }
+
+  float y = m1 - ra * rr + t * m2;
+  float3 hP = d2 * (oa + t * rd); // hit point
+  float3 aP = ba * y;             // axis point with same U param as hit point
+  float3 normal = normalize(hP - aP);
+  return float4(t + tOffset, normal);
+}
+
+// Reconstructs the smooth swept-sphere surface normal at a hit point on a hair
+// segment by re-intersecting the analytic rounded cone that the segment sweeps.
+// Used identically for LSS hardware hits and the DOTS triangle fallback, which
+// is how the RTXCR SDK sample recovers normals for its curve representations.
+float3 ComputeCurveSegmentNormal(
+  float3 rayOrigin,
+  float3 rayDirection,
+  float3 hitPosition,
+  float3 p0,
+  float3 p1,
+  float r0,
+  float r1)
+{
+  const float4 hit = IntersectInfiniteCone(rayOrigin, rayDirection, p0, p1, r0, r1);
+
+  if (hit.x != kLssIntersectionMiss)
+  {
+    return hit.yzw;
+  }
+
+  // Handle unsuccessful ray/infinite cone intersection somewhat gracefully
+  // (shouldn't happen too often): fall back to the vector from the closest
+  // point on the segment axis to the hit position.
+  const float3 ba = p1 - p0;
+  const float u = saturate(dot(hitPosition - p0, ba) / max(dot(ba, ba), 1e-8f));
+  const float3 axisPoint = p0 + u * ba;
+  const float3 offset = hitPosition - axisPoint;
+  const float offsetLength = length(offset);
+
+  return offsetLength > 1e-6f ? offset / offsetLength : -rayDirection;
+}

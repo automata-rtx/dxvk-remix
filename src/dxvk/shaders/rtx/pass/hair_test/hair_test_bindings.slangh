@@ -1,0 +1,50 @@
+/*
+* Copyright (c) 2025-2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+#include "rtx/pass/hair_test/hair_test_binding_indices.h"
+#include "rtx/pass/common_bindings.slangh"
+
+// Inputs
+
+layout(binding = HAIR_TEST_BINDING_CONSTANTS)
+ConstantBuffer<HairTestConstants> hairCb;
+
+layout(binding = HAIR_TEST_BINDING_TLAS)
+RaytracingAccelerationStructure hairTLAS;
+
+// Linear Swept Sphere segment data in the RTXCR SDK's LSS list layout:
+// two vertices per segment, positions tightly packed as xyzxyz... and radii as rrr...
+// The same buffers feed the LSS BLAS build, so shading and traversal always agree.
+layout(binding = HAIR_TEST_BINDING_SEGMENT_POSITIONS_INPUT)
+StructuredBuffer<float> HairSegmentPositions;
+
+layout(binding = HAIR_TEST_BINDING_SEGMENT_RADII_INPUT)
+StructuredBuffer<float> HairSegmentRadii;
+
+layout(binding = HAIR_TEST_BINDING_DEPTH_INPUT)
+Sampler2D<float> PrimaryDepth;
+
+// Outputs
+
+layout(binding = HAIR_TEST_BINDING_OUTPUT)
+RWTexture2D<float4> HairOutput;

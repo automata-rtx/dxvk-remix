@@ -343,7 +343,7 @@ namespace dxvk {
           DxvkDeviceFeatures  enabledFeatures) {
     DxvkDeviceExtensions devExtensions;
 
-    std::array<DxvkExt*, 43> devExtensionList = {{
+    std::array<DxvkExt*, 44> devExtensionList = {{
       &devExtensions.amdMemoryOverallocationBehaviour,
       &devExtensions.amdShaderFragmentMask,
       &devExtensions.ext4444Formats,
@@ -380,6 +380,7 @@ namespace dxvk {
       &devExtensions.khrPushDescriptor,
       &devExtensions.khrShaderInt8Float16Types,
       &devExtensions.nvRayTracingInvocationReorder,
+      &devExtensions.nvRayTracingLinearSweptSpheres,
       &devExtensions.khrSynchronization2,
       &devExtensions.extOpacityMicromap,
       &devExtensions.nvLowLatency,
@@ -611,6 +612,15 @@ namespace dxvk {
       enabledFeatures.khrSynchronization2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
       enabledFeatures.khrSynchronization2.pNext = std::exchange(enabledFeatures.core.pNext, &enabledFeatures.khrSynchronization2);
       enabledFeatures.khrSynchronization2.synchronization2 = VK_TRUE;
+    }
+    // NV-DXVK end
+
+    // NV-DXVK start: Linear Swept Spheres (RTXCR hair test)
+    if (devExtensions.nvRayTracingLinearSweptSpheres) {
+      enabledFeatures.nvRayTracingLinearSweptSpheres.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_LINEAR_SWEPT_SPHERES_FEATURES_NV;
+      enabledFeatures.nvRayTracingLinearSweptSpheres.pNext = std::exchange(enabledFeatures.core.pNext, &enabledFeatures.nvRayTracingLinearSweptSpheres);
+      enabledFeatures.nvRayTracingLinearSweptSpheres.spheres = m_deviceFeatures.nvRayTracingLinearSweptSpheres.spheres;
+      enabledFeatures.nvRayTracingLinearSweptSpheres.linearSweptSpheres = m_deviceFeatures.nvRayTracingLinearSweptSpheres.linearSweptSpheres;
     }
     // NV-DXVK end
 
@@ -1129,6 +1139,13 @@ namespace dxvk {
       m_deviceFeatures.extShaderAtomicFloat.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
       m_deviceFeatures.extShaderAtomicFloat.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.extShaderAtomicFloat);
     }
+
+    // NV-DXVK start: Linear Swept Spheres (RTXCR hair test)
+    if (m_deviceExtensions.supports(VK_NV_RAY_TRACING_LINEAR_SWEPT_SPHERES_EXTENSION_NAME)) {
+      m_deviceFeatures.nvRayTracingLinearSweptSpheres.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_LINEAR_SWEPT_SPHERES_FEATURES_NV;
+      m_deviceFeatures.nvRayTracingLinearSweptSpheres.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.nvRayTracingLinearSweptSpheres);
+    }
+    // NV-DXVK end
 
     m_vki->vkGetPhysicalDeviceFeatures2(m_handle, &m_deviceFeatures.core);
   }
