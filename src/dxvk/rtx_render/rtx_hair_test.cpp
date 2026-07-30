@@ -193,8 +193,20 @@ namespace dxvk {
       const math::float3 root = normal * radius;
 
       // Jitter the growth direction away from the surface normal.
-      const math::float3 randomOffset(rng.next() * 2.0f - 1.0f, rng.next() * 2.0f - 1.0f, rng.next() * 2.0f - 1.0f);
-      const math::float3 growthDirection = math::normalize(normal + randomOffset * frizz());
+      // Note: each random value is drawn into its own local first - the order
+      // in which function arguments are evaluated is unspecified, so drawing
+      // them inline would make the scatter depend on the compiler.
+      const float jitterX = rng.next() * 2.0f - 1.0f;
+      const float jitterY = rng.next() * 2.0f - 1.0f;
+      const float jitterZ = rng.next() * 2.0f - 1.0f;
+
+      // Note: at high frizz the jitter can cancel the normal almost exactly,
+      // which would normalize to NaN and poison the acceleration structure
+      // build, so fall back to growing straight out along the normal.
+      const math::float3 jitteredNormal = normal + randomOffset * frizz();
+      const math::float3 growthDirection = math::dot(jitteredNormal, jitteredNormal) > 1e-6f
+        ? math::normalize(jitteredNormal)
+        : normal;
 
       // Frame around the growth direction for the helical curl.
       math::float3 curlAxisT, curlAxisB;
