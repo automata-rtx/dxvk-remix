@@ -607,6 +607,11 @@ namespace dxvk {
       RtxParticleSystemManager& particles = m_device->getCommon()->metaParticleSystem();
       particles.submitDrawState(this);
 
+      // LSS hair test: regenerate strand geometry if needed and submit the
+      // hair's proxy mesh into the scene so it is part of the path-traced
+      // world (shadow casting, GI, reflections) before scene data finalizes.
+      m_common->metaHairTest().prepareFrame(this);
+
       this->spillRenderPass(false);
 
       getCommonObjects()->getTextureManager().submitTexturesToDeviceLocal(this, m_execBarriers, m_execAcquires);

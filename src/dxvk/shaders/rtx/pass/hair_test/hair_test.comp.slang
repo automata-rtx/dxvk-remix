@@ -34,6 +34,11 @@
 #include "rtx/pass/hair_test/hair_test_bindings.slangh"
 #include "rtx/pass/hair_test/hair_test_lss_geometry.slangh"
 #include "rtx/concept/camera/camera.slangh"
+#include "rtx/utility/noise.slangh"
+
+// Polymorphic light decode/sampling for lighting hair hits from the scene's
+// actual light pool (the `lights` buffer from the common bindings).
+#include "rtx/concept/light/light.slangh"
 
 // RTX Character Rendering SDK hair material library (submodules/rtxcr).
 #include "rtxcr/HairChiangBSDF.hlsli"
@@ -162,91 +167,196 @@ RTXCR_HairMaterialData createHairMaterialData()
   return hairMaterialData;
 }
 
-// Shades a single hair hit with the selected RTXCR hair BCSDF: one directional
-// key light (with optional hair self-shadowing and scene shadowing) plus a
-// crude ambient term tinted by the fiber absorption, attenuated by a short
-// occlusion probe inside the hair volume for cheap depth cues.
-float3 shadeHairHit(float3 rayDirection, float3 hitPosition, HairSegment segment, float3 shadingNormal)
+// Per-hit shading context: the hair tangent frame, local-space view vector and
+// material, built once per hit and reused for every light sample.
+struct HairShadingContext
 {
+  float3 hitPosition;
+  float3 normalWorld;
+  float3 tangentWorld;
+  float3x3 tangentBasis; // TBN rows: tangent, bitangent, normal
+  float3 viewVectorLocal;
+  float rayOffset;
+  RTXCR_HairMaterialData materialData;
+  RTXCR_HairInteractionSurface surface;
+};
+
+HairShadingContext createHairShadingContext(float3 rayDirection, float3 hitPosition, HairSegment segment, float3 shadingNormal)
+{
+  HairShadingContext ctx;
+  ctx.hitPosition = hitPosition;
+
   const float3 viewVector = -rayDirection;
-  const float3 vectorToLight = -hairCb.lightDirection;
 
   // Curve tangent along the strand; make the shading normal exactly
   // perpendicular so the hair tangent basis is orthonormal.
-  const float3 tangentWorld = normalize(segment.p1 - segment.p0);
-  float3 normalWorld = shadingNormal - dot(shadingNormal, tangentWorld) * tangentWorld;
+  ctx.tangentWorld = normalize(segment.p1 - segment.p0);
+  float3 normalWorld = shadingNormal - dot(shadingNormal, ctx.tangentWorld) * ctx.tangentWorld;
   const float normalLength = length(normalWorld);
-  normalWorld = normalLength > 1e-6f ? normalWorld / normalLength : viewVector;
+  ctx.normalWorld = normalLength > 1e-6f ? normalWorld / normalLength : viewVector;
 
-  const float3 biTangentWorld = cross(normalWorld, tangentWorld);
-  const float3x3 hairTangentBasis = float3x3(tangentWorld, biTangentWorld, normalWorld); // TBN
+  const float3 biTangentWorld = cross(ctx.normalWorld, ctx.tangentWorld);
+  ctx.tangentBasis = float3x3(ctx.tangentWorld, biTangentWorld, ctx.normalWorld);
 
-  const float3 viewVectorLocal = mul(hairTangentBasis, viewVector);
-  const float3 lightVectorLocal = mul(hairTangentBasis, vectorToLight);
+  ctx.viewVectorLocal = mul(ctx.tangentBasis, viewVector);
 
-  RTXCR_HairInteractionSurface hairInteractionSurface;
-  hairInteractionSurface.incidentRayDirection = viewVectorLocal;
-  hairInteractionSurface.shadingNormal = float3(0.0f, 0.0f, 1.0f);
-  hairInteractionSurface.tangent = float3(1.0f, 0.0f, 0.0f);
+  ctx.surface.incidentRayDirection = ctx.viewVectorLocal;
+  ctx.surface.shadingNormal = float3(0.0f, 0.0f, 1.0f);
+  ctx.surface.tangent = float3(1.0f, 0.0f, 0.0f);
 
-  const RTXCR_HairMaterialData hairMaterialData = createHairMaterialData();
+  ctx.materialData = createHairMaterialData();
 
-  float3 hairBsdf = float3(0.0f, 0.0f, 0.0f);
+  // Offset shadow/occlusion ray origins off the fiber surface to dodge
+  // self-intersection with the segment that was just hit (and with the proxy
+  // mesh representing this hair in the scene TLAS).
+  ctx.rayOffset = max(segment.r0, segment.r1) * 2.0f + 1e-4f;
+
+  return ctx;
+}
+
+// Evaluates the selected RTXCR hair BCSDF for a world-space light direction.
+float3 evalHairBcsdf(HairShadingContext ctx, float3 vectorToLightWorld)
+{
+  const float3 lightVectorLocal = mul(ctx.tangentBasis, vectorToLightWorld);
 
   if (hairCb.bsdfModel == HAIR_TEST_BSDF_MODEL_CHIANG)
   {
     const RTXCR_HairMaterialInteraction hairMaterialInteraction =
-      RTXCR_CreateHairMaterialInteraction(hairMaterialData, hairInteractionSurface);
-    hairBsdf = RTXCR_HairChiangBsdfEval(hairMaterialInteraction, lightVectorLocal, viewVectorLocal);
+      RTXCR_CreateHairMaterialInteraction(ctx.materialData, ctx.surface);
+    return RTXCR_HairChiangBsdfEval(hairMaterialInteraction, lightVectorLocal, ctx.viewVectorLocal);
   }
-  else
+
+  const RTXCR_HairMaterialInteractionBcsdf hairMaterialInteractionBcsdf =
+    RTXCR_CreateHairMaterialInteractionBcsdf(ctx.materialData,
+                                             hairCb.diffuseReflectionTint,
+                                             hairCb.diffuseReflectionWeight,
+                                             hairCb.farFieldRoughness);
+
+  float3 bsdfSpecular = float3(0.0f, 0.0f, 0.0f);
+  float3 bsdfDiffuse = float3(0.0f, 0.0f, 0.0f);
+  float pdf = 0.0f;
+  RTXCR_HairFarFieldBcsdfEval(ctx.surface,
+                              hairMaterialInteractionBcsdf,
+                              lightVectorLocal, ctx.viewVectorLocal,
+                              bsdfSpecular, bsdfDiffuse, pdf);
+
+  return pdf > 0.0f ? bsdfSpecular + bsdfDiffuse : float3(0.0f, 0.0f, 0.0f);
+}
+
+// Occlusion toward a light sample. When the hair's proxy mesh is present in
+// the scene TLAS, a single scene ray covers both world shadows and hair
+// self-shadowing; otherwise the dedicated hair TLAS provides self-shadowing.
+float lightVisibility(HairShadingContext ctx, float3 vectorToLight, float maxDistance)
+{
+  const float3 origin = ctx.hitPosition + ctx.normalWorld * ctx.rayOffset + vectorToLight * ctx.rayOffset;
+  const float rayLength = max(maxDistance - 2.0f * ctx.rayOffset, 0.0f);
+
+  bool occluded = false;
+
+  if (hairCb.enableSceneShadows != 0)
   {
-    const RTXCR_HairMaterialInteractionBcsdf hairMaterialInteractionBcsdf =
-      RTXCR_CreateHairMaterialInteractionBcsdf(hairMaterialData,
-                                               hairCb.diffuseReflectionTint,
-                                               hairCb.diffuseReflectionWeight,
-                                               hairCb.farFieldRoughness);
-
-    float3 bsdfSpecular = float3(0.0f, 0.0f, 0.0f);
-    float3 bsdfDiffuse = float3(0.0f, 0.0f, 0.0f);
-    float pdf = 0.0f;
-    RTXCR_HairFarFieldBcsdfEval(hairInteractionSurface,
-                                hairMaterialInteractionBcsdf,
-                                lightVectorLocal, viewVectorLocal,
-                                bsdfSpecular, bsdfDiffuse, pdf);
-
-    hairBsdf = pdf > 0.0f ? bsdfSpecular + bsdfDiffuse : float3(0.0f, 0.0f, 0.0f);
+    occluded = traceSceneOcclusion(origin, vectorToLight, rayLength);
   }
 
-  // Offset shadow/occlusion ray origins off the fiber surface to dodge
-  // self-intersection with the segment that was just hit.
-  const float rayOffset = max(segment.r0, segment.r1) * 2.0f + 1e-4f;
-  const float3 occlusionOrigin = hitPosition + normalWorld * rayOffset;
-
-  float shadowTerm = 1.0f;
-
-  if (hairCb.enableHairShadows != 0 &&
-      traceHairOcclusion(occlusionOrigin + vectorToLight * rayOffset, vectorToLight, hairCb.aoDistance * 4.0f))
+  if (!occluded && hairCb.enableHairShadows != 0 &&
+      !(hairCb.enableSceneShadows != 0 && hairCb.sceneContainsHairProxy != 0))
   {
-    shadowTerm *= 1.0f - hairCb.hairShadowIntensity;
+    occluded = traceHairOcclusion(origin, vectorToLight, min(rayLength, hairCb.aoDistance * 4.0f));
   }
 
-  if (hairCb.enableSceneShadows != 0 &&
-      traceSceneOcclusion(occlusionOrigin, vectorToLight, 1e7f))
+  return occluded ? 1.0f - hairCb.hairShadowIntensity : 1.0f;
+}
+
+// Direct lighting for a hair hit. When scene lighting is enabled and the
+// scene has lights, hair is lit by uniformly sampling the Remix light pool
+// (next event estimation with the hair BCSDF); otherwise the manual test key
+// light is used.
+float3 computeDirectLight(HairShadingContext ctx, inout RNG randomState)
+{
+  if (hairCb.useSceneLighting != 0)
   {
-    shadowTerm *= 0.05f;
+    const uint lightCount = cb.lightRanges[lightTypeCount - 1].offset + cb.lightRanges[lightTypeCount - 1].count;
+
+    if (lightCount > 0)
+    {
+      MinimalSurfaceInteraction minimalSurfaceInteraction = (MinimalSurfaceInteraction)0;
+      minimalSurfaceInteraction.position = ctx.hitPosition;
+      minimalSurfaceInteraction.geometryNormal = ctx.normalWorld;
+      minimalSurfaceInteraction.geometryTangent = ctx.tangentWorld;
+
+      const uint sampleCount = clamp(hairCb.sceneLightSamples, 1, 8);
+      float3 totalRadiance = float3(0.0f, 0.0f, 0.0f);
+
+      for (uint sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+      {
+        // Uniformly select a light from the pool and sample a point on it.
+        const float lightRnd = getNextSampleBlueNoise(randomState);
+        const uint lightIndex = min(uint(lightRnd * float(lightCount)), lightCount - 1);
+        const float2 sampleCoordinates = float2(getNextSampleBlueNoise(randomState), getNextSampleBlueNoise(randomState));
+
+        const LightSample lightSample =
+          memoryPolymorphicLightSampleArea(lights[lightIndex], sampleCoordinates, minimalSurfaceInteraction);
+
+        if (lightSample.solidAnglePdf <= 0.0f)
+        {
+          continue;
+        }
+
+        const float3 toLight = lightSample.position - ctx.hitPosition;
+        const float lightDistance = length(toLight);
+
+        if (lightDistance <= ctx.rayOffset * 4.0f)
+        {
+          continue;
+        }
+
+        const float3 vectorToLight = toLight / lightDistance;
+
+        const float3 hairBsdf = evalHairBcsdf(ctx, vectorToLight);
+
+        if (all(hairBsdf <= 0.0f))
+        {
+          continue;
+        }
+
+        const float visibility = lightVisibility(ctx, vectorToLight, lightDistance);
+
+        // Standard NEE estimator: bcsdf * radiance * inverseSelectionPdf / solidAnglePdf.
+        const float sampleThroughput = float(lightCount) / (lightSample.solidAnglePdf * float(sampleCount));
+
+        totalRadiance += hairBsdf * lightSample.radiance * sampleThroughput * visibility;
+      }
+
+      return totalRadiance;
+    }
   }
 
-  const float3 directLight = hairBsdf * hairCb.lightColor * hairCb.lightIntensity * shadowTerm;
+  // Manual test key light fallback (also used when the scene has no lights).
+  const float3 vectorToLight = -hairCb.lightDirection;
+  const float3 hairBsdf = evalHairBcsdf(ctx, vectorToLight);
+  const float visibility = lightVisibility(ctx, vectorToLight, 1e7f);
+
+  return hairBsdf * hairCb.lightColor * hairCb.lightIntensity * visibility;
+}
+
+// Shades a single hair hit with the selected RTXCR hair BCSDF: direct light
+// from the scene's light pool (or the manual key light), plus a crude ambient
+// term tinted by the fiber absorption and attenuated by a short occlusion
+// probe inside the hair volume for cheap multiple-scattering depth cues.
+float3 shadeHairHit(float3 rayDirection, float3 hitPosition, HairSegment segment, float3 shadingNormal, inout RNG randomState)
+{
+  const HairShadingContext ctx = createHairShadingContext(rayDirection, hitPosition, segment, shadingNormal);
+
+  const float3 directLight = computeDirectLight(ctx, randomState);
 
   // Fake multiple-scattering ambient: tint by a single-pass transmittance
   // through the fiber and darken points buried inside the hair volume.
-  const float3 absorptionCoefficient = RTXCR_ComputeAbsorptionCoefficient(hairMaterialData);
+  const float3 absorptionCoefficient = RTXCR_ComputeAbsorptionCoefficient(ctx.materialData);
   const float3 ambientTint = exp(-absorptionCoefficient);
 
   float ambientOcclusion = 1.0f;
   if (hairCb.enableAmbientOcclusion != 0 &&
-      traceHairOcclusion(occlusionOrigin, normalWorld, hairCb.aoDistance))
+      traceHairOcclusion(ctx.hitPosition + ctx.normalWorld * ctx.rayOffset, ctx.normalWorld, hairCb.aoDistance))
   {
     ambientOcclusion = 0.35f;
   }
@@ -260,7 +370,7 @@ float3 shadeHairHit(float3 rayDirection, float3 hitPosition, HairSegment segment
   return (any(isnan(radiance)) || any(isinf(radiance))) ? float3(0.0f, 0.0f, 0.0f) : radiance;
 }
 
-float3 shadeDebugMode(float3 rayDirection, float3 hitPosition, HairSegment segment, float3 shadingNormal)
+float3 shadeDebugMode(float3 rayDirection, float3 hitPosition, HairSegment segment, float3 shadingNormal, inout RNG randomState)
 {
   switch (hairCb.debugMode)
   {
@@ -275,7 +385,7 @@ float3 shadeDebugMode(float3 rayDirection, float3 hitPosition, HairSegment segme
     return float3(u, u, u);
   }
   default:
-    return shadeHairHit(rayDirection, hitPosition, segment, shadingNormal);
+    return shadeHairHit(rayDirection, hitPosition, segment, shadingNormal, randomState);
   }
 }
 
@@ -325,6 +435,8 @@ void main(uint2 ipos : SV_DispatchThreadID)
   const float3 cameraPosition = cameraGetWorldPosition(cb.camera);
   const uint sampleCount = clamp(hairCb.aaSamples, 1, 4);
 
+  RNG randomState = createRNG(uvec2(ipos), cb.frameIdx, 0);
+
   // Scene depth at this pixel, read once; hair behind primary geometry is
   // rejected, hair in front of it takes the pixel over.
   const float sceneDepth = PrimaryDepth[ipos];
@@ -357,10 +469,16 @@ void main(uint2 ipos : SV_DispatchThreadID)
 
     const float3 hitPosition = cameraPosition + rayDirection * hitT;
 
-    // Depth test against the scene: reject hair hits behind primary geometry.
+    // Depth test against the scene with a small world-space tolerance: the
+    // hair's proxy mesh in the scene TLAS writes G-buffer depth at nearly the
+    // same position as the swept-sphere hit, and must not occlude it. Only
+    // geometry clearly in front of the strand (beyond the tolerance) rejects
+    // the hit.
     const float hairDepth = worldPositionToDeviceDepth(hitPosition);
+    const float depthTolerance = 4.0f * hairCb.rootStrandRadius + hitT * 1e-3f;
+    const float pulledHairDepth = worldPositionToDeviceDepth(hitPosition - rayDirection * depthTolerance);
 
-    if (sceneDepth > 0.0f && sceneDepth <= hairDepth)
+    if (sceneDepth > 0.0f && sceneDepth < pulledHairDepth)
     {
       continue;
     }
@@ -370,7 +488,7 @@ void main(uint2 ipos : SV_DispatchThreadID)
       cameraPosition, rayDirection, hitPosition,
       segment.p0, segment.p1, segment.r0, segment.r1);
 
-    accumulatedRadiance += shadeDebugMode(rayDirection, hitPosition, segment, shadingNormal);
+    accumulatedRadiance += shadeDebugMode(rayDirection, hitPosition, segment, shadingNormal, randomState);
 
     if (hitT < closestHitT)
     {

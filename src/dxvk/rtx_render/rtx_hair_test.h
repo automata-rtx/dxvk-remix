@@ -21,6 +21,8 @@
 */
 #pragma once
 
+#include <vector>
+
 #include "../dxvk_include.h"
 #include "../util/xxHash/xxhash.h"
 
@@ -58,9 +60,16 @@ namespace dxvk {
 
     void showImguiSettings();
 
-    // Builds/refreshes the hair acceleration structures and runs the shading
-    // pass. Call after the composite pass and before upscaling, while the
-    // scene image, primary depth and motion vectors are at render resolution.
+    // Frame-start work: (re)generates the strand geometry when parameters
+    // change, and registers + submits the hair's proxy mesh into the scene as
+    // a regular draw so it enters the scene TLAS (casting shadows, occluding,
+    // and appearing in GI/reflections). Call from injectRTX before the scene
+    // data is finalized, alongside other procedural draw submission.
+    void prepareFrame(RtxContext* ctx);
+
+    // Runs the strand shading pass. Call after the composite pass and before
+    // upscaling, while the scene image, primary depth and motion vectors are
+    // at render resolution.
     void dispatch(RtxContext* ctx, const Resources::RaytracingOutput& rtOutput);
 
     static bool isLssSupported(const DxvkDevice& device);
@@ -81,6 +90,25 @@ namespace dxvk {
                "Curve representation used for the hair acceleration structure. 0: Automatic (native Linear Swept Spheres when the driver "
                "supports VK_NV_ray_tracing_linear_swept_spheres, otherwise DOTS triangles), 1: Force LSS, 2: Force DOTS.\n"
                "Forcing LSS on hardware without support renders nothing.");
+
+    // Scene integration: the hair exists in the path-traced scene through a
+    // proxy mesh (the SDK's DOTS tessellation of the same strands) submitted
+    // as a regular opaque draw, and hair shading samples the scene's lights.
+    RTX_OPTION("rtx.hairTest", bool, enableSceneProxy, true,
+               "Submits the hair strands as real opaque geometry in the path-traced scene (a DOTS triangle tessellation of the same curves).\n"
+               "This makes the hair cast shadows onto the scene and itself, occlude other objects, bounce light, and appear in reflections. "
+               "The strand shading pass then refines the hair's primary-visible pixels with the swept-sphere silhouette and hair BCSDF.");
+    RTX_OPTION("rtx.hairTest", bool, useSceneLighting, true,
+               "Lights the hair with the Remix scene's actual light pool: each hair hit samples scene lights and evaluates the hair BCSDF "
+               "against them (next event estimation), with shadow rays against the scene.\n"
+               "When disabled, or when the scene has no lights, the manual rtx.hairTest.light* test key light is used instead.");
+    RTX_OPTION_ARGS("rtx.hairTest", int, sceneLightSamples, 2,
+                    "Scene light samples per hair hit. More samples reduce noise with many or large lights at proportional cost.",
+                    args.minValue = 1, args.maxValue = 8);
+    RTX_OPTION_ARGS("rtx.hairTest", float, proxyRoughness, 0.55f,
+                    "Roughness of the hair proxy mesh's opaque material, used where the path tracer shades the proxy directly "
+                    "(GI bounces, reflections, and any hair pixels the strand pass does not cover).",
+                    args.minValue = 0.0f, args.maxValue = 1.0f);
 
     // Strand scattering / growth. These mirror the curve parameters the RTXCR
     // SDK sample feeds its tessellation, generated procedurally over a sphere.
@@ -176,8 +204,9 @@ namespace dxvk {
     RTX_OPTION_ARGS("rtx.hairTest", float, hairShadowIntensity, 0.75f,
                     "How dark hair self-shadowing gets, 0 (off) to 1 (black).",
                     args.minValue = 0.0f, args.maxValue = 1.0f);
-    RTX_OPTION("rtx.hairTest", bool, enableSceneShadows, false,
-               "Also shadows the key light against the game scene's geometry (main TLAS).");
+    RTX_OPTION("rtx.hairTest", bool, enableSceneShadows, true,
+               "Shadows light samples against the scene's geometry (main TLAS). When the hair proxy is in the scene, "
+               "this single ray also covers hair self-shadowing.");
     RTX_OPTION("rtx.hairTest", bool, enableAmbientOcclusion, true,
                "Darkens the ambient term for points buried inside the hair volume using a short occlusion probe.");
 
@@ -197,6 +226,16 @@ namespace dxvk {
 
     // Rebuilds strand geometry + BLAS when generation parameters change.
     void rebuildGeometryIfNeeded(RtxContext* ctx, ActiveGeometry desiredGeometry);
+    // Registers the DOTS proxy tessellation as an external mesh in the scene.
+    void registerProxyMesh(RtxContext* ctx,
+                           XXH64_hash_t generationHash,
+                           const std::vector<float>& dotsPositions,
+                           const std::vector<uint32_t>& dotsPackedNormals,
+                           const std::vector<float>& dotsTexcoords);
+    void destroyProxyMesh(RtxContext* ctx);
+    // Registers/updates the proxy's opaque material from the hair parameters.
+    void ensureProxyMaterial(RtxContext* ctx);
+    Vector3 computeProxyAlbedo() const;
     void buildBlas(RtxContext* ctx, ActiveGeometry geometryType, uint32_t segmentCount, uint32_t dotsVertexCount);
     void buildTlas(RtxContext* ctx);
     XXH64_hash_t computeGenerationHash(ActiveGeometry desiredGeometry) const;
@@ -226,5 +265,10 @@ namespace dxvk {
     // the sphere is being moved.
     Vector3 m_previousSpherePosition = Vector3(0.0f, 0.0f, 0.0f);
     bool m_hasPreviousSpherePosition = false;
+
+    // Scene proxy state: the external mesh/material registered with the asset
+    // replacer so the hair exists in the path-traced scene.
+    bool m_proxyMeshRegistered = false;
+    XXH64_hash_t m_registeredProxyMaterialHash = 0;
   };
 }

@@ -28,8 +28,11 @@
 #include "rtx_context.h"
 #include "rtx_camera.h"
 #include "rtx_scene_manager.h"
+#include "rtx_asset_replacer.h"
 #include "rtx_imgui.h"
 #include "rtx_render/rtx_shader_manager.h"
+
+#include <remix/remix_c.h>
 
 #include "rtx/pass/common_binding_indices.h"
 
@@ -54,6 +57,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <memory>
 #include <random>
 #include <vector>
 
@@ -81,6 +86,28 @@ namespace dxvk {
 
     // DOTS emits 4 triangles (12 vertices) per curve segment.
     constexpr uint32_t kDotsVerticesPerSegment = 4 * 3;
+
+    // The RTXCR DOTS converter widens fibers by this factor to compensate the
+    // volume lost when approximating a circular tube with crossed quads. The
+    // hair test pre-divides radii fed to DOTS-based geometry so its silhouette
+    // matches the Linear Swept Sphere silhouette exactly instead.
+    const float kDotsVolumeCompensationScale =
+      1.0f / (std::sin(rtxcr::geometry::math::kPi / 4.0f) / (rtxcr::geometry::math::kPi / 4.0f));
+
+    // Handles identifying the hair proxy mesh/material with the asset
+    // replacer's external asset registry (arbitrary unique non-zero values).
+    const remixapi_MeshHandle kProxyMeshHandle =
+      reinterpret_cast<remixapi_MeshHandle>(static_cast<uintptr_t>(0x4861697254657374ull)); // 'HairTest'
+    const remixapi_MaterialHandle kProxyMaterialHandle =
+      reinterpret_cast<remixapi_MaterialHandle>(static_cast<uintptr_t>(0x4861697254657381ull));
+
+    // Unpacks the DOTS converter's snorm8-packed normals (x|y<<8|z<<16).
+    Vector3 unpackSnorm8Normal(uint32_t packed) {
+      const auto channel = [&](uint32_t shift) {
+        return static_cast<float>(static_cast<int8_t>((packed >> shift) & 0xff)) / 127.0f;
+      };
+      return Vector3(channel(0), channel(8), channel(16));
+    }
 
     Rc<DxvkBuffer> createGeometryBuffer(const Rc<DxvkDevice>& device, VkDeviceSize size, bool shaderReadable, const char* name) {
       DxvkBufferCreateInfo info;
@@ -149,6 +176,7 @@ namespace dxvk {
       int scatterSeed;
       float sphereRadius;
       int geometry;
+      int sceneProxy;
     } parameters = {
       strandCount(),
       segmentsPerStrand(),
@@ -163,6 +191,7 @@ namespace dxvk {
       scatterSeed(),
       sphereRadius(),
       static_cast<int>(desiredGeometry),
+      enableSceneProxy() ? 1 : 0,
     };
 
     return XXH64(&parameters, sizeof(parameters), 0);
@@ -290,38 +319,260 @@ namespace dxvk {
 
     uint32_t dotsVertexCount = 0;
 
-    if (desiredGeometry == ActiveGeometry::Dots) {
-      // DOTS fallback: tessellate the same segments into camera-independent
-      // crossed triangle strips via the SDK converter. Only positions are
-      // needed; normals and tangents are reconstructed analytically at hit
-      // time from the segment buffers.
+    const bool wantProxy = enableSceneProxy();
+
+    if (desiredGeometry == ActiveGeometry::Dots || wantProxy) {
+      // DOTS-based geometry: tessellate the same segments into
+      // camera-independent crossed triangle strips via the SDK converter,
+      // used for the overlay's triangle fallback BLAS and/or the proxy mesh
+      // that represents the hair in the path-traced scene.
+      //
+      // Pre-divide the radii by the converter's volume compensation so the
+      // triangle silhouette matches the swept-sphere silhouette; the overlay
+      // replaces proxy pixels in place, so the two must line up.
+      for (auto& segment : lineSegments) {
+        segment.vertices[0].radius /= kDotsVolumeCompensationScale;
+        segment.vertices[1].radius /= kDotsVolumeCompensationScale;
+      }
+
       dotsVertexCount = totalSegments * kDotsVerticesPerSegment;
       std::vector<float> dotsPositionData(static_cast<size_t>(dotsVertexCount) * math::kFloatsPerPosition);
+      std::vector<uint32_t> dotsPackedNormalData(dotsVertexCount);
+      std::vector<float> dotsTexcoordData(static_cast<size_t>(dotsVertexCount) * math::kFloatsPerTexCoord);
 
       convertToDisjointOrthogonalTriangleStrips(
         lineSegments,
         totalSegments,
         nullptr,
         dotsPositionData.data(),
+        dotsPackedNormalData.data(),
         nullptr,
-        nullptr,
-        nullptr,
+        dotsTexcoordData.data(),
         nullptr);
 
-      const VkDeviceSize dotsSize = dotsPositionData.size() * sizeof(float);
+      if (desiredGeometry == ActiveGeometry::Dots) {
+        const VkDeviceSize dotsSize = dotsPositionData.size() * sizeof(float);
 
-      if (m_dotsVertices.ptr() == nullptr || m_dotsVertices->info().size < dotsSize) {
-        m_dotsVertices = createGeometryBuffer(device, dotsSize, false, "Hair Test DOTS Vertices");
+        if (m_dotsVertices.ptr() == nullptr || m_dotsVertices->info().size < dotsSize) {
+          m_dotsVertices = createGeometryBuffer(device, dotsSize, false, "Hair Test DOTS Vertices");
+        }
+
+        ctx->writeToBuffer(m_dotsVertices, 0, dotsSize, dotsPositionData.data());
       }
 
-      ctx->writeToBuffer(m_dotsVertices, 0, dotsSize, dotsPositionData.data());
+      if (wantProxy) {
+        registerProxyMesh(ctx, generationHash, dotsPositionData, dotsPackedNormalData, dotsTexcoordData);
+      }
     }
 
-    buildBlas(ctx, desiredGeometry, totalSegments, dotsVertexCount);
+    if (!wantProxy && m_proxyMeshRegistered) {
+      destroyProxyMesh(ctx);
+    }
+
+    buildBlas(ctx, desiredGeometry, totalSegments, desiredGeometry == ActiveGeometry::Dots ? dotsVertexCount : 0);
 
     m_generationHash = generationHash;
     m_activeGeometry = desiredGeometry;
     m_segmentCount = totalSegments;
+  }
+
+  // Registers the DOTS tessellation as an external mesh through the same path
+  // the Remix API uses, so the hair becomes a first-class instance in the
+  // path-traced scene: present in the scene TLAS with a real surface and
+  // material, casting shadows, occluding, bouncing light and reflecting.
+  void RtxHairTest::registerProxyMesh(RtxContext* ctx,
+                                      XXH64_hash_t generationHash,
+                                      const std::vector<float>& dotsPositions,
+                                      const std::vector<uint32_t>& dotsPackedNormals,
+                                      const std::vector<float>& dotsTexcoords) {
+    const Rc<DxvkDevice>& device = ctx->getDevice();
+
+    const uint32_t vertexCount = static_cast<uint32_t>(dotsPackedNormals.size());
+
+    std::vector<remixapi_HardcodedVertex> vertices(vertexCount);
+    std::vector<uint32_t> indices(vertexCount);
+
+    for (uint32_t i = 0; i < vertexCount; ++i) {
+      remixapi_HardcodedVertex& vertex = vertices[i];
+      vertex = {};
+      vertex.position[0] = dotsPositions[i * 3 + 0];
+      vertex.position[1] = dotsPositions[i * 3 + 1];
+      vertex.position[2] = dotsPositions[i * 3 + 2];
+
+      const Vector3 normal = unpackSnorm8Normal(dotsPackedNormals[i]);
+      vertex.normal[0] = normal.x;
+      vertex.normal[1] = normal.y;
+      vertex.normal[2] = normal.z;
+
+      vertex.texcoord[0] = dotsTexcoords[i * 2 + 0];
+      vertex.texcoord[1] = dotsTexcoords[i * 2 + 1];
+      vertex.color = 0xFFFFFFFFu;
+
+      indices[i] = i;
+    }
+
+    // Host-visible buffers, matching how the Remix API allocates external
+    // mesh data (the BLAS build reads them through their device address).
+    const auto allocBuffer = [&device](size_t sizeInBytes, const char* name) -> Rc<DxvkBuffer> {
+      DxvkBufferCreateInfo bufferInfo = {};
+      bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+        | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+        | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+      bufferInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+      bufferInfo.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+      bufferInfo.size = align(sizeInBytes, CACHE_LINE_SIZE);
+
+      return device->createBuffer(bufferInfo,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                                  DxvkMemoryStats::Category::RTXBuffer, name);
+    };
+
+    Rc<DxvkBuffer> vertexBuffer = allocBuffer(vertices.size() * sizeof(remixapi_HardcodedVertex), "Hair Test Proxy Vertices");
+    Rc<DxvkBuffer> indexBuffer = allocBuffer(indices.size() * sizeof(uint32_t), "Hair Test Proxy Indices");
+
+    DxvkBufferSlice vertexSlice { vertexBuffer };
+    std::memcpy(vertexSlice.mapPtr(0), vertices.data(), vertices.size() * sizeof(remixapi_HardcodedVertex));
+
+    DxvkBufferSlice indexSlice { indexBuffer };
+    std::memcpy(indexSlice.mapPtr(0), indices.data(), indices.size() * sizeof(uint32_t));
+
+    RasterGeometry geometry = {};
+    geometry.externalMaterial = kProxyMaterialHandle;
+    geometry.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    geometry.cullMode = VK_CULL_MODE_NONE;
+    geometry.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    geometry.vertexCount = vertexCount;
+    geometry.positionBuffer = RasterBuffer { vertexSlice, offsetof(remixapi_HardcodedVertex, position), sizeof(remixapi_HardcodedVertex), VK_FORMAT_R32G32B32_SFLOAT };
+    geometry.normalBuffer = RasterBuffer { vertexSlice, offsetof(remixapi_HardcodedVertex, normal), sizeof(remixapi_HardcodedVertex), VK_FORMAT_R32G32B32_SFLOAT };
+    geometry.texcoordBuffer = RasterBuffer { vertexSlice, offsetof(remixapi_HardcodedVertex, texcoord), sizeof(remixapi_HardcodedVertex), VK_FORMAT_R32G32_SFLOAT };
+    geometry.color0Buffer = RasterBuffer { vertexSlice, offsetof(remixapi_HardcodedVertex, color), sizeof(remixapi_HardcodedVertex), VK_FORMAT_B8G8R8A8_UNORM };
+    geometry.indexCount = static_cast<uint32_t>(indices.size());
+    geometry.indexBuffer = RasterBuffer { indexSlice, 0, sizeof(uint32_t), VK_INDEX_TYPE_UINT32 };
+
+    // Stable, generation-derived hashes: the mesh identity follows the strand
+    // parameters, so a regeneration reads as a new mesh (new BLAS) while
+    // unchanged parameters keep all caches warm across frames.
+    const auto deriveHash = [&](uint64_t salt) {
+      return XXH64(&salt, sizeof(salt), generationHash);
+    };
+    geometry.hashes[HashComponents::Indices] = deriveHash(1);
+    geometry.hashes[HashComponents::VertexPosition] = deriveHash(1);
+    geometry.hashes[HashComponents::VertexTexcoord] = deriveHash(2);
+    geometry.hashes[HashComponents::GeometryDescriptor] = deriveHash(3);
+    geometry.hashes[HashComponents::VertexLayout] = deriveHash(4);
+    geometry.hashes.precombine();
+
+    if (m_proxyMeshRegistered) {
+      ctx->getSceneManager().destroyExternalMesh(kProxyMeshHandle);
+    }
+
+    std::vector<RasterGeometry> submeshes;
+    submeshes.push_back(std::move(geometry));
+    ctx->getSceneManager().getAssetReplacer()->registerExternalMesh(kProxyMeshHandle, std::move(submeshes));
+
+    m_proxyMeshRegistered = true;
+  }
+
+  void RtxHairTest::destroyProxyMesh(RtxContext* ctx) {
+    if (m_proxyMeshRegistered) {
+      ctx->getSceneManager().destroyExternalMesh(kProxyMeshHandle);
+      m_proxyMeshRegistered = false;
+    }
+  }
+
+  Vector3 RtxHairTest::computeProxyAlbedo() const {
+    if (absorptionModel() == 0) {
+      return baseColor();
+    }
+
+    // Melanin-driven absorption, mirroring the RTXCR material library's
+    // RTXCR_AbsorptionCoefficientFromMelanin[Normalized] so the proxy's color
+    // tracks the strand BCSDF's parameters.
+    const Vector3 eumelaninSigmaA(0.506f, 0.841f, 1.653f);
+    const Vector3 pheomelaninSigmaA(0.343f, 0.733f, 1.924f);
+
+    float eumelanin, pheomelanin;
+    if (absorptionModel() == 1) {
+      const float melaninAmount = melanin() * melanin() * 2.4f;
+      eumelanin = melaninAmount * (1.0f - melaninRedness());
+      pheomelanin = melaninAmount * melaninRedness();
+    } else {
+      const float melaninQuantity = -std::log(std::max(1.0f - melanin(), 0.0001f));
+      eumelanin = melaninQuantity * (1.0f - melaninRedness());
+      pheomelanin = melaninQuantity * melaninRedness();
+    }
+
+    const Vector3 absorption = eumelanin * eumelaninSigmaA + pheomelanin * pheomelaninSigmaA;
+
+    return Vector3(std::exp(-absorption.x), std::exp(-absorption.y), std::exp(-absorption.z));
+  }
+
+  void RtxHairTest::ensureProxyMaterial(RtxContext* ctx) {
+    const Vector3 albedo = computeProxyAlbedo();
+
+    struct MaterialParameters {
+      Vector3 albedo;
+      float roughness;
+    } parameters = { albedo, proxyRoughness() };
+
+    const XXH64_hash_t materialHash = XXH64(&parameters, sizeof(parameters), 0);
+
+    if (materialHash == m_registeredProxyMaterialHash) {
+      return;
+    }
+
+    OpaqueMaterialData opaqueMaterial = {};
+    opaqueMaterial.setAlbedoConstant(albedo);
+    opaqueMaterial.setOpacityConstant(1.0f);
+    opaqueMaterial.setRoughnessConstant(proxyRoughness());
+    opaqueMaterial.setMetallicConstant(0.0f);
+    opaqueMaterial.setAnisotropyConstant(0.0f);
+    opaqueMaterial.setEnableEmission(false);
+    opaqueMaterial.setDisplaceIn(0.0f);
+    opaqueMaterial.setUseLegacyAlphaState(false);
+
+    ctx->getSceneManager().getAssetReplacer()->makeMaterialWithTexturePreload(
+      *ctx, kProxyMaterialHandle, MaterialData { opaqueMaterial });
+
+    m_registeredProxyMaterialHash = materialHash;
+  }
+
+  void RtxHairTest::prepareFrame(RtxContext* ctx) {
+    if (!enable()) {
+      destroyProxyMesh(ctx);
+      return;
+    }
+
+    const ActiveGeometry desiredGeometry = resolveGeometryMode();
+
+    if (desiredGeometry == ActiveGeometry::None) {
+      destroyProxyMesh(ctx);
+      return;
+    }
+
+    ScopedCpuProfileZone();
+
+    rebuildGeometryIfNeeded(ctx, desiredGeometry);
+
+    if (!enableSceneProxy() || !m_proxyMeshRegistered) {
+      return;
+    }
+
+    ensureProxyMaterial(ctx);
+
+    // Submit the proxy as this frame's draw so it enters the scene TLAS.
+    const Vector3 position = spherePosition();
+    Matrix4 objectToWorld;
+    objectToWorld[3] = Vector4(position.x, position.y, position.z, 1.0f);
+
+    auto state = std::make_unique<ExternalDrawState>();
+    state->drawCall.modifyTransformData().objectToWorld = objectToWorld;
+    state->drawCall.cameraType = CameraType::Main;
+    state->mesh = kProxyMeshHandle;
+    state->cameraType = CameraType::Main;
+    state->doubleSided = true;
+
+    ctx->getSceneManager().submitExternalDraw(ctx, std::move(state));
   }
 
   void RtxHairTest::buildBlas(RtxContext* ctx, ActiveGeometry geometryType, uint32_t segmentCount, uint32_t dotsVertexCount) {
@@ -600,20 +851,13 @@ namespace dxvk {
       return;
     }
 
-    const ActiveGeometry desiredGeometry = resolveGeometryMode();
-
-    if (desiredGeometry == ActiveGeometry::None) {
-      // LSS was forced but the driver doesn't support it; nothing to trace.
+    // Geometry generation and scene-proxy submission happened in
+    // prepareFrame at the start of the frame; nothing to trace if it bailed.
+    if (m_activeGeometry == ActiveGeometry::None || m_segmentCount == 0 || m_blas.ptr() == nullptr) {
       return;
     }
 
     ScopedGpuProfileZone(ctx, "LSS Hair Test");
-
-    rebuildGeometryIfNeeded(ctx, desiredGeometry);
-
-    if (m_segmentCount == 0 || m_blas.ptr() == nullptr) {
-      return;
-    }
 
     buildTlas(ctx);
 
@@ -646,7 +890,7 @@ namespace dxvk {
     constants.spherePosition = currentSpherePosition;
     constants.sphereRadius = sphereRadius();
     constants.sphereMotion = sphereMotion;
-    constants.pad0 = 0.0f;
+    constants.useSceneLighting = useSceneLighting() ? 1 : 0;
     constants.lightDirection = rawLightDirection / lightDirectionLength;
     constants.lightIntensity = lightIntensity();
     constants.lightColor = lightColor();
@@ -673,6 +917,10 @@ namespace dxvk {
     constants.enableSceneShadows = enableSceneShadows() ? 1 : 0;
     constants.enableAmbientOcclusion = enableAmbientOcclusion() ? 1 : 0;
     constants.aaSamples = static_cast<uint32_t>(std::clamp(aaSamples(), 1, 4));
+    constants.sceneLightSamples = static_cast<uint32_t>(std::clamp(sceneLightSamples(), 1, 8));
+    constants.rootStrandRadius = strandRadius();
+    constants.sceneContainsHairProxy = (enableSceneProxy() && m_proxyMeshRegistered) ? 1 : 0;
+    constants.pad1 = 0;
 
     ctx->writeToBuffer(m_constants, 0, sizeof(constants), &constants);
 
@@ -712,6 +960,7 @@ namespace dxvk {
       activeGeometryName = "DOTS triangles (fallback)";
     }
     ImGui::Text("Active geometry: %s (%u segments)", activeGeometryName, m_segmentCount);
+    ImGui::Text("Scene proxy: %s", m_proxyMeshRegistered ? "in scene TLAS (casting shadows)" : "not in scene");
     ImGui::Dummy({ 0, 2 });
 
     RemixGui::Checkbox("Enable Hair Test", &enableObject());
@@ -722,6 +971,21 @@ namespace dxvk {
 
     if (geometryMode() == static_cast<int>(GeometryModeOption::ForceLss) && !lssSupported) {
       ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), "LSS is forced but not supported by this driver/GPU - nothing will render.");
+    }
+
+    if (RemixGui::CollapsingHeader("Scene Integration", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::Indent();
+
+      RemixGui::Checkbox("Hair In Scene (Shadows / GI / Reflections)", &enableSceneProxyObject());
+      RemixGui::Checkbox("Use Scene Lights", &useSceneLightingObject());
+      ImGui::BeginDisabled(!useSceneLighting());
+      RemixGui::DragInt("Light Samples Per Hit", &sceneLightSamplesObject(), 0.05f, 1, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::EndDisabled();
+      ImGui::BeginDisabled(!enableSceneProxy());
+      RemixGui::DragFloat("Proxy Roughness", &proxyRoughnessObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::EndDisabled();
+
+      ImGui::Unindent();
     }
 
     if (RemixGui::CollapsingHeader("Placement", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -791,9 +1055,15 @@ namespace dxvk {
     if (RemixGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::Indent();
 
+      if (useSceneLighting()) {
+        ImGui::TextWrapped("Hair is lit by the scene's lights. The manual key light below is only used as a fallback when the scene has none.");
+      }
+
+      ImGui::BeginDisabled(useSceneLighting());
       RemixGui::DragFloat3("Light Direction", &lightDirectionObject(), 0.01f);
       RemixGui::ColorEdit3("Light Color", &lightColorObject());
       RemixGui::DragFloat("Light Intensity", &lightIntensityObject(), 0.05f, 0.0f, 1000.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::EndDisabled();
       RemixGui::DragFloat("Ambient Intensity", &ambientIntensityObject(), 0.01f, 0.0f, 100.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::Checkbox("Hair Self-Shadows", &enableHairShadowsObject());
       ImGui::BeginDisabled(!enableHairShadows());

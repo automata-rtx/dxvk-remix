@@ -46,7 +46,9 @@ struct HairTestConstants {
   // World-space movement of the test sphere since the previous frame, used to
   // produce correct motion vectors while the sphere is being dragged around.
   vec3 sphereMotion;
-  float pad0;
+  // Nonzero when hair hits are lit by sampling the Remix scene's light pool
+  // with the hair BCSDF; zero falls back to the manual test key light.
+  uint useSceneLighting;
 
   vec3 lightDirection;             // Normalized, direction the light travels.
   float lightIntensity;
@@ -82,6 +84,13 @@ struct HairTestConstants {
   uint enableSceneShadows;
   uint enableAmbientOcclusion;
   uint aaSamples;                  // Rays traced per pixel (1, 2 or 4) for edge anti-aliasing.
+
+  uint sceneLightSamples;          // Light samples per hair hit when scene lighting is enabled.
+  float rootStrandRadius;          // Strand root radius, for depth-test tolerance against the proxy mesh.
+  // Nonzero when the hair proxy mesh is present in the scene TLAS, in which
+  // case scene occlusion rays already include hair self-shadowing.
+  uint sceneContainsHairProxy;
+  uint pad1;
 };
 
 // Inputs
