@@ -21,12 +21,14 @@
 */
 #pragma once
 
+#include <unordered_map>
 #include <vector>
 
 #include "../dxvk_include.h"
 #include "../util/xxHash/xxhash.h"
 
 #include "rtx_resources.h"
+#include "rtx_types.h"
 #include "rtx_option.h"
 #include "rtx/pass/hair_test/hair_test_binding_indices.h"
 
@@ -63,9 +65,15 @@ namespace dxvk {
     // Frame-start work: (re)generates the strand geometry when parameters
     // change, and registers + submits the hair's proxy mesh into the scene as
     // a regular draw so it enters the scene TLAS (casting shadows, occluding,
-    // and appearing in GI/reflections). Call from injectRTX before the scene
+    // and appearing in GI/reflections). Also submits surface hair draws for
+    // this frame's hair-tagged meshes. Call from injectRTX before the scene
     // data is finalized, alongside other procedural draw submission.
     void prepareFrame(RtxContext* ctx);
+
+    // Called by the scene manager for every game draw it accepts. Draws whose
+    // color texture is tagged with the rtx.hairStrandTextures category are
+    // recorded so prepareFrame can grow and submit hair for them.
+    void onDrawSubmitted(const DrawCallState& input);
 
     // Runs the strand shading pass. Call after the composite pass and before
     // upscaling, while the scene image, primary depth and motion vectors are
@@ -91,24 +99,33 @@ namespace dxvk {
                "supports VK_NV_ray_tracing_linear_swept_spheres, otherwise DOTS triangles), 1: Force LSS, 2: Force DOTS.\n"
                "Forcing LSS on hardware without support renders nothing.");
 
-    // Scene integration: the hair exists in the path-traced scene through a
-    // proxy mesh (the SDK's DOTS tessellation of the same strands) submitted
-    // as a regular opaque draw, and hair shading samples the scene's lights.
-    RTX_OPTION("rtx.hairTest", bool, enableSceneProxy, true,
-               "Submits the hair strands as real opaque geometry in the path-traced scene (a DOTS triangle tessellation of the same curves).\n"
-               "This makes the hair cast shadows onto the scene and itself, occlude other objects, bounce light, and appear in reflections. "
-               "The strand shading pass then refines the hair's primary-visible pixels with the swept-sphere silhouette and hair BCSDF.");
-    RTX_OPTION("rtx.hairTest", bool, useSceneLighting, true,
-               "Lights the hair with the Remix scene's actual light pool: each hair hit samples scene lights and evaluates the hair BCSDF "
-               "against them (next event estimation), with shadow rays against the scene.\n"
-               "When disabled, or when the scene has no lights, the manual rtx.hairTest.light* test key light is used instead.");
+    // The hair is always part of the path-traced scene: its proxy geometry
+    // (the SDK's DOTS tessellation of the same strands) is always submitted
+    // into the scene TLAS, and hair shading always samples the scene's light
+    // pool. There is deliberately no non-path-traced rendering path.
     RTX_OPTION_ARGS("rtx.hairTest", int, sceneLightSamples, 2,
                     "Scene light samples per hair hit. More samples reduce noise with many or large lights at proportional cost.",
                     args.minValue = 1, args.maxValue = 8);
     RTX_OPTION_ARGS("rtx.hairTest", float, proxyRoughness, 0.55f,
-                    "Roughness of the hair proxy mesh's opaque material, used where the path tracer shades the proxy directly "
+                    "Roughness of the hair proxy geometry's opaque material, used where the path tracer shades the proxy directly "
                     "(GI bounces, reflections, and any hair pixels the strand pass does not cover).",
                     args.minValue = 0.0f, args.maxValue = 1.0f);
+
+    // Surface hair: strands grown across meshes whose color texture is tagged
+    // with the rtx.hairStrandTextures category (Game Setup tab). The strands
+    // are generated once in bind pose, carry the source mesh's blend weights,
+    // and are submitted as a skinned draw with the source's bone matrices -
+    // so they deform with the model through Remix's own skinning pipeline,
+    // and are textured by the source's diffuse at each strand's root UV.
+    RTX_OPTION_ARGS("rtx.hairTest", int, surfaceStrandCount, 60000,
+                    "Number of hair strands scattered across each hair-tagged mesh (area-weighted over its triangles).",
+                    args.minValue = 1, args.maxValue = 300000);
+    RTX_OPTION_ARGS("rtx.hairTest", float, surfaceHairLength, 2.0f,
+                    "Strand length for surface hair, in world units.",
+                    args.minValue = 0.001f);
+    RTX_OPTION_ARGS("rtx.hairTest", float, surfaceStrandRadius, 0.02f,
+                    "Strand root radius for surface hair, in world units.",
+                    args.minValue = 0.0001f);
 
     // Strand scattering / growth. These mirror the curve parameters the RTXCR
     // SDK sample feeds its tessellation, generated procedurally over a sphere.
@@ -187,26 +204,13 @@ namespace dxvk {
                     "Weight of the Far-Field BCSDF's artificial diffuse lobe; 0 disables it (physically based).",
                     args.minValue = 0.0f, args.maxValue = 1.0f);
 
-    // Test lighting, independent from the scene's lights so the demo works in
-    // any scene state.
-    RTX_OPTION("rtx.hairTest", Vector3, lightDirection, Vector3(-0.5f, -1.0f, -0.35f),
-               "Direction the test key light travels (normalized internally).");
-    RTX_OPTION("rtx.hairTest", Vector3, lightColor, Vector3(1.0f, 1.0f, 1.0f),
-               "Color of the test key light.");
-    RTX_OPTION_ARGS("rtx.hairTest", float, lightIntensity, 3.0f,
-                    "Radiance of the test key light (pre-tonemap linear HDR).",
-                    args.minValue = 0.0f);
     RTX_OPTION_ARGS("rtx.hairTest", float, ambientIntensity, 0.2f,
-                    "Fake ambient/multiple-scattering intensity, tinted by the fiber absorption.",
+                    "Crude multiple-scattering approximation: a small ambient term tinted by the fiber absorption.",
                     args.minValue = 0.0f);
-    RTX_OPTION("rtx.hairTest", bool, enableHairShadows, true,
-               "Traces a self-shadow ray through the hair volume toward the key light.");
     RTX_OPTION_ARGS("rtx.hairTest", float, hairShadowIntensity, 0.75f,
-                    "How dark hair self-shadowing gets, 0 (off) to 1 (black).",
+                    "How dark shadowed light samples get, 0 (shadows off) to 1 (black). Values below 1 approximate light "
+                    "scattering through the hair volume rather than hard occlusion.",
                     args.minValue = 0.0f, args.maxValue = 1.0f);
-    RTX_OPTION("rtx.hairTest", bool, enableSceneShadows, true,
-               "Shadows light samples against the scene's geometry (main TLAS). When the hair proxy is in the scene, "
-               "this single ray also covers hair self-shadowing.");
     RTX_OPTION("rtx.hairTest", bool, enableAmbientOcclusion, true,
                "Darkens the ambient term for points buried inside the hair volume using a short occlusion probe.");
 
@@ -270,5 +274,25 @@ namespace dxvk {
     // replacer so the hair exists in the path-traced scene.
     bool m_proxyMeshRegistered = false;
     XXH64_hash_t m_registeredProxyMaterialHash = 0;
+
+    // Surface hair: bind-pose strand geometry grown across hair-tagged meshes,
+    // cached per source mesh and re-submitted each frame with the source
+    // draw's material, transforms and bone matrices.
+    struct SurfaceHairEntry {
+      RasterGeometry geometry;
+      uint32_t strandCount = 0;
+      // Set when the source mesh could not be read (unmappable buffers or an
+      // unsupported layout); the entry is kept to avoid retrying every frame.
+      bool buildFailed = false;
+    };
+
+    void submitSurfaceHairDraws(RtxContext* ctx);
+    bool buildSurfaceHairGeometry(const DrawCallState& input, XXH64_hash_t cacheKey, SurfaceHairEntry& entry) const;
+    XXH64_hash_t computeSurfaceHairParamsHash() const;
+
+    std::unordered_map<XXH64_hash_t, SurfaceHairEntry> m_surfaceHair;
+    std::vector<DrawCallState> m_taggedDrawQueue;
+    bool m_submittingHairDraws = false;
+    XXH64_hash_t m_surfaceHairParamsHash = 0;
   };
 }

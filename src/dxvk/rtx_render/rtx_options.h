@@ -221,6 +221,12 @@ namespace dxvk {
     RTX_OPTION("rtx", fast_unordered_set, lightConverter, {},
                   "Textures on draw calls that should spawn Remix effect lights.\n"
                   "An effect light is a dynamic sphere light placed at the tagged draw call's geometry centroid; radius, intensity, color, and plasma-ball animation are controlled in the Runtime UI's Lighting > Effect Light section.");
+    RTX_OPTION("rtx", fast_unordered_set, hairStrandTextures, {},
+                  "Textures on draw calls that should grow hair strands across their surface (the LSS hair test system).\n"
+                  "Meshes drawn with a tagged texture get procedurally scattered hair strands rooted on their triangles, colored by "
+                  "the tagged texture at each strand's root UV, and deforming with the mesh's skinning. The strands are real "
+                  "path-traced scene geometry: they cast shadows, bounce light and appear in reflections.\n"
+                  "Strand shape and density are controlled by the rtx.hairTest.* options (Hair Test tab).");
     RTX_OPTION("rtx", fast_unordered_set, particleTextures, {},
                   "Textures on draw calls that should be treated as particles.\n"
                   "When objects are marked as particles more approximate rendering methods are leveraged allowing for more effecient and typically better looking particle rendering.\n"

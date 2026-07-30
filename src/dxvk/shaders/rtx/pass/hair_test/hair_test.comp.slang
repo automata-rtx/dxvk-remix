@@ -243,100 +243,80 @@ float3 evalHairBcsdf(HairShadingContext ctx, float3 vectorToLightWorld)
   return pdf > 0.0f ? bsdfSpecular + bsdfDiffuse : float3(0.0f, 0.0f, 0.0f);
 }
 
-// Occlusion toward a light sample. When the hair's proxy mesh is present in
-// the scene TLAS, a single scene ray covers both world shadows and hair
-// self-shadowing; otherwise the dedicated hair TLAS provides self-shadowing.
+// Occlusion toward a light sample, traced against the scene TLAS. The hair's
+// proxy mesh always lives there, so one ray covers both world shadows and
+// hair self-shadowing.
 float lightVisibility(HairShadingContext ctx, float3 vectorToLight, float maxDistance)
 {
   const float3 origin = ctx.hitPosition + ctx.normalWorld * ctx.rayOffset + vectorToLight * ctx.rayOffset;
   const float rayLength = max(maxDistance - 2.0f * ctx.rayOffset, 0.0f);
 
-  bool occluded = false;
-
-  if (hairCb.enableSceneShadows != 0)
-  {
-    occluded = traceSceneOcclusion(origin, vectorToLight, rayLength);
-  }
-
-  if (!occluded && hairCb.enableHairShadows != 0 &&
-      !(hairCb.enableSceneShadows != 0 && hairCb.sceneContainsHairProxy != 0))
-  {
-    occluded = traceHairOcclusion(origin, vectorToLight, min(rayLength, hairCb.aoDistance * 4.0f));
-  }
+  const bool occluded = traceSceneOcclusion(origin, vectorToLight, rayLength);
 
   return occluded ? 1.0f - hairCb.hairShadowIntensity : 1.0f;
 }
 
-// Direct lighting for a hair hit. When scene lighting is enabled and the
-// scene has lights, hair is lit by uniformly sampling the Remix light pool
-// (next event estimation with the hair BCSDF); otherwise the manual test key
-// light is used.
+// Direct lighting for a hair hit: next event estimation against the scene's
+// light pool with the hair BCSDF. A scene without lights leaves the hair to
+// the ambient term alone, exactly like the rest of the path-traced world.
 float3 computeDirectLight(HairShadingContext ctx, inout RNG randomState)
 {
-  if (hairCb.useSceneLighting != 0)
+  const uint lightCount = cb.lightRanges[lightTypeCount - 1].offset + cb.lightRanges[lightTypeCount - 1].count;
+
+  if (lightCount == 0)
   {
-    const uint lightCount = cb.lightRanges[lightTypeCount - 1].offset + cb.lightRanges[lightTypeCount - 1].count;
-
-    if (lightCount > 0)
-    {
-      MinimalSurfaceInteraction minimalSurfaceInteraction = (MinimalSurfaceInteraction)0;
-      minimalSurfaceInteraction.position = ctx.hitPosition;
-      minimalSurfaceInteraction.geometryNormal = ctx.normalWorld;
-      minimalSurfaceInteraction.geometryTangent = ctx.tangentWorld;
-
-      const uint sampleCount = clamp(hairCb.sceneLightSamples, 1, 8);
-      float3 totalRadiance = float3(0.0f, 0.0f, 0.0f);
-
-      for (uint sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
-      {
-        // Uniformly select a light from the pool and sample a point on it.
-        const float lightRnd = getNextSampleBlueNoise(randomState);
-        const uint lightIndex = min(uint(lightRnd * float(lightCount)), lightCount - 1);
-        const float2 sampleCoordinates = float2(getNextSampleBlueNoise(randomState), getNextSampleBlueNoise(randomState));
-
-        const LightSample lightSample =
-          memoryPolymorphicLightSampleArea(lights[lightIndex], sampleCoordinates, minimalSurfaceInteraction);
-
-        if (lightSample.solidAnglePdf <= 0.0f)
-        {
-          continue;
-        }
-
-        const float3 toLight = lightSample.position - ctx.hitPosition;
-        const float lightDistance = length(toLight);
-
-        if (lightDistance <= ctx.rayOffset * 4.0f)
-        {
-          continue;
-        }
-
-        const float3 vectorToLight = toLight / lightDistance;
-
-        const float3 hairBsdf = evalHairBcsdf(ctx, vectorToLight);
-
-        if (all(hairBsdf <= 0.0f))
-        {
-          continue;
-        }
-
-        const float visibility = lightVisibility(ctx, vectorToLight, lightDistance);
-
-        // Standard NEE estimator: bcsdf * radiance * inverseSelectionPdf / solidAnglePdf.
-        const float sampleThroughput = float(lightCount) / (lightSample.solidAnglePdf * float(sampleCount));
-
-        totalRadiance += hairBsdf * lightSample.radiance * sampleThroughput * visibility;
-      }
-
-      return totalRadiance;
-    }
+    return float3(0.0f, 0.0f, 0.0f);
   }
 
-  // Manual test key light fallback (also used when the scene has no lights).
-  const float3 vectorToLight = -hairCb.lightDirection;
-  const float3 hairBsdf = evalHairBcsdf(ctx, vectorToLight);
-  const float visibility = lightVisibility(ctx, vectorToLight, 1e7f);
+  MinimalSurfaceInteraction minimalSurfaceInteraction = (MinimalSurfaceInteraction)0;
+  minimalSurfaceInteraction.position = ctx.hitPosition;
+  minimalSurfaceInteraction.geometryNormal = ctx.normalWorld;
+  minimalSurfaceInteraction.geometryTangent = ctx.tangentWorld;
 
-  return hairBsdf * hairCb.lightColor * hairCb.lightIntensity * visibility;
+  const uint sampleCount = clamp(hairCb.sceneLightSamples, 1, 8);
+  float3 totalRadiance = float3(0.0f, 0.0f, 0.0f);
+
+  for (uint sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+  {
+    // Uniformly select a light from the pool and sample a point on it.
+    const float lightRnd = getNextSampleBlueNoise(randomState);
+    const uint lightIndex = min(uint(lightRnd * float(lightCount)), lightCount - 1);
+    const float2 sampleCoordinates = float2(getNextSampleBlueNoise(randomState), getNextSampleBlueNoise(randomState));
+
+    const LightSample lightSample =
+      memoryPolymorphicLightSampleArea(lights[lightIndex], sampleCoordinates, minimalSurfaceInteraction);
+
+    if (lightSample.solidAnglePdf <= 0.0f)
+    {
+      continue;
+    }
+
+    const float3 toLight = lightSample.position - ctx.hitPosition;
+    const float lightDistance = length(toLight);
+
+    if (lightDistance <= ctx.rayOffset * 4.0f)
+    {
+      continue;
+    }
+
+    const float3 vectorToLight = toLight / lightDistance;
+
+    const float3 hairBsdf = evalHairBcsdf(ctx, vectorToLight);
+
+    if (all(hairBsdf <= 0.0f))
+    {
+      continue;
+    }
+
+    const float visibility = lightVisibility(ctx, vectorToLight, lightDistance);
+
+    // Standard NEE estimator: bcsdf * radiance * inverseSelectionPdf / solidAnglePdf.
+    const float sampleThroughput = float(lightCount) / (lightSample.solidAnglePdf * float(sampleCount));
+
+    totalRadiance += hairBsdf * lightSample.radiance * sampleThroughput * visibility;
+  }
+
+  return totalRadiance;
 }
 
 // Shades a single hair hit with the selected RTXCR hair BCSDF: direct light
@@ -361,7 +341,7 @@ float3 shadeHairHit(float3 rayDirection, float3 hitPosition, HairSegment segment
     ambientOcclusion = 0.35f;
   }
 
-  const float3 ambientLight = hairCb.lightColor * hairCb.ambientIntensity * ambientTint * ambientOcclusion;
+  const float3 ambientLight = hairCb.ambientIntensity * ambientTint * ambientOcclusion;
 
   const float3 radiance = directLight + ambientLight;
 

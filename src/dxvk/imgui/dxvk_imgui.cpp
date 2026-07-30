@@ -189,6 +189,7 @@ namespace dxvk {
     {"lightmaptextures","Lightmap Textures (optional)", &RtxOptions::lightmapTexturesObject()},
     {"ignorelights", "Ignore Lights (optional)", &RtxOptions::ignoreLightsObject()},
     {"particletextures", "Particle Texture (optional)", &RtxOptions::particleTexturesObject()},
+    {"hairstrandtextures", "Grow Hair Strands (optional)", &RtxOptions::hairStrandTexturesObject()},
     {"beamtextures", "Beam Texture (optional)", &RtxOptions::beamTexturesObject()},
     {"ignoretransparencytextures", "Ignore Transparency Layer Texture (optional)", &RtxOptions::ignoreTransparencyLayerTexturesObject()},
     {"lightconvertertextures", "Add Light to Textures (optional)", &RtxOptions::lightConverterObject()},

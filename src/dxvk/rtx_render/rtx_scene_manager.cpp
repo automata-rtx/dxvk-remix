@@ -586,6 +586,11 @@ namespace dxvk {
       return;
     }
 
+    // Hair test: draws whose color texture carries the hair-strand tag are
+    // recorded so hair can be grown across them and submitted at frame
+    // preparation (a no-op unless the hair test is enabled).
+    m_device->getCommon()->metaHairTest().onDrawSubmitted(input);
+
     if (input.getFogState().mode != D3DFOG_NONE) {
       XXH64_hash_t fogHash = input.getFogState().getHash();
       if (m_fogStates.find(fogHash) == m_fogStates.end()) {

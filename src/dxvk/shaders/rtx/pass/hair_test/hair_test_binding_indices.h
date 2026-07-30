@@ -39,6 +39,9 @@
 #define HAIR_TEST_DEBUG_MODE_TANGENTS 2
 #define HAIR_TEST_DEBUG_MODE_STRAND_U 3
 
+// The hair renders exclusively inside the path-traced scene: its proxy
+// geometry always lives in the scene TLAS, hits are lit only by sampling the
+// scene's light pool, and shadow rays always test the scene.
 struct HairTestConstants {
   vec3 spherePosition;
   float sphereRadius;
@@ -46,15 +49,7 @@ struct HairTestConstants {
   // World-space movement of the test sphere since the previous frame, used to
   // produce correct motion vectors while the sphere is being dragged around.
   vec3 sphereMotion;
-  // Nonzero when hair hits are lit by sampling the Remix scene's light pool
-  // with the hair BCSDF; zero falls back to the manual test key light.
-  uint useSceneLighting;
-
-  vec3 lightDirection;             // Normalized, direction the light travels.
-  float lightIntensity;
-
-  vec3 lightColor;
-  float ambientIntensity;
+  float ambientIntensity;          // Crude multiple-scattering approximation strength.
 
   vec3 baseColor;
   float longitudinalRoughness;     // beta_m
@@ -77,20 +72,13 @@ struct HairTestConstants {
 
   float farFieldRoughness;
   float diffuseReflectionWeight;
-  float hairShadowIntensity;
+  float hairShadowIntensity;       // How dark shadowed light samples get, 0..1.
   float aoDistance;                // World-space length of the ambient occlusion probe ray.
 
-  uint enableHairShadows;
-  uint enableSceneShadows;
   uint enableAmbientOcclusion;
   uint aaSamples;                  // Rays traced per pixel (1, 2 or 4) for edge anti-aliasing.
-
-  uint sceneLightSamples;          // Light samples per hair hit when scene lighting is enabled.
+  uint sceneLightSamples;          // Light samples per hair hit.
   float rootStrandRadius;          // Strand root radius, for depth-test tolerance against the proxy mesh.
-  // Nonzero when the hair proxy mesh is present in the scene TLAS, in which
-  // case scene occlusion rays already include hair self-shadowing.
-  uint sceneContainsHairProxy;
-  uint pad1;
 };
 
 // Inputs
