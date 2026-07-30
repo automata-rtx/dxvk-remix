@@ -962,6 +962,69 @@ wholesale. So it is dead code on this path, in the same way
 `rtx.volumetrics.enableFogRemap` is, and setting it will look like it does
 nothing because it does.
 
+### 14.11 `rtx.uiTextures` does two things, and the boring one is the useful one
+
+The single most expensive wrong belief of 2026-07-29, measured in work thrown
+away: **that `rtx.uiTextures` is "the RTX injection trigger".**
+
+It is, and that is not the whole of it. `isRenderingUI()` (`d3d9_rtx.cpp:559`,
+the option's only reader at `:570`) feeds `makeDrawCallType`, which returns
+**two** values (`:516-521`):
+
+| Return | Effect |
+| :-- | :-- |
+| `RtxGeometryStatus::Rasterized` | this draw is rasterized over the traced image — flat, unlit, unoccluded, **every frame, deterministically** |
+| `triggerRtxInjection = true` | the raytraced frame ends here |
+
+The option's own description mentions only the second (*"the first UI texture
+encountered triggers RTX injection"*), which is how it comes to be read as a
+pure liability. For anything that should look like UI, the first is the entire
+point: it is the switch that says *stop path-tracing this and draw it flat.*
+
+**What this cost.** Dusklight's targeting arrow rendered inconsistently and was
+never categorised, because it sometimes landed after injection and sometimes
+before. Reasoning only from the injection half produced: "tagging it UI would
+move the boundary earlier, so that is the opposite of a fix" — and from there,
+a three-repo feature to resubmit the arrow through the Remix API tagged
+`WORLD_UI`, built, CI-green, and deleted the next day without ever working.
+**Tagging the two arrow textures in the dev menu fixed it completely, with no
+code.**
+
+Three transferable lessons:
+
+1. **A dramatic side effect can hide the mundane primary effect.** Injection is
+   memorable; `Rasterized` is one enum value in the same return statement.
+2. **"It would cost too much" is a measurement, not an assertion.** Moving the
+   boundary was rejected on cost without checking *where* the draw sits. The
+   arrow draws at `m_Do_graphic.cpp:2689` with only 2D particles, letterbox,
+   fade and HUD after it — all of which want rasterizing regardless. The cost
+   was approximately zero.
+3. **`WORLD_UI` is not "the UI category".** It keeps the instance in the traced
+   scene as emissive geometry, for UI that genuinely lives in 3D and should be
+   lit and occluded as part of the world — hence
+   `worldSpaceUiBackgroundOffset`, a hack for coplanar backgrounds behind
+   Portal's monitor screens. A screen-space-style overlay is not that. Picking
+   it because it was the only category with "UI" in the name was a name match,
+   not a semantic one.
+
+**Still true, and still worth knowing:** there is no `UI` instance category —
+the API's 25 bits (`remix_c.h:453-479`) have `WORLD_UI` and `WORLD_MATTE` and
+nothing else, `InstanceCategories` matches one-for-one (`rtx_types.h:625-651`,
+guarded by `static_assert(Count == 25)` in `toRtCategories`), and `uiTextures`
+is absent from `setupCategoriesForTexture()` (`rtx_types.cpp:377-402`). The
+correct conclusion from that is not "UI is unreachable" but **"UI is a
+frame-phase decision made at capture time, so it is reached from the texture
+list rather than from a category flag."**
+
+**Also verified while building the discarded feature, and still accurate:** an
+API-submitted instance is not subject to the injection boundary.
+`m_rtxInjectTriggered` is read only in `D3D9Rtx::internalPrepareDraw`
+(`d3d9_rtx.cpp:578`), the capture path; `remixapi_DrawInstance` →
+`commitExternalGeometryToRT` (`rtx_context.cpp:1004`) →
+`SceneManager::submitExternalDraw` (`rtx_scene_manager.cpp:2384`) never
+consults it. That remains a real property of the API and may be the right tool
+for something else. It was simply not the tool for this.
+
 ### 14.7 Don't trust a recon report you did not verify
 
 A reconnaissance pass claimed Lake Hylia "passes `start > end` deliberately".
