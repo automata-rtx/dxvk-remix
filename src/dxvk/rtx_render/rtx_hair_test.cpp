@@ -604,6 +604,7 @@ namespace dxvk {
       float curlTurns;
       float gravityDroop;
       int scatterSeed;
+      int attachmentMode;
     } parameters = {
       surfaceStrandCount(),
       surfaceHairLength(),
@@ -616,6 +617,7 @@ namespace dxvk {
       curlTurns(),
       gravityDroop(),
       scatterSeed(),
+      surfaceAttachmentMode(),
     };
 
     return XXH64(&parameters, sizeof(parameters), 0x48414952u);
@@ -656,15 +658,49 @@ namespace dxvk {
         continue;
       }
 
-      // The hair draw is the source draw with its geometry swapped for the
-      // grown strands: material (the source's diffuse, sampled at each
-      // strand's root UV), transforms, and - critically - the bone matrices
-      // all carry over, so Remix's own skinning pipeline deforms the hair
-      // with the character.
-      DrawCallState hairDraw = source;
-      hairDraw.modifyGeometryData() = it->second.geometry;
+      if (!it->second.rigidClusters) {
+        // Skinned mode: the hair draw is the source draw with its geometry
+        // swapped for the grown strands. Material (the source's diffuse,
+        // sampled at each strand's root UV), transforms, and the bone
+        // matrices all carry over, so Remix's own skinning pipeline deforms
+        // the hair with the character.
+        DrawCallState hairDraw = source;
+        hairDraw.modifyGeometryData() = it->second.geometry;
 
-      ctx->getSceneManager().submitDrawState(ctx, hairDraw, nullptr);
+        ctx->getSceneManager().submitDrawState(ctx, hairDraw, nullptr);
+        continue;
+      }
+
+      // Rigid mode: each cluster is a static mesh carried by its dominant
+      // bone. The per-frame transform composes the source draw's transform
+      // with the bone's current palette matrix (the same matrices the game
+      // submits for skinning this mesh), so the fur follows the animation
+      // with zero per-frame geometry work - and, since each cluster is an
+      // ordinary moving instance, Remix derives its motion vectors for free.
+      const SkinningData& skinning = source.getSkinningState();
+
+      for (const SurfaceHairCluster& cluster : it->second.clusters) {
+        Matrix4 boneMatrix;
+
+        if (cluster.boneIndex != kNoBone) {
+          if (cluster.boneIndex < skinning.pBoneMatrices.size()) {
+            boneMatrix = skinning.pBoneMatrices[cluster.boneIndex];
+          } else {
+            ONCE(Logger::warn(str::format("[Hair Test] Cluster bone ", cluster.boneIndex,
+                                          " is outside the draw's bone palette (", skinning.pBoneMatrices.size(),
+                                          "); cluster follows the draw transform.")));
+          }
+        }
+
+        DrawCallState hairDraw = source;
+        hairDraw.modifyGeometryData() = cluster.geometry;
+
+        DrawCallTransforms& transforms = hairDraw.modifyTransformData();
+        transforms.objectToWorld = source.getTransformData().objectToWorld * boneMatrix;
+        transforms.objectToView = source.getTransformData().worldToView * transforms.objectToWorld;
+
+        ctx->getSceneManager().submitDrawState(ctx, hairDraw, nullptr);
+      }
     }
 
     m_submittingHairDraws = false;
@@ -950,21 +986,6 @@ namespace dxvk {
       }
     }
 
-    // Tessellate to DOTS triangles via the SDK converter.
-    const uint32_t hairVertexCount = totalSegments * kDotsVerticesPerSegment;
-    std::vector<float> dotsPositionData(static_cast<size_t>(hairVertexCount) * math::kFloatsPerPosition);
-    std::vector<float> dotsTexcoordData(static_cast<size_t>(hairVertexCount) * math::kFloatsPerTexCoord);
-
-    convertToDisjointOrthogonalTriangleStrips(
-      lineSegments,
-      totalSegments,
-      nullptr,
-      dotsPositionData.data(),
-      nullptr,
-      nullptr,
-      dotsTexcoordData.data(),
-      nullptr);
-
     // Interleaved hair vertex: position, normal (the root's surface normal,
     // so the strands shade like the surface they grow from), root UV, color.
     struct HairVertex {
@@ -978,51 +999,9 @@ namespace dxvk {
     const bool hasBlendWeights = pBlendWeights != nullptr && source.numBonesPerVertex > 0;
     const bool hasBlendIndices = pBlendIndices != nullptr;
     const uint32_t weightsPerVertex = hasBlendWeights ? std::max<uint32_t>(source.numBonesPerVertex - 1, 1) : 0;
-    const uint32_t hairWeightStride = weightsPerVertex * sizeof(float);
+    const uint32_t hairWeightStride = weightsPerVertex * static_cast<uint32_t>(sizeof(float));
 
-    std::vector<HairVertex> hairVertices(hairVertexCount);
-    std::vector<uint32_t> hairIndices(hairVertexCount);
-    std::vector<uint8_t> hairBlendWeights(hasBlendWeights ? static_cast<size_t>(hairVertexCount) * hairWeightStride : 0);
-    std::vector<uint32_t> hairBlendIndices(hasBlendIndices ? hairVertexCount : 0);
-
-    const uint32_t verticesPerStrand = segmentsEach * kDotsVerticesPerSegment;
-
-    for (uint32_t vertexIndex = 0; vertexIndex < hairVertexCount; ++vertexIndex) {
-      HairVertex& vertex = hairVertices[vertexIndex];
-      std::memcpy(vertex.position, &dotsPositionData[static_cast<size_t>(vertexIndex) * 3], 3 * sizeof(float));
-      std::memcpy(vertex.texcoord, &dotsTexcoordData[static_cast<size_t>(vertexIndex) * 2], 2 * sizeof(float));
-      vertex.color = 0xFFFFFFFFu;
-
-      const uint32_t strandIndex = vertexIndex / verticesPerStrand;
-      const uint32_t attachmentVertex = rootAttachments[strandIndex].nearestVertex;
-
-      // Root surface normal: recompute cheaply from the attachment vertex.
-      if (pNormals != nullptr) {
-        std::memcpy(vertex.normal, pNormals + static_cast<size_t>(attachmentVertex) * normalStride, 3 * sizeof(float));
-      } else {
-        vertex.normal[0] = 0.0f;
-        vertex.normal[1] = 1.0f;
-        vertex.normal[2] = 0.0f;
-      }
-
-      // Raw-copy the attachment vertex's blend data: the skinning shader's
-      // conventions (numBones-1 weights, byte-packed indices) carry over
-      // unchanged, so no format interpretation is needed.
-      if (hasBlendWeights) {
-        std::memcpy(hairBlendWeights.data() + static_cast<size_t>(vertexIndex) * hairWeightStride,
-                    pBlendWeights + static_cast<size_t>(attachmentVertex) * blendWeightStride,
-                    hairWeightStride);
-      }
-      if (hasBlendIndices) {
-        std::memcpy(&hairBlendIndices[vertexIndex],
-                    pBlendIndices + static_cast<size_t>(attachmentVertex) * blendIndicesStride,
-                    sizeof(uint32_t));
-      }
-
-      hairIndices[vertexIndex] = vertexIndex;
-    }
-
-    // Upload into host-visible buffers, matching the external mesh path.
+    // Host-visible buffers, matching the external mesh path.
     const auto allocBuffer = [this](size_t sizeInBytes, const char* name) -> Rc<DxvkBuffer> {
       DxvkBufferCreateInfo bufferInfo = {};
       bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
@@ -1037,58 +1016,211 @@ namespace dxvk {
                                     DxvkMemoryStats::Category::RTXBuffer, name);
     };
 
-    Rc<DxvkBuffer> vertexBuffer = allocBuffer(hairVertices.size() * sizeof(HairVertex), "Surface Hair Vertices");
-    DxvkBufferSlice vertexSlice { vertexBuffer };
-    std::memcpy(vertexSlice.mapPtr(0), hairVertices.data(), hairVertices.size() * sizeof(HairVertex));
+    // Assembles a RasterGeometry for a set of strands: gathers their curve
+    // segments, tessellates to DOTS triangles via the SDK converter,
+    // interleaves the vertices, and optionally attaches the source's blend
+    // data (skinned mode only; rigid clusters need none).
+    const auto assembleGeometry = [&](const std::vector<uint32_t>& strandList,
+                                      bool includeBlendData,
+                                      uint64_t hashSalt) -> RasterGeometry {
+      const uint32_t clusterSegmentCount = static_cast<uint32_t>(strandList.size()) * segmentsEach;
+      const uint32_t clusterVertexCount = clusterSegmentCount * kDotsVerticesPerSegment;
 
-    Rc<DxvkBuffer> indexBuffer = allocBuffer(hairIndices.size() * sizeof(uint32_t), "Surface Hair Indices");
-    DxvkBufferSlice indexSlice { indexBuffer };
-    std::memcpy(indexSlice.mapPtr(0), hairIndices.data(), hairIndices.size() * sizeof(uint32_t));
+      std::vector<LineSegment> clusterSegments;
+      clusterSegments.reserve(clusterSegmentCount);
+      for (const uint32_t strandIndex : strandList) {
+        for (uint32_t segmentIndex = 0; segmentIndex < segmentsEach; ++segmentIndex) {
+          clusterSegments.push_back(lineSegments[static_cast<size_t>(strandIndex) * segmentsEach + segmentIndex]);
+        }
+      }
 
-    RasterGeometry geometry = {};
-    geometry.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    geometry.cullMode = VK_CULL_MODE_NONE;
-    geometry.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    geometry.vertexCount = hairVertexCount;
-    geometry.positionBuffer = RasterBuffer { vertexSlice, offsetof(HairVertex, position), sizeof(HairVertex), VK_FORMAT_R32G32B32_SFLOAT };
-    geometry.normalBuffer = RasterBuffer { vertexSlice, offsetof(HairVertex, normal), sizeof(HairVertex), VK_FORMAT_R32G32B32_SFLOAT };
-    geometry.texcoordBuffer = RasterBuffer { vertexSlice, offsetof(HairVertex, texcoord), sizeof(HairVertex), VK_FORMAT_R32G32_SFLOAT };
-    geometry.color0Buffer = RasterBuffer { vertexSlice, offsetof(HairVertex, color), sizeof(HairVertex), VK_FORMAT_B8G8R8A8_UNORM };
-    geometry.indexCount = hairVertexCount;
-    geometry.indexBuffer = RasterBuffer { indexSlice, 0, sizeof(uint32_t), VK_INDEX_TYPE_UINT32 };
+      std::vector<float> dotsPositionData(static_cast<size_t>(clusterVertexCount) * math::kFloatsPerPosition);
+      std::vector<float> dotsTexcoordData(static_cast<size_t>(clusterVertexCount) * math::kFloatsPerTexCoord);
 
-    if (hasBlendWeights) {
-      Rc<DxvkBuffer> weightBuffer = allocBuffer(hairBlendWeights.size(), "Surface Hair Blend Weights");
-      DxvkBufferSlice weightSlice { weightBuffer };
-      std::memcpy(weightSlice.mapPtr(0), hairBlendWeights.data(), hairBlendWeights.size());
-      geometry.blendWeightBuffer = RasterBuffer { weightSlice, 0, hairWeightStride, VK_FORMAT_R32_SFLOAT };
-      geometry.numBonesPerVertex = source.numBonesPerVertex;
-    }
-    if (hasBlendIndices) {
-      Rc<DxvkBuffer> blendIndexBuffer = allocBuffer(hairBlendIndices.size() * sizeof(uint32_t), "Surface Hair Blend Indices");
-      DxvkBufferSlice blendIndexSlice { blendIndexBuffer };
-      std::memcpy(blendIndexSlice.mapPtr(0), hairBlendIndices.data(), hairBlendIndices.size() * sizeof(uint32_t));
-      geometry.blendIndicesBuffer = RasterBuffer { blendIndexSlice, 0, sizeof(uint32_t), source.blendIndicesBuffer.vertexFormat() };
-    }
+      convertToDisjointOrthogonalTriangleStrips(
+        clusterSegments,
+        clusterSegmentCount,
+        nullptr,
+        dotsPositionData.data(),
+        nullptr,
+        nullptr,
+        dotsTexcoordData.data(),
+        nullptr);
 
-    // Stable hashes derived from the source mesh + strand parameters: the
-    // hair reads as one persistent mesh across frames, and regrows (new BLAS)
-    // only when the source mesh or parameters change.
-    const auto deriveHash = [&](uint64_t salt) {
-      return XXH64(&salt, sizeof(salt), cacheKey);
+      std::vector<HairVertex> hairVertices(clusterVertexCount);
+      std::vector<uint32_t> hairIndices(clusterVertexCount);
+      std::vector<uint8_t> hairBlendWeights(includeBlendData && hasBlendWeights ? static_cast<size_t>(clusterVertexCount) * hairWeightStride : 0);
+      std::vector<uint32_t> hairBlendIndices(includeBlendData && hasBlendIndices ? clusterVertexCount : 0);
+
+      const uint32_t verticesPerStrand = segmentsEach * kDotsVerticesPerSegment;
+
+      for (uint32_t vertexIndex = 0; vertexIndex < clusterVertexCount; ++vertexIndex) {
+        HairVertex& vertex = hairVertices[vertexIndex];
+        std::memcpy(vertex.position, &dotsPositionData[static_cast<size_t>(vertexIndex) * 3], 3 * sizeof(float));
+        std::memcpy(vertex.texcoord, &dotsTexcoordData[static_cast<size_t>(vertexIndex) * 2], 2 * sizeof(float));
+        vertex.color = 0xFFFFFFFFu;
+
+        const uint32_t localStrand = vertexIndex / verticesPerStrand;
+        const uint32_t attachmentVertex = rootAttachments[strandList[localStrand]].nearestVertex;
+
+        // Root surface normal: recomputed cheaply from the attachment vertex.
+        if (pNormals != nullptr) {
+          std::memcpy(vertex.normal, pNormals + static_cast<size_t>(attachmentVertex) * normalStride, 3 * sizeof(float));
+        } else {
+          vertex.normal[0] = 0.0f;
+          vertex.normal[1] = 1.0f;
+          vertex.normal[2] = 0.0f;
+        }
+
+        // Raw-copy the attachment vertex's blend data: the skinning shader's
+        // conventions (numBones-1 weights, byte-packed indices) carry over
+        // unchanged, so no format interpretation is needed.
+        if (!hairBlendWeights.empty()) {
+          std::memcpy(hairBlendWeights.data() + static_cast<size_t>(vertexIndex) * hairWeightStride,
+                      pBlendWeights + static_cast<size_t>(attachmentVertex) * blendWeightStride,
+                      hairWeightStride);
+        }
+        if (!hairBlendIndices.empty()) {
+          std::memcpy(&hairBlendIndices[vertexIndex],
+                      pBlendIndices + static_cast<size_t>(attachmentVertex) * blendIndicesStride,
+                      sizeof(uint32_t));
+        }
+
+        hairIndices[vertexIndex] = vertexIndex;
+      }
+
+      Rc<DxvkBuffer> vertexBuffer = allocBuffer(hairVertices.size() * sizeof(HairVertex), "Surface Hair Vertices");
+      DxvkBufferSlice vertexSlice { vertexBuffer };
+      std::memcpy(vertexSlice.mapPtr(0), hairVertices.data(), hairVertices.size() * sizeof(HairVertex));
+
+      Rc<DxvkBuffer> indexBuffer = allocBuffer(hairIndices.size() * sizeof(uint32_t), "Surface Hair Indices");
+      DxvkBufferSlice indexSlice { indexBuffer };
+      std::memcpy(indexSlice.mapPtr(0), hairIndices.data(), hairIndices.size() * sizeof(uint32_t));
+
+      RasterGeometry geometry = {};
+      geometry.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      geometry.cullMode = VK_CULL_MODE_NONE;
+      geometry.frontFace = VK_FRONT_FACE_CLOCKWISE;
+      geometry.vertexCount = clusterVertexCount;
+      geometry.positionBuffer = RasterBuffer { vertexSlice, offsetof(HairVertex, position), sizeof(HairVertex), VK_FORMAT_R32G32B32_SFLOAT };
+      geometry.normalBuffer = RasterBuffer { vertexSlice, offsetof(HairVertex, normal), sizeof(HairVertex), VK_FORMAT_R32G32B32_SFLOAT };
+      geometry.texcoordBuffer = RasterBuffer { vertexSlice, offsetof(HairVertex, texcoord), sizeof(HairVertex), VK_FORMAT_R32G32_SFLOAT };
+      geometry.color0Buffer = RasterBuffer { vertexSlice, offsetof(HairVertex, color), sizeof(HairVertex), VK_FORMAT_B8G8R8A8_UNORM };
+      geometry.indexCount = clusterVertexCount;
+      geometry.indexBuffer = RasterBuffer { indexSlice, 0, sizeof(uint32_t), VK_INDEX_TYPE_UINT32 };
+
+      if (!hairBlendWeights.empty()) {
+        Rc<DxvkBuffer> weightBuffer = allocBuffer(hairBlendWeights.size(), "Surface Hair Blend Weights");
+        DxvkBufferSlice weightSlice { weightBuffer };
+        std::memcpy(weightSlice.mapPtr(0), hairBlendWeights.data(), hairBlendWeights.size());
+        geometry.blendWeightBuffer = RasterBuffer { weightSlice, 0, hairWeightStride, VK_FORMAT_R32_SFLOAT };
+        geometry.numBonesPerVertex = source.numBonesPerVertex;
+      }
+      if (!hairBlendIndices.empty()) {
+        Rc<DxvkBuffer> blendIndexBuffer = allocBuffer(hairBlendIndices.size() * sizeof(uint32_t), "Surface Hair Blend Indices");
+        DxvkBufferSlice blendIndexSlice { blendIndexBuffer };
+        std::memcpy(blendIndexSlice.mapPtr(0), hairBlendIndices.data(), hairBlendIndices.size() * sizeof(uint32_t));
+        geometry.blendIndicesBuffer = RasterBuffer { blendIndexSlice, 0, sizeof(uint32_t), source.blendIndicesBuffer.vertexFormat() };
+      }
+
+      // Stable hashes derived from the source mesh + strand parameters (and
+      // the cluster's bone in rigid mode): each piece of hair reads as one
+      // persistent mesh across frames, and regrows (new BLAS) only when the
+      // source mesh or parameters change.
+      const auto deriveHash = [&](uint64_t salt) {
+        struct HashKey {
+          uint64_t salt;
+          uint64_t base;
+        } key = { salt, hashSalt };
+        return XXH64(&key, sizeof(key), cacheKey);
+      };
+      geometry.hashes[HashComponents::Indices] = deriveHash(11);
+      geometry.hashes[HashComponents::VertexPosition] = deriveHash(11);
+      geometry.hashes[HashComponents::VertexTexcoord] = deriveHash(12);
+      geometry.hashes[HashComponents::GeometryDescriptor] = deriveHash(13);
+      geometry.hashes[HashComponents::VertexLayout] = deriveHash(14);
+      geometry.hashes.precombine();
+
+      return geometry;
     };
-    geometry.hashes[HashComponents::Indices] = deriveHash(11);
-    geometry.hashes[HashComponents::VertexPosition] = deriveHash(11);
-    geometry.hashes[HashComponents::VertexTexcoord] = deriveHash(12);
-    geometry.hashes[HashComponents::GeometryDescriptor] = deriveHash(13);
-    geometry.hashes[HashComponents::VertexLayout] = deriveHash(14);
-    geometry.hashes.precombine();
 
-    entry.geometry = std::move(geometry);
-    entry.strandCount = strands;
+    // Decodes the dominant (highest-weight) bone at a source vertex, using
+    // the same conventions the skinning shader reads: numBones-1 stored
+    // weights with an implicit last, and raw index bytes in memory order.
+    const auto decodeDominantBone = [&](uint32_t vertexIndex) -> uint32_t {
+      const uint32_t bonesPerVertex = std::min(source.numBonesPerVertex, 4u);
 
-    Logger::info(str::format("[Hair Test] Grew ", strands, " strands (", hairVertexCount, " vertices) on a tagged mesh",
-                             hasBlendWeights ? " with skinning" : " without skinning"));
+      if (bonesPerVertex == 0 || pBlendWeights == nullptr) {
+        return kNoBone;
+      }
+
+      float weights[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+      float lastWeight = 1.0f;
+      for (uint32_t i = 0; i + 1 < bonesPerVertex; ++i) {
+        float weight;
+        std::memcpy(&weight, pBlendWeights + static_cast<size_t>(vertexIndex) * blendWeightStride + i * sizeof(float), sizeof(float));
+        weights[i] = weight;
+        lastWeight -= weight;
+      }
+      weights[bonesPerVertex - 1] = lastWeight;
+
+      uint32_t best = 0;
+      for (uint32_t i = 1; i < bonesPerVertex; ++i) {
+        if (weights[i] > weights[best]) {
+          best = i;
+        }
+      }
+
+      if (pBlendIndices == nullptr) {
+        // No index buffer: weights address the bone palette in order.
+        return best;
+      }
+
+      uint8_t boneIndices[4] = { 0, 0, 0, 0 };
+      std::memcpy(boneIndices, pBlendIndices + static_cast<size_t>(vertexIndex) * blendIndicesStride, sizeof(boneIndices));
+
+      return boneIndices[best];
+    };
+
+    const bool rigidClusters = surfaceAttachmentMode() == 0;
+
+    if (rigidClusters) {
+      // Partition strands by their root's dominant bone; each partition
+      // becomes one static cluster carried by that bone's transform.
+      std::unordered_map<uint32_t, std::vector<uint32_t>> strandsByBone;
+      for (uint32_t strandIndex = 0; strandIndex < strands; ++strandIndex) {
+        strandsByBone[decodeDominantBone(rootAttachments[strandIndex].nearestVertex)].push_back(strandIndex);
+      }
+
+      entry.clusters.reserve(strandsByBone.size());
+      for (const auto& [boneIndex, strandList] : strandsByBone) {
+        SurfaceHairCluster cluster;
+        cluster.boneIndex = boneIndex;
+        cluster.strandCount = static_cast<uint32_t>(strandList.size());
+        cluster.geometry = assembleGeometry(strandList, false, 0x1000ull + boneIndex);
+        entry.clusters.push_back(std::move(cluster));
+      }
+
+      entry.rigidClusters = true;
+      entry.strandCount = strands;
+
+      Logger::info(str::format("[Hair Test] Grew ", strands, " strands in ", entry.clusters.size(),
+                               " rigid bone clusters on a tagged mesh",
+                               hasBlendWeights ? "" : " (source has no skinning; single rigid cluster)"));
+    } else {
+      // Skinned mode: one geometry over all strands, carrying blend data.
+      std::vector<uint32_t> allStrands(strands);
+      for (uint32_t strandIndex = 0; strandIndex < strands; ++strandIndex) {
+        allStrands[strandIndex] = strandIndex;
+      }
+
+      entry.geometry = assembleGeometry(allStrands, true, 0);
+      entry.rigidClusters = false;
+      entry.strandCount = strands;
+
+      Logger::info(str::format("[Hair Test] Grew ", strands, " skinned strands on a tagged mesh",
+                               hasBlendWeights ? " with skinning" : " without skinning"));
+    }
 
     return true;
   }
@@ -1492,7 +1624,25 @@ namespace dxvk {
         "Tag a model's texture with the 'Grow Hair Strands' category in the Game Setup tab and hair "
         "grows across every mesh drawn with it, colored by that texture and deforming with the model's "
         "skinning. Strand shape uses the shared parameters below.");
-      ImGui::Text("Hair-grown meshes this session: %u", static_cast<uint32_t>(m_surfaceHair.size()));
+
+      uint32_t totalClusters = 0;
+      for (const auto& [meshHash, meshEntry] : m_surfaceHair) {
+        totalClusters += static_cast<uint32_t>(meshEntry.clusters.size());
+      }
+      ImGui::Text("Hair-grown meshes this session: %u (%u bone clusters)",
+                  static_cast<uint32_t>(m_surfaceHair.size()), totalClusters);
+
+      RemixGui::Combo("Attachment", &surfaceAttachmentModeObject(), "Rigid Per-Bone Clusters\0Skinned (Exact Deformation)\0");
+      if (surfaceAttachmentMode() == 0) {
+        ImGui::TextWrapped(
+          "Each strand is parented to the bone with the highest skinning weight at its root and the "
+          "cluster moves rigidly with that bone - no per-frame rebuild cost. Strands near joints "
+          "blended between bones can drift slightly from the surface.");
+      } else {
+        ImGui::TextWrapped(
+          "Strand roots inherit the mesh's blend weights and are skinned exactly like the surface. "
+          "The hair BLAS rebuilds every frame the pose changes, which costs GPU time at high strand counts.");
+      }
 
       RemixGui::DragInt("Strands Per Mesh", &surfaceStrandCountObject(), 100.0f, 1, 300000, "%d", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragFloat("Surface Hair Length", &surfaceHairLengthObject(), 0.01f, 0.001f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);

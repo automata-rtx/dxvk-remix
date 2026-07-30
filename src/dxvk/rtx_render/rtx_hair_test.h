@@ -117,6 +117,14 @@ namespace dxvk {
     // and are submitted as a skinned draw with the source's bone matrices -
     // so they deform with the model through Remix's own skinning pipeline,
     // and are textured by the source's diffuse at each strand's root UV.
+    RTX_OPTION_ARGS("rtx.hairTest", int, surfaceAttachmentMode, 0,
+                    "How surface hair follows its mesh.\n"
+                    "0: Rigid per-bone clusters (default) - strands are grouped by their root's dominant bone and each group is a "
+                    "static mesh carried by that bone's transform. Costs nothing per frame after creation (no BLAS rebuilds, no "
+                    "skinning), at the price of small mismatches near joints where the skin blends multiple bones.\n"
+                    "1: Skinned - strands carry the source mesh's blend weights and deform exactly with it, at per-frame skinning "
+                    "and BLAS update cost.",
+                    args.minValue = 0, args.maxValue = 1);
     RTX_OPTION_ARGS("rtx.hairTest", int, surfaceStrandCount, 60000,
                     "Number of hair strands scattered across each hair-tagged mesh (area-weighted over its triangles).",
                     args.minValue = 1, args.maxValue = 300000);
@@ -277,10 +285,29 @@ namespace dxvk {
 
     // Surface hair: bind-pose strand geometry grown across hair-tagged meshes,
     // cached per source mesh and re-submitted each frame with the source
-    // draw's material, transforms and bone matrices.
+    // draw's material and transforms.
+    //
+    // Rigid mode partitions the strands by their root's dominant bone; each
+    // cluster is a static mesh whose per-frame transform is the source draw's
+    // transform composed with that bone's current palette matrix, so the fur
+    // follows the animation without any per-frame BLAS or skinning work.
+    static constexpr uint32_t kNoBone = 0xFFFFFFFFu;
+
+    struct SurfaceHairCluster {
+      RasterGeometry geometry;
+      // Raw palette index into the source draw's bone matrices, or kNoBone to
+      // follow the draw transform alone (unskinned sources).
+      uint32_t boneIndex = kNoBone;
+      uint32_t strandCount = 0;
+    };
+
     struct SurfaceHairEntry {
+      // Skinned mode: one geometry carrying the source's blend data.
       RasterGeometry geometry;
       uint32_t strandCount = 0;
+      // Rigid mode: static per-bone clusters.
+      std::vector<SurfaceHairCluster> clusters;
+      bool rigidClusters = false;
       // Set when the source mesh could not be read (unmappable buffers or an
       // unsupported layout); the entry is kept to avoid retrying every frame.
       bool buildFailed = false;
