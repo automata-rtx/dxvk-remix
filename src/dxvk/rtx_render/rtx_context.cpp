@@ -198,6 +198,9 @@ namespace dxvk {
     checkNeuralRadianceCacheSupport();
     reportCpuSimdSupport();
 
+    Logger::info(str::format("[RTX info] Linear Swept Spheres (VK_NV_ray_tracing_linear_swept_spheres): ",
+                             RtxHairTest::isLssSupported(*m_device) ? "supported" : "not supported"));
+
     GlobalTime::get().init(RtxOptions::timeDeltaBetweenFrames() * 0.001f);
     GlobalTime::get().setAdvanceTime(RtxOptions::advanceTime());
   }
@@ -604,6 +607,11 @@ namespace dxvk {
       RtxParticleSystemManager& particles = m_device->getCommon()->metaParticleSystem();
       particles.submitDrawState(this);
 
+      // LSS hair test: regenerate strand geometry if needed and submit the
+      // hair's proxy mesh into the scene so it is part of the path-traced
+      // world (shadow casting, GI, reflections) before scene data finalizes.
+      m_common->metaHairTest().prepareFrame(this);
+
       this->spillRenderPass(false);
 
       getCommonObjects()->getTextureManager().submitTexturesToDeviceLocal(this, m_execBarriers, m_execAcquires);
@@ -686,6 +694,12 @@ namespace dxvk {
 
         // Composition
         dispatchComposite(rtOutput);
+
+        // LSS hair rendering test (RTX Character Rendering SDK integration).
+        // Renders into the composite output at render resolution before
+        // upscaling, and writes hair depth and motion vectors so upscalers
+        // treat the hair as part of the scene.
+        m_common->metaHairTest().dispatch(this, rtOutput);
 
         // Post composite Debug View that may overwrite Composite output
         dispatchReplaceCompositeWithDebugView(rtOutput);

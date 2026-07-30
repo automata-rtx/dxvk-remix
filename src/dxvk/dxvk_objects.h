@@ -60,6 +60,7 @@
 #include "rtx_render/rtx_reflex.h"
 #include "rtx_render/rtx_game_capturer.h"
 #include "rtx_render/rtx_dust_particles.h"
+#include "rtx_render/rtx_hair_test.h"
 #include "rtx_render/rtx_particle_system.h"
 #include "rtx_render/rtx_point_instancer_system.h"
 
@@ -328,6 +329,10 @@ namespace dxvk {
       return m_dustParticles.get(m_device);
     }
 
+    RtxHairTest& metaHairTest() {
+      return m_hairTest.get(m_device);
+    }
+
     RtxParticleSystemManager& metaParticleSystem() {
       return m_particleSystem.get(m_device);
     }
@@ -416,6 +421,7 @@ namespace dxvk {
     Active<DxvkSRGBDither>                  m_srgbDither;
     Lazy<RtxReflex>                         m_reflex;
     Lazy<RtxDustParticles>                  m_dustParticles;
+    Lazy<RtxHairTest>                       m_hairTest;
     Lazy<RtxParticleSystemManager>          m_particleSystem;
     Lazy<RtxPointInstancerSystem>            m_pointInstancerSystem;
 
