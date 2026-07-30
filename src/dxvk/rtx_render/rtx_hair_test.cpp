@@ -35,7 +35,20 @@
 
 // RTX Character Rendering SDK Geometry Library (vendored): curve segment ->
 // LSS / DOTS conversion.
+//
+// Note: the library builds a float vector from small integer masks in
+// perpStark(), which MSVC reports as a lossy conversion and this project
+// promotes to an error. Suppressed around the include rather than patched in
+// place, so the vendored headers stay byte-identical to the SDK and can be
+// updated without carrying local edits.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4244) // conversion from 'uint32_t' to 'const float', possible loss of data
+#endif
 #include "rtxcr_geometry/CurveTessellation.h"
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 #include <rtx_shaders/hair_test.h>
 
@@ -185,7 +198,7 @@ namespace dxvk {
     const math::float3 gravityDirection(0.0f, -1.0f, 0.0f);
 
     for (uint32_t strandIndex = 0; strandIndex < strands; ++strandIndex) {
-      const float y = 1.0f - 2.0f * (strandIndex + 0.5f) / static_cast<float>(strands);
+      const float y = 1.0f - 2.0f * (static_cast<float>(strandIndex) + 0.5f) / static_cast<float>(strands);
       const float ringRadius = std::sqrt(std::max(0.0f, 1.0f - y * y));
       const float phi = goldenAngle * static_cast<float>(strandIndex);
 
@@ -199,6 +212,7 @@ namespace dxvk {
       const float jitterX = rng.next() * 2.0f - 1.0f;
       const float jitterY = rng.next() * 2.0f - 1.0f;
       const float jitterZ = rng.next() * 2.0f - 1.0f;
+      const math::float3 randomOffset(jitterX, jitterY, jitterZ);
 
       // Note: at high frizz the jitter can cancel the normal almost exactly,
       // which would normalize to NaN and poison the acceleration structure
