@@ -581,38 +581,31 @@ namespace dxvk {
     }
 
     // Bound the queue so a pathological tagging choice (e.g. a texture shared
-    // by hundreds of draws) cannot grow hair without limit.
-    constexpr size_t kMaxTaggedDrawsPerFrame = 64;
+    // by hundreds of draws) cannot grow hair without limit. A single GX
+    // character arrives as dozens of shape-packet draws (the wolf is ~54), so
+    // the cap leaves room for a couple of tagged characters.
+    constexpr size_t kMaxTaggedDrawsPerFrame = 128;
     if (m_taggedDrawQueue.size() >= kMaxTaggedDrawsPerFrame) {
-      ONCE(Logger::warn("[Hair Test] More than 64 hair-tagged draws in a frame; ignoring the rest."));
+      ONCE(Logger::warn("[Hair Test] More than 128 hair-tagged draws in a frame; ignoring the rest."));
       return;
     }
 
     m_taggedDrawQueue.push_back(input);
   }
 
-  // Identity of a tagged mesh for hair caching. Deliberately NOT the vertex
-  // data hash: this game re-uploads the mesh's vertex stream every frame and
-  // a handful of animated non-position bytes land inside the hashed range, so
-  // the position hash changes every animated frame even though the bind-pose
-  // positions are stable. Keying hair on it regrew the full strand set every
-  // frame (a new random scatter each time) and leaked a new copy of the hair
-  // geometry per frame until memory ran out. The tagged texture is 1:1 with
-  // its mesh in this game, so texture identity plus the vertex/index counts
-  // is the stable key.
+  // Identity of a tagged mesh for hair caching: the rest-pose vertex position
+  // hash. Aurora submits characters as rest-pose vertices with GPU-side
+  // skinning precisely so these hashes are frame-stable (see dusklight's
+  // gpu_skinning_and_platform_direction.md #4), and a GX character arrives as
+  // many shape packets - each packet is its own mesh to Remix, with its own
+  // hash and its own per-draw bone palette. The hash is the only key that is
+  // both stable and unique per packet: a texture-based key collides across
+  // same-sized packets of one character, which submits hair grown on one
+  // packet (whose cluster bone indices only mean something against that
+  // packet's palette) under every colliding packet's transform - fur floating
+  // disconnected around the model.
   static XXH64_hash_t computeSurfaceHairCacheKey(const DrawCallState& source, XXH64_hash_t paramsHash) {
-    struct KeyData {
-      XXH64_hash_t textureHash;
-      uint32_t vertexCount;
-      uint32_t indexCount;
-    } key = {
-      source.getMaterialData().getColorTexture().getImageHash(),
-      source.getGeometryData().vertexCount,
-      source.getGeometryData().indexCount,
-    };
-    static_assert(sizeof(KeyData) == 16, "no padding in the hair cache key");
-
-    return XXH64(&key, sizeof(key), paramsHash);
+    return source.getGeometryData().hashes[HashComponents::VertexPosition] ^ paramsHash;
   }
 
   XXH64_hash_t RtxHairTest::computeSurfaceHairParamsHash() const {
