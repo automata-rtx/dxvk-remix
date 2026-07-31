@@ -227,6 +227,8 @@ dxvk_src = files([
   'rtx_render/rtx_dusklight_grade.h',
   'rtx_render/rtx_dust_particles.cpp',
   'rtx_render/rtx_dust_particles.h',
+  'rtx_render/rtx_hair_mask.cpp',
+  'rtx_render/rtx_hair_mask.h',
   'rtx_render/rtx_hair_test.cpp',
   'rtx_render/rtx_hair_test.h',
   'rtx_render/rtxcr_geometry/CurveTessellation.h',

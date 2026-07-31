@@ -28,6 +28,7 @@
 #include "../dxvk_include.h"
 #include "../util/xxHash/xxhash.h"
 
+#include "rtx_hair_mask.h"
 #include "rtx_resources.h"
 #include "rtx_types.h"
 #include "rtx_option.h"
@@ -130,10 +131,31 @@ namespace dxvk {
                     "How surface hair follows its mesh.\n"
                     "0: Rigid per-bone clusters (default) - strands are grouped by their root's dominant bone and each group is a "
                     "static mesh carried by that bone's transform. Costs nothing per frame after creation (no BLAS rebuilds, no "
-                    "skinning), at the price of small mismatches near joints where the skin blends multiple bones.\n"
+                    "skinning). Exact for single-influence meshes.\n"
                     "1: Skinned - strands carry the source mesh's blend weights and deform exactly with it, at per-frame skinning "
-                    "and BLAS update cost.",
-                    args.minValue = 0, args.maxValue = 1);
+                    "and BLAS update cost.\n"
+                    "2: Hybrid - rigid clusters cover each bone's core region; strands falling outside every core go into a "
+                    "separate skinned seam set with its own BLAS. See hybridClusterRadiusScale / hybridSeamStrandCount.",
+                    args.minValue = 0, args.maxValue = 2);
+    RTX_OPTION_ARGS("rtx.hairTest", float, hybridClusterRadiusScale, 0.75f,
+                    "Hybrid attachment: a strand joins its bone's rigid cluster only when its root lies within this fraction of "
+                    "the bone's influence-region radius (the RMS distance of the bone's vertices from their centroid), so the "
+                    "cutoff scales per bone. Roots outside every core region go to the skinned seam set.",
+                    args.minValue = 0.05f, args.maxValue = 4.0f);
+    RTX_OPTION_ARGS("rtx.hairTest", int, hybridSeamStrandCount, 15000,
+                    "Hybrid attachment: number of additional strands generated for the skinned seam set covering the areas "
+                    "outside the rigid clusters' core regions. These are on top of the total strand budget and live in their "
+                    "own BLAS, updated per frame by GPU skinning.",
+                    args.minValue = 0, args.maxValue = 200000);
+    RTX_OPTION("rtx.hairTest", bool, evenScatter, true,
+               "Best-candidate (Mitchell's) scattering for surface hair: each strand root is chosen from several candidates, "
+               "keeping the one farthest from already-placed roots, for an even coat without clumps. One-time cost at growth.");
+    RTX_OPTION("rtx.hairTest", std::string, maskDirectory, "hair_masks",
+               "Directory (relative to the game executable, like rtx.conf) searched for hair scatter masks: an OBJ per hair-"
+               "tagged texture named <texture hash hex>.obj. A mask is an edited copy of the mesh - taken from an RTX Remix "
+               "capture, which exports skinned meshes in rest pose - with the faces that should not grow fur deleted. When "
+               "present, strand roots scatter over the mask instead of the full surface and bind to the nearest live vertex "
+               "for bone, UV and fallback normal data.");
     RTX_OPTION_ARGS("rtx.hairTest", int, surfaceStrandCount, 60000,
                     "Total strand budget shared by all hair-tagged meshes, distributed across them by surface area. "
                     "A tagged texture is often used by many submeshes (a character is typically split into dozens), so a "
@@ -319,6 +341,10 @@ namespace dxvk {
       // Rigid mode: static per-bone clusters.
       std::vector<SurfaceHairCluster> clusters;
       bool rigidClusters = false;
+      // Hybrid mode: the skinned seam set (stored in `geometry`) exists
+      // alongside the rigid clusters.
+      bool hasSeamSet = false;
+      uint32_t seamStrandCount = 0;
       // Set when the source mesh could not be read (unmappable buffers or an
       // unsupported layout); the entry is kept to avoid retrying every frame.
       bool buildFailed = false;
@@ -330,11 +356,15 @@ namespace dxvk {
     void submitSurfaceHairDraws(RtxContext* ctx);
     void submitHairForEntry(RtxContext* ctx, const DrawCallState& source, const SurfaceHairEntry& entry);
     void releaseSurfaceHair();
+    void reloadHairMasks();
     static float measureSurfaceArea(const DrawCallState& input);
-    bool buildSurfaceHairGeometry(const DrawCallState& input, XXH64_hash_t cacheKey, uint32_t strandCount, SurfaceHairEntry& entry) const;
+    bool buildSurfaceHairGeometry(const DrawCallState& input, XXH64_hash_t cacheKey, uint32_t strandCount, SurfaceHairEntry& entry);
     XXH64_hash_t computeSurfaceHairParamsHash() const;
 
     std::unordered_map<XXH64_hash_t, SurfaceHairEntry> m_surfaceHair;
+    // Loaded (or failed-to-load, to avoid retrying every build) hair masks,
+    // keyed by the tagged texture hash. See rtx_hair_mask.h.
+    std::unordered_map<XXH64_hash_t, HairMaskMesh> m_hairMasks;
     std::vector<DrawCallState> m_taggedDrawQueue;
     bool m_submittingHairDraws = false;
     XXH64_hash_t m_surfaceHairParamsHash = 0;

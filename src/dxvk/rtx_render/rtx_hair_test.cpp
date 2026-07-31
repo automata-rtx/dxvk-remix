@@ -622,6 +622,9 @@ namespace dxvk {
       float gravityDroop;
       int scatterSeed;
       int attachmentMode;
+      int evenScatterMode;
+      float hybridRadiusScale;
+      int hybridSeamStrands;
     } parameters = {
       surfaceStrandCount(),
       surfaceHairLength(),
@@ -635,12 +638,22 @@ namespace dxvk {
       gravityDroop(),
       scatterSeed(),
       surfaceAttachmentMode(),
+      evenScatter() ? 1 : 0,
+      hybridClusterRadiusScale(),
+      hybridSeamStrandCount(),
     };
 
     return XXH64(&parameters, sizeof(parameters), 0x48414952u);
   }
 
   std::atomic<bool> RtxHairTest::s_wantsSourceSnapshot { false };
+
+  void RtxHairTest::reloadHairMasks() {
+    // Masks are re-read from disk and all hair regrows against them.
+    m_hairMasks.clear();
+    m_surfaceHair.clear();
+    m_surfaceStrandsLive = 0;
+  }
 
   void RtxHairTest::releaseSurfaceHair() {
     m_surfaceHair.clear();
@@ -812,6 +825,19 @@ namespace dxvk {
   }
 
   void RtxHairTest::submitHairForEntry(RtxContext* ctx, const DrawCallState& source, const SurfaceHairEntry& entry) {
+    // Hybrid seam set: strands covering the areas outside the rigid
+    // clusters' core regions, submitted as a skinned draw exactly like
+    // attachment mode 1 - it carries the source's blend data and deforms
+    // through Remix's skinning in its own BLAS, fully separate from the
+    // static cluster BLASes.
+    if (entry.hasSeamSet) {
+      DrawCallState seamDraw = source;
+      seamDraw.modifyGeometryData() = entry.geometry;
+      seamDraw.modifyCategoryFlags().set(InstanceCategories::IgnoreOpacityMicromap);
+
+      ctx->getSceneManager().submitDrawState(ctx, seamDraw, nullptr);
+    }
+
     if (!entry.rigidClusters) {
       // Skinned mode: the hair draw is the source draw with its geometry
       // swapped for the grown strands. Material (the source's diffuse,
@@ -973,7 +999,7 @@ namespace dxvk {
     return totalArea;
   }
 
-  bool RtxHairTest::buildSurfaceHairGeometry(const DrawCallState& input, XXH64_hash_t cacheKey, uint32_t strandCount, SurfaceHairEntry& entry) const {
+  bool RtxHairTest::buildSurfaceHairGeometry(const DrawCallState& input, XXH64_hash_t cacheKey, uint32_t strandCount, SurfaceHairEntry& entry) {
     using namespace rtxcr::geometry;
 
     const RasterGeometry& source = input.getGeometryData();
@@ -1114,12 +1140,180 @@ namespace dxvk {
       return false;
     }
 
-    // Scatter strand roots area-weighted across the triangles and grow each
-    // strand in bind pose, exactly like the test sphere's strands but rooted
-    // on the mesh surface along its interpolated normal.
+    // Blend-stream availability, needed before scattering for the hybrid
+    // partition and the dominant-bone decode.
+    const bool sourceHasBlend = pBlendWeights != nullptr && source.numBonesPerVertex > 0;
+
+    // Decodes the dominant (highest-weight) bone at a source vertex, using
+    // the same conventions the skinning shader reads: numBones-1 stored
+    // weights with an implicit last, and raw index bytes in memory order.
+    const auto decodeDominantBone = [&](uint32_t vertexIndex) -> uint32_t {
+      const uint32_t bonesPerVertex = std::min(source.numBonesPerVertex, 4u);
+
+      if (bonesPerVertex == 0 || pBlendWeights == nullptr) {
+        return kNoBone;
+      }
+
+      float weights[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+      float lastWeight = 1.0f;
+      for (uint32_t i = 0; i + 1 < bonesPerVertex; ++i) {
+        float weight;
+        std::memcpy(&weight, pBlendWeights + static_cast<size_t>(vertexIndex) * blendWeightStride + i * sizeof(float), sizeof(float));
+        weights[i] = weight;
+        lastWeight -= weight;
+      }
+      weights[bonesPerVertex - 1] = lastWeight;
+
+      uint32_t best = 0;
+      for (uint32_t i = 1; i < bonesPerVertex; ++i) {
+        if (weights[i] > weights[best]) {
+          best = i;
+        }
+      }
+
+      if (pBlendIndices == nullptr) {
+        // No index buffer: weights address the bone palette in order.
+        return best;
+      }
+
+      uint8_t boneIndices[4] = { 0, 0, 0, 0 };
+      std::memcpy(boneIndices, pBlendIndices + static_cast<size_t>(vertexIndex) * blendIndicesStride, sizeof(boneIndices));
+
+      return boneIndices[best];
+    };
+
+    // Attachment mode, with hybrid degrading to rigid on unskinned sources
+    // (there are no bones to seam between).
+    int attachmentMode = surfaceAttachmentMode();
+    if (attachmentMode == 2 && !sourceHasBlend) {
+      ONCE(Logger::info("[Hair Test] Hybrid attachment on an unskinned mesh behaves as rigid (no bones to seam)."));
+      attachmentMode = 0;
+    }
+
+    // Optional artist scatter mask for this texture (see rtx_hair_mask.h):
+    // an edited rest-pose copy of the mesh whose triangles replace the live
+    // surface as the scatter domain. Roots bind back to the nearest live
+    // vertex for bone, UV and fallback normal data.
+    const XXH64_hash_t maskTextureHash = input.getMaterialData().getColorTexture().getImageHash();
+    std::vector<HairMaskVec3> livePositions(source.vertexCount);
+    for (uint32_t v = 0; v < source.vertexCount; ++v) {
+      const math::float3 p = readPosition(v);
+      livePositions[v] = { p.x, p.y, p.z };
+    }
+
+    HairPointGrid liveGrid;
+    const HairMaskMesh* mask = nullptr;
+    {
+      auto maskIt = m_hairMasks.find(maskTextureHash);
+      if (maskIt == m_hairMasks.end()) {
+        const std::string maskPath = maskDirectory() + "/" + hashToString(maskTextureHash) + ".obj";
+        maskIt = m_hairMasks.emplace(maskTextureHash, loadHairMaskObj(maskPath)).first;
+        Logger::info(str::format("[Hair Test] Scatter mask ", maskPath, ": ", maskIt->second.status));
+      }
+      if (maskIt->second.loaded) {
+        liveGrid.build(livePositions.data(), livePositions.size());
+        if (!maskIt->second.aligned) {
+          alignHairMaskToLiveMesh(maskIt->second, liveGrid);
+          Logger::info(str::format("[Hair Test] Scatter mask: ", maskIt->second.status));
+        }
+        mask = &maskIt->second;
+      }
+    }
+
+    // Scatter domain: the mask's triangles when present, the live surface
+    // otherwise, as one cumulative-area distribution.
+    struct ScatterTri {
+      uint32_t indices[3];
+      float cumulativeArea;
+    };
+    std::vector<ScatterTri> scatterTris;
+    float scatterArea = 0.0f;
+
+    const auto scatterPosition = [&](uint32_t index) -> math::float3 {
+      if (mask != nullptr) {
+        const HairMaskVec3& p = mask->positions[index];
+        return math::float3(p.x, p.y, p.z);
+      }
+      return readPosition(index);
+    };
+
+    if (mask != nullptr) {
+      scatterTris.reserve(mask->triangles.size());
+      for (const HairMaskMesh::Triangle& tri : mask->triangles) {
+        const math::float3 p0 = scatterPosition(tri.v[0]);
+        const math::float3 p1 = scatterPosition(tri.v[1]);
+        const math::float3 p2 = scatterPosition(tri.v[2]);
+        const math::float3 crossProduct = math::cross(p1 - p0, p2 - p0);
+        const float area = 0.5f * std::sqrt(math::dot(crossProduct, crossProduct));
+        if (!(area > 1e-10f) || !std::isfinite(area)) {
+          continue;
+        }
+        scatterArea += area;
+        scatterTris.push_back({ { tri.v[0], tri.v[1], tri.v[2] }, scatterArea });
+      }
+      if (scatterTris.empty()) {
+        Logger::warn("[Hair Test] Scatter mask has no usable triangles; falling back to the full surface.");
+        mask = nullptr;
+      }
+    }
+    if (mask == nullptr) {
+      scatterTris.reserve(triangles.size());
+      for (const SourceTriangle& tri : triangles) {
+        scatterTris.push_back({ { tri.indices[0], tri.indices[1], tri.indices[2] }, tri.cumulativeArea });
+      }
+      scatterArea = totalArea;
+    }
+
+    // Hybrid: per-bone influence regions from the live mesh. The region
+    // radius is the RMS distance of the bone's vertices from their centroid,
+    // so the rigid-core cutoff scales with how much surface each bone drives.
+    struct BoneRegion {
+      math::float3 centroid;
+      float radius;
+    };
+    std::unordered_map<uint32_t, BoneRegion> boneRegions;
+    if (attachmentMode == 2) {
+      struct BoneAccum {
+        double sum[3] = { 0.0, 0.0, 0.0 };
+        double sumSq = 0.0;
+        uint64_t count = 0;
+      };
+      std::unordered_map<uint32_t, BoneAccum> boneAccums;
+      for (uint32_t v = 0; v < source.vertexCount; ++v) {
+        BoneAccum& acc = boneAccums[decodeDominantBone(v)];
+        const HairMaskVec3& p = livePositions[v];
+        acc.sum[0] += p.x; acc.sum[1] += p.y; acc.sum[2] += p.z;
+        acc.sumSq += static_cast<double>(p.x) * p.x + static_cast<double>(p.y) * p.y + static_cast<double>(p.z) * p.z;
+        ++acc.count;
+      }
+      for (const auto& [bone, acc] : boneAccums) {
+        const double inv = 1.0 / static_cast<double>(acc.count);
+        const math::float3 centroid(static_cast<float>(acc.sum[0] * inv),
+                                    static_cast<float>(acc.sum[1] * inv),
+                                    static_cast<float>(acc.sum[2] * inv));
+        const double variance = acc.sumSq * inv
+          - (static_cast<double>(centroid.x) * centroid.x + static_cast<double>(centroid.y) * centroid.y + static_cast<double>(centroid.z) * centroid.z);
+        boneRegions[bone] = { centroid, static_cast<float>(std::sqrt(std::max(variance, 0.0))) };
+      }
+    }
+
+    const auto insideBoneCore = [&](const math::float3& root, uint32_t bone) -> bool {
+      const auto it = boneRegions.find(bone);
+      if (it == boneRegions.end()) {
+        return true;
+      }
+      const math::float3 d = root - it->second.centroid;
+      const float coreRadius = hybridClusterRadiusScale() * it->second.radius;
+      return math::dot(d, d) <= coreRadius * coreRadius;
+    };
+
+    // Strand counts: `strands` primary (clusters, or the whole set outside
+    // hybrid) plus the hybrid's separate seam set appended after them.
     const uint32_t strands = std::max(strandCount, 1u);
+    const uint32_t seamStrands = attachmentMode == 2 ? static_cast<uint32_t>(std::max(hybridSeamStrandCount(), 0)) : 0u;
+    const uint32_t totalStrands = strands + seamStrands;
     const uint32_t segmentsEach = static_cast<uint32_t>(std::clamp(segmentsPerStrand(), 1, 16));
-    const uint32_t totalSegments = strands * segmentsEach;
+    const uint32_t totalSegments = totalStrands * segmentsEach;
 
     std::vector<LineSegment> lineSegments;
     lineSegments.reserve(totalSegments);
@@ -1128,46 +1322,148 @@ namespace dxvk {
       uint32_t nearestVertex;
     };
     std::vector<RootAttachment> rootAttachments;
-    rootAttachments.reserve(strands);
+    rootAttachments.reserve(totalStrands);
 
     StrandRng rng(static_cast<uint32_t>(scatterSeed()) ^ static_cast<uint32_t>(cacheKey));
 
     const math::float3 gravityDirection(0.0f, -1.0f, 0.0f);
 
-    for (uint32_t strandIndex = 0; strandIndex < strands; ++strandIndex) {
-      // Area-weighted triangle pick via the cumulative distribution.
-      const float areaRnd = rng.next() * totalArea;
-      const auto pick = std::lower_bound(triangles.begin(), triangles.end(), areaRnd,
-        [](const SourceTriangle& triangle, float value) {
-          return triangle.cumulativeArea < value;
-        });
-      const SourceTriangle& triangle = pick != triangles.end() ? *pick : triangles.back();
+    // Best-candidate scattering: placed roots go into a spacing grid and each
+    // new root is the farthest-from-existing of several candidates.
+    const bool useEvenScatter = evenScatter();
+    HairPointGrid rootSpacingGrid;
+    if (useEvenScatter) {
+      const float meanSpacing = std::sqrt(std::max(scatterArea / static_cast<float>(totalStrands), 1e-12f));
+      rootSpacingGrid.init(meanSpacing * 2.0f);
+    }
 
-      // Uniform barycentrics within the triangle.
+    struct RootSample {
+      uint32_t tri;
+      float baryU, baryV, baryW;
+      math::float3 root;
+    };
+
+    const auto drawRootSample = [&]() -> RootSample {
+      RootSample s;
+      const float areaRnd = rng.next() * scatterArea;
+      const auto pick = std::lower_bound(scatterTris.begin(), scatterTris.end(), areaRnd,
+        [](const ScatterTri& tri, float value) {
+          return tri.cumulativeArea < value;
+        });
+      s.tri = static_cast<uint32_t>((pick != scatterTris.end() ? pick : scatterTris.end() - 1) - scatterTris.begin());
+
       const float baryRnd0 = rng.next();
       const float baryRnd1 = rng.next();
       const float sqrtRnd = std::sqrt(baryRnd0);
-      const float baryU = 1.0f - sqrtRnd;
-      const float baryV = baryRnd1 * sqrtRnd;
-      const float baryW = 1.0f - baryU - baryV;
-      const float barycentrics[3] = { baryU, baryV, baryW };
+      s.baryU = 1.0f - sqrtRnd;
+      s.baryV = baryRnd1 * sqrtRnd;
+      s.baryW = 1.0f - s.baryU - s.baryV;
 
-      const math::float3 p0 = readPosition(triangle.indices[0]);
-      const math::float3 p1 = readPosition(triangle.indices[1]);
-      const math::float3 p2 = readPosition(triangle.indices[2]);
+      const ScatterTri& tri = scatterTris[s.tri];
+      s.root = scatterPosition(tri.indices[0]) * s.baryU
+             + scatterPosition(tri.indices[1]) * s.baryV
+             + scatterPosition(tri.indices[2]) * s.baryW;
+      return s;
+    };
 
-      const math::float3 root = p0 * baryU + p1 * baryV + p2 * baryW;
+    const auto drawSpacedSample = [&]() -> RootSample {
+      if (!useEvenScatter || rootSpacingGrid.empty()) {
+        return drawRootSample();
+      }
+      RootSample best {};
+      float bestDistance = -1.0f;
+      for (uint32_t candidate = 0; candidate < 4; ++candidate) {
+        const RootSample s = drawRootSample();
+        float d = 0.0f;
+        rootSpacingGrid.nearest({ s.root.x, s.root.y, s.root.z }, &d);
+        if (d > bestDistance) {
+          bestDistance = d;
+          best = s;
+        }
+      }
+      return best;
+    };
 
-      // Surface normal: interpolated vertex normals when present, geometric
-      // otherwise.
+    // The live vertex a root binds to, providing its bone, UV and fallback
+    // normal: nearest live vertex for mask scatter (the mask's triangles
+    // reference mask vertices), the barycentric-dominant corner otherwise.
+    const auto bindRoot = [&](const RootSample& s) -> uint32_t {
+      if (mask != nullptr) {
+        const int32_t nearestIndex = liveGrid.nearest({ s.root.x, s.root.y, s.root.z });
+        return nearestIndex >= 0 ? static_cast<uint32_t>(nearestIndex) : 0u;
+      }
+      const ScatterTri& tri = scatterTris[s.tri];
+      uint32_t nearestVertex = tri.indices[0];
+      if (s.baryV > s.baryU && s.baryV >= s.baryW) {
+        nearestVertex = tri.indices[1];
+      } else if (s.baryW > s.baryU && s.baryW > s.baryV) {
+        nearestVertex = tri.indices[2];
+      }
+      return nearestVertex;
+    };
+
+    for (uint32_t strandIndex = 0; strandIndex < totalStrands; ++strandIndex) {
+      const bool isSeamStrand = strandIndex >= strands;
+
+      // Root selection. In hybrid mode primary strands prefer roots inside
+      // their bone's rigid core and seam strands prefer roots outside every
+      // core; after bounded retries the last sample is accepted (primary
+      // outliers ride their own bone's cluster, seam outliers stay skinned -
+      // both remain correct, just less tidy).
+      RootSample sample {};
+      uint32_t attachVertex = 0;
+      for (uint32_t attempt = 0; attempt < 8; ++attempt) {
+        sample = drawSpacedSample();
+        attachVertex = bindRoot(sample);
+        if (attachmentMode != 2) {
+          break;
+        }
+        const bool inside = insideBoneCore(sample.root, decodeDominantBone(attachVertex));
+        if (inside != isSeamStrand) {
+          break;
+        }
+      }
+      if (useEvenScatter) {
+        rootSpacingGrid.insert({ sample.root.x, sample.root.y, sample.root.z });
+      }
+
+      const ScatterTri& triangle = scatterTris[sample.tri];
+      const float baryU = sample.baryU;
+      const float baryV = sample.baryV;
+      const float baryW = sample.baryW;
+      const math::float3 root = sample.root;
+
+      // Surface normal. Mask scatter prefers the mask's own authored normals
+      // (smooth-shaded exports give smoothly varying growth directions on
+      // low-poly surfaces); without them, the bound live vertex's normal.
+      // Live scatter interpolates live vertex normals, geometric fallback.
       math::float3 surfaceNormal;
-      if (pNormals != nullptr) {
+      if (mask != nullptr) {
+        if (!mask->normals.empty()) {
+          const HairMaskVec3& n0 = mask->normals[triangle.indices[0]];
+          const HairMaskVec3& n1 = mask->normals[triangle.indices[1]];
+          const HairMaskVec3& n2 = mask->normals[triangle.indices[2]];
+          surfaceNormal = math::float3(n0.x, n0.y, n0.z) * baryU
+                        + math::float3(n1.x, n1.y, n1.z) * baryV
+                        + math::float3(n2.x, n2.y, n2.z) * baryW;
+        } else if (pNormals != nullptr) {
+          std::memcpy(&surfaceNormal, pNormals + static_cast<size_t>(attachVertex) * normalStride, 3 * sizeof(float));
+        } else {
+          const math::float3 p0 = scatterPosition(triangle.indices[0]);
+          const math::float3 p1 = scatterPosition(triangle.indices[1]);
+          const math::float3 p2 = scatterPosition(triangle.indices[2]);
+          surfaceNormal = math::cross(p1 - p0, p2 - p0);
+        }
+      } else if (pNormals != nullptr) {
         math::float3 n[3];
         for (uint32_t v = 0; v < 3; ++v) {
           std::memcpy(&n[v], pNormals + static_cast<size_t>(triangle.indices[v]) * normalStride, 3 * sizeof(float));
         }
         surfaceNormal = n[0] * baryU + n[1] * baryV + n[2] * baryW;
       } else {
+        const math::float3 p0 = readPosition(triangle.indices[0]);
+        const math::float3 p1 = readPosition(triangle.indices[1]);
+        const math::float3 p2 = readPosition(triangle.indices[2]);
         surfaceNormal = math::cross(p1 - p0, p2 - p0);
       }
       const float normalLengthSq = math::dot(surfaceNormal, surfaceNormal);
@@ -1176,25 +1472,23 @@ namespace dxvk {
         : math::float3(0.0f, 1.0f, 0.0f);
 
       // Root UV: all strand vertices share it, so the source diffuse texture
-      // colors the whole strand with the surface color under its root.
+      // colors the whole strand with the surface color under its root. Mask
+      // scatter reads the bound live vertex's UV (the mask carries none).
       float rootUv[2] = { 0.0f, 0.0f };
       if (pTexcoords != nullptr) {
-        float uv[3][2];
-        for (uint32_t v = 0; v < 3; ++v) {
-          std::memcpy(uv[v], pTexcoords + static_cast<size_t>(triangle.indices[v]) * texcoordStride, 2 * sizeof(float));
+        if (mask != nullptr) {
+          std::memcpy(rootUv, pTexcoords + static_cast<size_t>(attachVertex) * texcoordStride, 2 * sizeof(float));
+        } else {
+          float uv[3][2];
+          for (uint32_t v = 0; v < 3; ++v) {
+            std::memcpy(uv[v], pTexcoords + static_cast<size_t>(triangle.indices[v]) * texcoordStride, 2 * sizeof(float));
+          }
+          rootUv[0] = uv[0][0] * baryU + uv[1][0] * baryV + uv[2][0] * baryW;
+          rootUv[1] = uv[0][1] * baryU + uv[1][1] * baryV + uv[2][1] * baryW;
         }
-        rootUv[0] = uv[0][0] * baryU + uv[1][0] * baryV + uv[2][0] * baryW;
-        rootUv[1] = uv[0][1] * baryU + uv[1][1] * baryV + uv[2][1] * baryW;
       }
 
-      // Skinning attachment: the barycentric-dominant vertex's blend data.
-      uint32_t nearestVertex = triangle.indices[0];
-      if (barycentrics[1] > barycentrics[0] && barycentrics[1] >= barycentrics[2]) {
-        nearestVertex = triangle.indices[1];
-      } else if (barycentrics[2] > barycentrics[0] && barycentrics[2] > barycentrics[1]) {
-        nearestVertex = triangle.indices[2];
-      }
-      rootAttachments.push_back({ nearestVertex });
+      rootAttachments.push_back({ attachVertex });
 
       // Grow the strand along the jittered surface normal (same construction
       // as the test sphere's strands).
@@ -1410,49 +1704,23 @@ namespace dxvk {
       return geometry;
     };
 
-    // Decodes the dominant (highest-weight) bone at a source vertex, using
-    // the same conventions the skinning shader reads: numBones-1 stored
-    // weights with an implicit last, and raw index bytes in memory order.
-    const auto decodeDominantBone = [&](uint32_t vertexIndex) -> uint32_t {
-      const uint32_t bonesPerVertex = std::min(source.numBonesPerVertex, 4u);
-
-      if (bonesPerVertex == 0 || pBlendWeights == nullptr) {
-        return kNoBone;
+    if (attachmentMode == 1) {
+      // Skinned mode: one geometry over all strands, carrying blend data.
+      std::vector<uint32_t> allStrands(totalStrands);
+      for (uint32_t strandIndex = 0; strandIndex < totalStrands; ++strandIndex) {
+        allStrands[strandIndex] = strandIndex;
       }
 
-      float weights[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-      float lastWeight = 1.0f;
-      for (uint32_t i = 0; i + 1 < bonesPerVertex; ++i) {
-        float weight;
-        std::memcpy(&weight, pBlendWeights + static_cast<size_t>(vertexIndex) * blendWeightStride + i * sizeof(float), sizeof(float));
-        weights[i] = weight;
-        lastWeight -= weight;
-      }
-      weights[bonesPerVertex - 1] = lastWeight;
+      entry.geometry = assembleGeometry(allStrands, true, 0);
+      entry.rigidClusters = false;
+      entry.strandCount = totalStrands;
 
-      uint32_t best = 0;
-      for (uint32_t i = 1; i < bonesPerVertex; ++i) {
-        if (weights[i] > weights[best]) {
-          best = i;
-        }
-      }
-
-      if (pBlendIndices == nullptr) {
-        // No index buffer: weights address the bone palette in order.
-        return best;
-      }
-
-      uint8_t boneIndices[4] = { 0, 0, 0, 0 };
-      std::memcpy(boneIndices, pBlendIndices + static_cast<size_t>(vertexIndex) * blendIndicesStride, sizeof(boneIndices));
-
-      return boneIndices[best];
-    };
-
-    const bool rigidClusters = surfaceAttachmentMode() == 0;
-
-    if (rigidClusters) {
-      // Partition strands by their root's dominant bone; each partition
-      // becomes one static cluster carried by that bone's transform.
+      Logger::info(str::format("[Hair Test] Grew ", totalStrands, " skinned strands on a tagged mesh",
+                               hasBlendWeights ? " with skinning" : " without skinning"));
+    } else {
+      // Rigid (and the rigid half of hybrid): partition the primary strands
+      // by their root's dominant bone; each partition becomes one static
+      // cluster carried by that bone's transform.
       std::unordered_map<uint32_t, std::vector<uint32_t>> strandsByBone;
       for (uint32_t strandIndex = 0; strandIndex < strands; ++strandIndex) {
         strandsByBone[decodeDominantBone(rootAttachments[strandIndex].nearestVertex)].push_back(strandIndex);
@@ -1467,25 +1735,27 @@ namespace dxvk {
         entry.clusters.push_back(std::move(cluster));
       }
 
-      entry.rigidClusters = true;
-      entry.strandCount = strands;
+      // Hybrid: the seam strands appended after the primary set become one
+      // skinned geometry with its own BLAS, covering the areas outside the
+      // clusters' core regions.
+      if (attachmentMode == 2 && seamStrands > 0) {
+        std::vector<uint32_t> seamList(seamStrands);
+        for (uint32_t seamIndex = 0; seamIndex < seamStrands; ++seamIndex) {
+          seamList[seamIndex] = strands + seamIndex;
+        }
 
-      Logger::info(str::format("[Hair Test] Grew ", strands, " strands in ", entry.clusters.size(),
-                               " rigid bone clusters on a tagged mesh",
-                               hasBlendWeights ? "" : " (source has no skinning; single rigid cluster)"));
-    } else {
-      // Skinned mode: one geometry over all strands, carrying blend data.
-      std::vector<uint32_t> allStrands(strands);
-      for (uint32_t strandIndex = 0; strandIndex < strands; ++strandIndex) {
-        allStrands[strandIndex] = strandIndex;
+        entry.geometry = assembleGeometry(seamList, true, 0x2000ull);
+        entry.hasSeamSet = true;
+        entry.seamStrandCount = seamStrands;
       }
 
-      entry.geometry = assembleGeometry(allStrands, true, 0);
-      entry.rigidClusters = false;
-      entry.strandCount = strands;
+      entry.rigidClusters = true;
+      entry.strandCount = totalStrands;
 
-      Logger::info(str::format("[Hair Test] Grew ", strands, " skinned strands on a tagged mesh",
-                               hasBlendWeights ? " with skinning" : " without skinning"));
+      Logger::info(str::format("[Hair Test] Grew ", strands, " strands in ", entry.clusters.size(),
+                               " rigid bone clusters", entry.hasSeamSet ? str::format(" + ", seamStrands, " skinned seam strands") : "",
+                               mask != nullptr ? " (mask scatter)" : "", " on a tagged mesh",
+                               hasBlendWeights ? "" : " (source has no skinning; single rigid cluster)"));
     }
 
     return true;
@@ -1901,21 +2171,59 @@ namespace dxvk {
                   static_cast<uint32_t>(m_surfaceHair.size()), totalClusters,
                   m_surfaceStrandsLive, surfaceStrandCount());
 
-      RemixGui::Combo("Attachment", &surfaceAttachmentModeObject(), "Rigid Per-Bone Clusters\0Skinned (Exact Deformation)\0");
+      RemixGui::Combo("Attachment", &surfaceAttachmentModeObject(), "Rigid Per-Bone Clusters\0Skinned (Exact Deformation)\0Hybrid (Rigid + Skinned Seams)\0");
       if (surfaceAttachmentMode() == 0) {
         ImGui::TextWrapped(
           "Each strand is parented to the bone with the highest skinning weight at its root and the "
-          "cluster moves rigidly with that bone - no per-frame rebuild cost. Strands near joints "
-          "blended between bones can drift slightly from the surface.");
-      } else {
+          "cluster moves rigidly with that bone - no per-frame rebuild cost. Exact for single-influence "
+          "meshes (this game's characters).");
+      } else if (surfaceAttachmentMode() == 1) {
         ImGui::TextWrapped(
           "Strand roots inherit the mesh's blend weights and are skinned exactly like the surface. "
           "The hair BLAS rebuilds every frame the pose changes, which costs GPU time at high strand counts.");
+      } else {
+        ImGui::TextWrapped(
+          "Rigid clusters cover each bone's core region (scaled by its influence radius); a separate "
+          "skinned seam set with its own BLAS covers everything outside the cores. On single-influence "
+          "meshes this renders identically to Rigid - its value is for blended, multi-influence content.");
+        RemixGui::DragFloat("Cluster Core Radius Scale", &hybridClusterRadiusScaleObject(), 0.01f, 0.05f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        RemixGui::DragInt("Seam Strand Count", &hybridSeamStrandCountObject(), 100.0f, 0, 200000, "%d", ImGuiSliderFlags_AlwaysClamp);
       }
+
+      RemixGui::Checkbox("Even Scatter (Best Candidate)", &evenScatterObject());
 
       RemixGui::DragInt("Total Strand Budget", &surfaceStrandCountObject(), 100.0f, 1, 500000, "%d", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragFloat("Surface Hair Length", &surfaceHairLengthObject(), 0.01f, 0.001f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragFloat("Surface Strand Radius", &surfaceStrandRadiusObject(), 0.001f, 0.0001f, 100.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+
+      if (RemixGui::CollapsingHeader("Scatter Masks", 0)) {
+        ImGui::Indent();
+
+        ImGui::TextWrapped(
+          "Optional per-texture scatter masks: a copy of the mesh with the no-fur faces deleted (eyes, "
+          "accessories), exported as OBJ from a Remix capture - captures store skinned meshes in rest "
+          "pose, so an edit that only deletes faces stays aligned automatically. Axis conventions and "
+          "origin shifts are corrected by an auto-fit at load; the residual below should be ~0.");
+
+        for (const XXH64_hash_t maskHash : RtxOptions::hairStrandTextures()) {
+          const std::string expectedPath = maskDirectory() + "/" + hashToString(maskHash) + ".obj";
+          const auto maskIt = m_hairMasks.find(maskHash);
+          if (maskIt == m_hairMasks.end()) {
+            ImGui::Text("%s: not checked yet (grows without a mask until seen)", expectedPath.c_str());
+          } else {
+            ImGui::Text("%s: %s", expectedPath.c_str(), maskIt->second.status.c_str());
+          }
+        }
+        if (RtxOptions::hairStrandTextures().empty()) {
+          ImGui::Text("No hair-tagged textures yet.");
+        }
+
+        if (ImGui::Button("Reload Masks (regrows hair)")) {
+          reloadHairMasks();
+        }
+
+        ImGui::Unindent();
+      }
 
       ImGui::Unindent();
     }
