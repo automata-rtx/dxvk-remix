@@ -21,6 +21,7 @@
 */
 #pragma once
 
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 
@@ -81,6 +82,15 @@ namespace dxvk {
     void dispatch(RtxContext* ctx, const Resources::RaytracingOutput& rtOutput);
 
     static bool isLssSupported(const DxvkDevice& device);
+
+    // True while surface hair needs CPU-readable copies of tagged meshes'
+    // geometry. Read by the D3D9 capture (app thread) to route tagged draws'
+    // vertex and index data into dedicated snapshot buffers - the default
+    // capture references ring memory (the UP buffer / RT staging) that later
+    // draws rewrite before the hair pass reads it at frame preparation.
+    static bool wantsSourceSnapshot() {
+      return s_wantsSourceSnapshot.load(std::memory_order_relaxed);
+    }
 
     enum class GeometryModeOption : int {
       Automatic = 0, // LSS when supported, DOTS otherwise
@@ -328,6 +338,9 @@ namespace dxvk {
     std::vector<DrawCallState> m_taggedDrawQueue;
     bool m_submittingHairDraws = false;
     XXH64_hash_t m_surfaceHairParamsHash = 0;
+    // Written at frame preparation (CS thread), read by the D3D9 capture (app
+    // thread) - see wantsSourceSnapshot().
+    static std::atomic<bool> s_wantsSourceSnapshot;
     // Strands currently alive across all surface hair entries, counted against
     // the surfaceStrandCount budget.
     uint32_t m_surfaceStrandsLive = 0;

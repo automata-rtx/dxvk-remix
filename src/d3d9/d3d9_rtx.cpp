@@ -14,6 +14,7 @@
 #include "d3d9_rtx_utils.h"
 #include "d3d9_texture.h"
 #include "../dxvk/rtx_render/rtx_terrain_baker.h"
+#include "../dxvk/rtx_render/rtx_hair_test.h"
 
 #include <cassert>
 #include <cstring>
@@ -119,8 +120,21 @@ namespace dxvk {
     auto processing = [this, &indexCtx, indexCount](const size_t offset, const size_t size) -> D3D9CommonBuffer::RemixIndexBufferMemoizationData {
       D3D9CommonBuffer::RemixIndexBufferMemoizationData result;
 
-      // Get our slice of the staging ring buffer
-      result.slice = m_rtStagingData.alloc(CACHE_LINE_SIZE, size);
+      if (m_hairSnapshotDraw) {
+        // Surface hair reads index data at frame preparation, after the
+        // staging ring has been recycled - give the draw its own buffer.
+        DxvkBufferCreateInfo info;
+        info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        info.access = VK_ACCESS_TRANSFER_READ_BIT;
+        info.size = size;
+        result.slice = DxvkBufferSlice(m_parent->GetDXVKDevice()->createBuffer(
+          info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+          DxvkMemoryStats::Category::RTXBuffer, "hair index snapshot"));
+      } else {
+        // Get our slice of the staging ring buffer
+        result.slice = m_rtStagingData.alloc(CACHE_LINE_SIZE, size);
+      }
 
       // Acquire prevents the staging allocator from re-using this memory
       result.slice.buffer()->acquire(DxvkAccess::Read);
@@ -304,7 +318,27 @@ namespace dxvk {
           const bool isOrphan = !(ctx.buffer.getSliceHandle() == ctx.mappedSlice);
           const bool canUseBuffer = ctx.canUseBuffer && m_forceGeometryCopy == false;
 
-          if (canUseBuffer && !isOrphan) {
+          // Surface hair reads tagged meshes' vertex data on the CPU at frame
+          // preparation - long after this capture, when the ring memory the
+          // paths below reference has been rewritten by later draws. While
+          // hair growth is pending, tagged draws' streams are copied into a
+          // dedicated buffer owned by this draw instead.
+          const bool hairSnapshot = m_hairSnapshotDraw &&
+                                    lookupHash(RtxOptions::hairStrandTextures(),
+                                               m_activeDrawCallState.materialData.getColorTexture().getImageHash());
+
+          if (hairSnapshot) {
+            DxvkBufferCreateInfo info;
+            info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+            info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            info.access = VK_ACCESS_TRANSFER_READ_BIT;
+            info.size = numVertexBytes;
+            streamCopies[element.Stream] = DxvkBufferSlice(m_parent->GetDXVKDevice()->createBuffer(
+              info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+              DxvkMemoryStats::Category::RTXBuffer, "hair vertex snapshot"));
+            memcpy(streamCopies[element.Stream].mapPtr(0), (uint8_t*) ctx.mappedSlice.mapPtr + vertexOffset, numVertexBytes);
+            m_activeDrawCallState.capturedForHairSnapshot = true;
+          } else if (canUseBuffer && !isOrphan) {
             // Use the buffer directly if it is not an orphan
             if (ctx.pVBO != nullptr && ctx.pVBO->NeedsUpload())
               m_parent->FlushBuffer(ctx.pVBO);
@@ -618,6 +652,11 @@ namespace dxvk {
 
     m_forceGeometryCopy = RtxOptions::useBuffersDirectly() == false;
     m_forceGeometryCopy |= m_parent->GetOptions()->allowDiscard == false;
+
+    // Latched once per draw so the index and vertex captures agree even if
+    // the hair pass flips the flag concurrently.
+    m_hairSnapshotDraw = RtxHairTest::wantsSourceSnapshot();
+    m_activeDrawCallState.capturedForHairSnapshot = false;
 
     // The packet we'll send to RtxContext with information about geometry
     RasterGeometry& geoData = m_activeDrawCallState.geometryData;

@@ -761,6 +761,13 @@ struct DrawCallState {
   // since it may be world geometry that should go through reprojection instead.
   bool skyAutoDetected = false;
 
+  // Set when the draw's vertex and index data were copied into dedicated
+  // snapshot buffers at capture time (D3D9Rtx, hair-tagged draws). Surface
+  // hair only grows from snapshot-captured draws: the default capture
+  // references ring memory (the D3D9 UP buffer / RT staging) that later
+  // draws rewrite long before the hair pass reads it at frame preparation.
+  bool capturedForHairSnapshot = false;
+
   void setupCategoriesForTexture();
   void setupCategoriesForGeometry();
   void setupCategoriesForHeuristics(uint32_t prevFrameSeenCamerasCount,

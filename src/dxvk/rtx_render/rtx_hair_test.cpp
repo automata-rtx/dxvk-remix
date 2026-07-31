@@ -640,10 +640,13 @@ namespace dxvk {
     return XXH64(&parameters, sizeof(parameters), 0x48414952u);
   }
 
+  std::atomic<bool> RtxHairTest::s_wantsSourceSnapshot { false };
+
   void RtxHairTest::releaseSurfaceHair() {
     m_surfaceHair.clear();
     m_surfaceStrandsLive = 0;
     m_taggedDrawQueue.clear();
+    s_wantsSourceSnapshot.store(false, std::memory_order_relaxed);
   }
 
   void RtxHairTest::submitSurfaceHairDraws(RtxContext* ctx) {
@@ -670,10 +673,16 @@ namespace dxvk {
     }
 
     if (m_taggedDrawQueue.empty()) {
+      s_wantsSourceSnapshot.store(false, std::memory_order_relaxed);
       return;
     }
 
     ScopedCpuProfileZone();
+
+    // Set while any tagged mesh still needs growing, so the D3D9 capture
+    // routes the next frame's tagged draws into dedicated snapshot buffers
+    // this pass can safely read (see wantsSourceSnapshot()).
+    bool wantSnapshots = false;
 
     // Pass 1: split this frame's tagged draws into meshes that already have
     // hair and new meshes, measuring the new ones for the area split below.
@@ -696,6 +705,15 @@ namespace dxvk {
         if (!it->second.buildFailed) {
           readyDraws.push_back(queueIndex);
         }
+        continue;
+      }
+
+      // Only grow from draws whose data was snapshot-captured: the default
+      // capture references ring memory that later draws in the frame rewrite,
+      // so reading it here would scatter strands over another mesh's bytes.
+      // Requesting snapshots makes the next frame's tagged draws buildable.
+      if (!source.capturedForHairSnapshot) {
+        wantSnapshots = true;
         continue;
       }
 
@@ -748,7 +766,9 @@ namespace dxvk {
           break;
         }
         if (grownThisFrame >= kMaxStrandsGrownPerFrame) {
-          // Amortize: the remaining meshes grow over the following frames.
+          // Amortize: the remaining meshes grow over the following frames,
+          // which need fresh snapshots.
+          wantSnapshots = true;
           break;
         }
 
@@ -769,6 +789,8 @@ namespace dxvk {
         m_surfaceHair.emplace(mesh.cacheKey, std::move(entry));
       }
     }
+
+    s_wantsSourceSnapshot.store(wantSnapshots, std::memory_order_relaxed);
 
     // Pass 3: submit hair draws for every tagged draw whose mesh has hair.
     // Guard: the hair draws carry the tagged texture themselves and must not

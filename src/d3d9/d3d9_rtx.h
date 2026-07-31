@@ -217,6 +217,11 @@ namespace dxvk {
     const bool m_enableDrawCallConversion;
     bool m_rtxInjectTriggered = false;
     bool m_forceGeometryCopy = false;
+    // Latched per draw from RtxHairTest::wantsSourceSnapshot() so the index
+    // and vertex captures of one draw agree; when set, tagged draws' data is
+    // copied into dedicated snapshot buffers the hair pass can read at frame
+    // preparation (ring memory would be rewritten by then).
+    bool m_hairSnapshotDraw = false;
     DWORD m_texcoordIndex = 0;
 
     int m_activeOcclusionQueries = 0;
