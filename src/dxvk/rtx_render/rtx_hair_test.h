@@ -113,10 +113,9 @@ namespace dxvk {
 
     // Surface hair: strands grown across meshes whose color texture is tagged
     // with the rtx.hairStrandTextures category (Game Setup tab). The strands
-    // are generated once in bind pose, carry the source mesh's blend weights,
-    // and are submitted as a skinned draw with the source's bone matrices -
-    // so they deform with the model through Remix's own skinning pipeline,
-    // and are textured by the source's diffuse at each strand's root UV.
+    // are generated once in bind pose, textured by the source's diffuse at
+    // each strand's root UV, and follow the model's animation through the
+    // attachment mode below (rigid per-bone clusters or exact skinning).
     RTX_OPTION_ARGS("rtx.hairTest", int, surfaceAttachmentMode, 0,
                     "How surface hair follows its mesh.\n"
                     "0: Rigid per-bone clusters (default) - strands are grouped by their root's dominant bone and each group is a "
@@ -126,8 +125,10 @@ namespace dxvk {
                     "and BLAS update cost.",
                     args.minValue = 0, args.maxValue = 1);
     RTX_OPTION_ARGS("rtx.hairTest", int, surfaceStrandCount, 60000,
-                    "Number of hair strands scattered across each hair-tagged mesh (area-weighted over its triangles).",
-                    args.minValue = 1, args.maxValue = 300000);
+                    "Total strand budget shared by all hair-tagged meshes, distributed across them by surface area. "
+                    "A tagged texture is often used by many submeshes (a character is typically split into dozens), so a "
+                    "per-mesh count would multiply out of control - the budget is the hard ceiling on strands alive at once.",
+                    args.minValue = 1, args.maxValue = 500000);
     RTX_OPTION_ARGS("rtx.hairTest", float, surfaceHairLength, 2.0f,
                     "Strand length for surface hair, in world units.",
                     args.minValue = 0.001f);
@@ -311,15 +312,24 @@ namespace dxvk {
       // Set when the source mesh could not be read (unmappable buffers or an
       // unsupported layout); the entry is kept to avoid retrying every frame.
       bool buildFailed = false;
+      // Last frame the source mesh was drawn; stale entries are evicted so
+      // their memory and strand budget return.
+      uint32_t lastSeenFrame = 0;
     };
 
     void submitSurfaceHairDraws(RtxContext* ctx);
-    bool buildSurfaceHairGeometry(const DrawCallState& input, XXH64_hash_t cacheKey, SurfaceHairEntry& entry) const;
+    void submitHairForEntry(RtxContext* ctx, const DrawCallState& source, const SurfaceHairEntry& entry);
+    void releaseSurfaceHair();
+    static float measureSurfaceArea(const DrawCallState& input);
+    bool buildSurfaceHairGeometry(const DrawCallState& input, XXH64_hash_t cacheKey, uint32_t strandCount, SurfaceHairEntry& entry) const;
     XXH64_hash_t computeSurfaceHairParamsHash() const;
 
     std::unordered_map<XXH64_hash_t, SurfaceHairEntry> m_surfaceHair;
     std::vector<DrawCallState> m_taggedDrawQueue;
     bool m_submittingHairDraws = false;
     XXH64_hash_t m_surfaceHairParamsHash = 0;
+    // Strands currently alive across all surface hair entries, counted against
+    // the surfaceStrandCount budget.
+    uint32_t m_surfaceStrandsLive = 0;
   };
 }

@@ -530,7 +530,7 @@ namespace dxvk {
   void RtxHairTest::prepareFrame(RtxContext* ctx) {
     if (!enable()) {
       destroyProxyMesh(ctx);
-      m_taggedDrawQueue.clear();
+      releaseSurfaceHair();
       return;
     }
 
@@ -538,7 +538,7 @@ namespace dxvk {
 
     if (desiredGeometry == ActiveGeometry::None) {
       destroyProxyMesh(ctx);
-      m_taggedDrawQueue.clear();
+      releaseSurfaceHair();
       return;
     }
 
@@ -591,6 +591,30 @@ namespace dxvk {
     m_taggedDrawQueue.push_back(input);
   }
 
+  // Identity of a tagged mesh for hair caching. Deliberately NOT the vertex
+  // data hash: this game re-uploads the mesh's vertex stream every frame and
+  // a handful of animated non-position bytes land inside the hashed range, so
+  // the position hash changes every animated frame even though the bind-pose
+  // positions are stable. Keying hair on it regrew the full strand set every
+  // frame (a new random scatter each time) and leaked a new copy of the hair
+  // geometry per frame until memory ran out. The tagged texture is 1:1 with
+  // its mesh in this game, so texture identity plus the vertex/index counts
+  // is the stable key.
+  static XXH64_hash_t computeSurfaceHairCacheKey(const DrawCallState& source, XXH64_hash_t paramsHash) {
+    struct KeyData {
+      XXH64_hash_t textureHash;
+      uint32_t vertexCount;
+      uint32_t indexCount;
+    } key = {
+      source.getMaterialData().getColorTexture().getImageHash(),
+      source.getGeometryData().vertexCount,
+      source.getGeometryData().indexCount,
+    };
+    static_assert(sizeof(KeyData) == 16, "no padding in the hair cache key");
+
+    return XXH64(&key, sizeof(key), paramsHash);
+  }
+
   XXH64_hash_t RtxHairTest::computeSurfaceHairParamsHash() const {
     struct SurfaceParameters {
       int strandCount;
@@ -623,12 +647,33 @@ namespace dxvk {
     return XXH64(&parameters, sizeof(parameters), 0x48414952u);
   }
 
+  void RtxHairTest::releaseSurfaceHair() {
+    m_surfaceHair.clear();
+    m_surfaceStrandsLive = 0;
+    m_taggedDrawQueue.clear();
+  }
+
   void RtxHairTest::submitSurfaceHairDraws(RtxContext* ctx) {
     // Changing any strand parameter regrows all surface hair.
     const XXH64_hash_t paramsHash = computeSurfaceHairParamsHash();
     if (paramsHash != m_surfaceHairParamsHash) {
       m_surfaceHair.clear();
+      m_surfaceStrandsLive = 0;
       m_surfaceHairParamsHash = paramsHash;
+    }
+
+    const uint32_t currentFrame = m_device->getCurrentFrameId();
+
+    // Evict hair whose source mesh has not been drawn for a while (model
+    // despawned or texture untagged) so its memory and strand budget return.
+    constexpr uint32_t kEvictAfterFrames = 300;
+    for (auto it = m_surfaceHair.begin(); it != m_surfaceHair.end();) {
+      if (it->second.lastSeenFrame + kEvictAfterFrames < currentFrame) {
+        m_surfaceStrandsLive -= std::min(m_surfaceStrandsLive, it->second.strandCount);
+        it = m_surfaceHair.erase(it);
+      } else {
+        ++it;
+      }
     }
 
     if (m_taggedDrawQueue.empty()) {
@@ -637,69 +682,113 @@ namespace dxvk {
 
     ScopedCpuProfileZone();
 
-    // Guard: the hair draws submitted below carry the tagged texture
-    // themselves and must not spawn hair recursively.
-    m_submittingHairDraws = true;
+    // Pass 1: split this frame's tagged draws into meshes that already have
+    // hair and new meshes, measuring the new ones for the area split below.
+    struct NewMesh {
+      size_t queueIndex;
+      XXH64_hash_t cacheKey;
+      float area;
+    };
+    std::vector<NewMesh> newMeshes;
+    std::vector<size_t> readyDraws;
+    float newMeshTotalArea = 0.0f;
 
-    for (const DrawCallState& source : m_taggedDrawQueue) {
-      const XXH64_hash_t cacheKey =
-        source.getGeometryData().hashes[HashComponents::VertexPosition] ^ paramsHash;
+    for (size_t queueIndex = 0; queueIndex < m_taggedDrawQueue.size(); ++queueIndex) {
+      const DrawCallState& source = m_taggedDrawQueue[queueIndex];
+      const XXH64_hash_t cacheKey = computeSurfaceHairCacheKey(source, paramsHash);
 
       auto it = m_surfaceHair.find(cacheKey);
-      if (it == m_surfaceHair.end()) {
+      if (it != m_surfaceHair.end()) {
+        it->second.lastSeenFrame = currentFrame;
+        if (!it->second.buildFailed) {
+          readyDraws.push_back(queueIndex);
+        }
+        continue;
+      }
+
+      // The same mesh can be drawn several times in one frame; measure once.
+      bool alreadyQueued = false;
+      for (const NewMesh& queued : newMeshes) {
+        if (queued.cacheKey == cacheKey) {
+          alreadyQueued = true;
+          break;
+        }
+      }
+      if (alreadyQueued) {
+        continue;
+      }
+
+      const float area = measureSurfaceArea(source);
+      if (!(area > 0.0f)) {
+        // Unreadable or degenerate mesh: cache the failure so it is not
+        // re-measured every frame.
         SurfaceHairEntry entry;
-        if (!buildSurfaceHairGeometry(source, cacheKey, entry)) {
+        entry.buildFailed = true;
+        entry.lastSeenFrame = currentFrame;
+        m_surfaceHair.emplace(cacheKey, std::move(entry));
+        continue;
+      }
+
+      newMeshes.push_back({ queueIndex, cacheKey, area });
+      newMeshTotalArea += area;
+    }
+
+    // Pass 2: grow new meshes largest-first, splitting the remaining strand
+    // budget by surface area. Bounded per frame so a burst of tagged meshes
+    // (a character's submeshes all arrive in one frame) grows over a few
+    // frames instead of stalling one frame for seconds.
+    if (!newMeshes.empty() && newMeshTotalArea > 0.0f) {
+      std::sort(newMeshes.begin(), newMeshes.end(),
+                [](const NewMesh& a, const NewMesh& b) { return a.area > b.area; });
+
+      const uint32_t budget = static_cast<uint32_t>(std::max(surfaceStrandCount(), 1));
+      uint32_t remaining = budget > m_surfaceStrandsLive ? budget - m_surfaceStrandsLive : 0u;
+      const uint32_t distributable = remaining;
+
+      constexpr uint32_t kMaxStrandsGrownPerFrame = 30000;
+      uint32_t grownThisFrame = 0;
+
+      for (const NewMesh& mesh : newMeshes) {
+        if (remaining == 0) {
+          ONCE(Logger::info("[Hair Test] Surface hair strand budget is exhausted; remaining tagged meshes stay bare. "
+                            "Raise the total strand budget to cover them."));
+          break;
+        }
+        if (grownThisFrame >= kMaxStrandsGrownPerFrame) {
+          // Amortize: the remaining meshes grow over the following frames.
+          break;
+        }
+
+        const double areaShare = static_cast<double>(mesh.area) / static_cast<double>(newMeshTotalArea);
+        const uint32_t share = static_cast<uint32_t>(static_cast<double>(distributable) * areaShare + 0.5);
+        const uint32_t strandsForMesh = std::min(std::max(share, 1u), remaining);
+
+        SurfaceHairEntry entry;
+        entry.lastSeenFrame = currentFrame;
+        if (!buildSurfaceHairGeometry(m_taggedDrawQueue[mesh.queueIndex], mesh.cacheKey, strandsForMesh, entry)) {
           entry.buildFailed = true;
+        } else {
+          m_surfaceStrandsLive += entry.strandCount;
+          remaining -= std::min(remaining, entry.strandCount);
+          grownThisFrame += entry.strandCount;
+          readyDraws.push_back(mesh.queueIndex);
         }
-        it = m_surfaceHair.emplace(cacheKey, std::move(entry)).first;
+        m_surfaceHair.emplace(mesh.cacheKey, std::move(entry));
       }
+    }
 
-      if (it->second.buildFailed) {
-        continue;
-      }
+    // Pass 3: submit hair draws for every tagged draw whose mesh has hair.
+    // Guard: the hair draws carry the tagged texture themselves and must not
+    // spawn hair recursively.
+    m_submittingHairDraws = true;
 
-      if (!it->second.rigidClusters) {
-        // Skinned mode: the hair draw is the source draw with its geometry
-        // swapped for the grown strands. Material (the source's diffuse,
-        // sampled at each strand's root UV), transforms, and the bone
-        // matrices all carry over, so Remix's own skinning pipeline deforms
-        // the hair with the character.
-        DrawCallState hairDraw = source;
-        hairDraw.modifyGeometryData() = it->second.geometry;
+    for (const size_t queueIndex : readyDraws) {
+      const DrawCallState& source = m_taggedDrawQueue[queueIndex];
+      const XXH64_hash_t cacheKey = computeSurfaceHairCacheKey(source, paramsHash);
 
-        ctx->getSceneManager().submitDrawState(ctx, hairDraw, nullptr);
-        continue;
-      }
-
-      // Rigid mode: each cluster is a static mesh carried by its dominant
-      // bone. The per-frame transform composes the source draw's transform
-      // with the bone's current palette matrix (the same matrices the game
-      // submits for skinning this mesh), so the fur follows the animation
-      // with zero per-frame geometry work - and, since each cluster is an
-      // ordinary moving instance, Remix derives its motion vectors for free.
-      const SkinningData& skinning = source.getSkinningState();
-
-      for (const SurfaceHairCluster& cluster : it->second.clusters) {
-        Matrix4 boneMatrix;
-
-        if (cluster.boneIndex != kNoBone) {
-          if (cluster.boneIndex < skinning.pBoneMatrices.size()) {
-            boneMatrix = skinning.pBoneMatrices[cluster.boneIndex];
-          } else {
-            ONCE(Logger::warn(str::format("[Hair Test] Cluster bone ", cluster.boneIndex,
-                                          " is outside the draw's bone palette (", skinning.pBoneMatrices.size(),
-                                          "); cluster follows the draw transform.")));
-          }
-        }
-
-        DrawCallState hairDraw = source;
-        hairDraw.modifyGeometryData() = cluster.geometry;
-
-        DrawCallTransforms& transforms = hairDraw.modifyTransformData();
-        transforms.objectToWorld = source.getTransformData().objectToWorld * boneMatrix;
-        transforms.objectToView = source.getTransformData().worldToView * transforms.objectToWorld;
-
-        ctx->getSceneManager().submitDrawState(ctx, hairDraw, nullptr);
+      const auto it = m_surfaceHair.find(cacheKey);
+      if (it != m_surfaceHair.end() && !it->second.buildFailed) {
+        submitHairForEntry(ctx, source, it->second);
       }
     }
 
@@ -707,7 +796,169 @@ namespace dxvk {
     m_taggedDrawQueue.clear();
   }
 
-  bool RtxHairTest::buildSurfaceHairGeometry(const DrawCallState& input, XXH64_hash_t cacheKey, SurfaceHairEntry& entry) const {
+  void RtxHairTest::submitHairForEntry(RtxContext* ctx, const DrawCallState& source, const SurfaceHairEntry& entry) {
+    if (!entry.rigidClusters) {
+      // Skinned mode: the hair draw is the source draw with its geometry
+      // swapped for the grown strands. Material (the source's diffuse,
+      // sampled at each strand's root UV), transforms, and the bone
+      // matrices all carry over, so Remix's own skinning pipeline deforms
+      // the hair with the character.
+      DrawCallState hairDraw = source;
+      hairDraw.modifyGeometryData() = entry.geometry;
+      // Strands are solid; without this the source material's alpha test
+      // makes every hair triangle an opacity micromap candidate, and tens of
+      // millions of strand triangles overwhelm the OMM budget instantly.
+      hairDraw.modifyCategoryFlags().set(InstanceCategories::IgnoreOpacityMicromap);
+
+      ctx->getSceneManager().submitDrawState(ctx, hairDraw, nullptr);
+      return;
+    }
+
+    // Rigid mode: each cluster is a static mesh carried by its dominant
+    // bone. The per-frame transform composes the source draw's transform
+    // with the bone's current palette matrix (the same matrices the game
+    // submits for skinning this mesh), so the fur follows the animation
+    // with zero per-frame geometry work - and, since each cluster is an
+    // ordinary moving instance, Remix derives its motion vectors for free.
+    const SkinningData& skinning = source.getSkinningState();
+
+    for (const SurfaceHairCluster& cluster : entry.clusters) {
+      Matrix4 boneMatrix;
+
+      if (cluster.boneIndex != kNoBone) {
+        if (cluster.boneIndex < skinning.pBoneMatrices.size()) {
+          boneMatrix = skinning.pBoneMatrices[cluster.boneIndex];
+        } else {
+          ONCE(Logger::warn(str::format("[Hair Test] Cluster bone ", cluster.boneIndex,
+                                        " is outside the draw's bone palette (", skinning.pBoneMatrices.size(),
+                                        "); cluster follows the draw transform.")));
+        }
+      }
+
+      DrawCallState hairDraw = source;
+      hairDraw.modifyGeometryData() = cluster.geometry;
+      hairDraw.modifyCategoryFlags().set(InstanceCategories::IgnoreOpacityMicromap);
+
+      // The copied draw still carries the source's skinning state, and
+      // geometry caching keys on its bone hash - left in place, every
+      // animation frame would look like a new deformation and force a full
+      // geometry re-process and BLAS rebuild of every cluster (the exact
+      // per-frame cost rigid clusters exist to avoid). The clusters carry no
+      // blend data, so the skinning state is dead weight either way.
+      hairDraw.clearSkinningState();
+
+      DrawCallTransforms& transforms = hairDraw.modifyTransformData();
+      transforms.objectToWorld = source.getTransformData().objectToWorld * boneMatrix;
+      transforms.objectToView = source.getTransformData().worldToView * transforms.objectToWorld;
+
+      ctx->getSceneManager().submitDrawState(ctx, hairDraw, nullptr);
+    }
+  }
+
+  // Total triangle area of a tagged mesh, used to split the strand budget
+  // across meshes. Returns 0 for meshes hair cannot grow on (unreadable
+  // buffers or an unsupported layout), mirroring buildSurfaceHairGeometry's
+  // guards so a mesh that measures positive also builds.
+  float RtxHairTest::measureSurfaceArea(const DrawCallState& input) {
+    using namespace rtxcr::geometry;
+
+    const RasterGeometry& source = input.getGeometryData();
+
+    const VkFormat positionFormat = source.positionBuffer.vertexFormat();
+    if (positionFormat != VK_FORMAT_R32G32B32_SFLOAT && positionFormat != VK_FORMAT_R32G32B32A32_SFLOAT) {
+      Logger::warn(str::format("[Hair Test] Tagged mesh has unsupported position format ", positionFormat, "; no hair grown."));
+      return 0.0f;
+    }
+
+    if (source.topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST && source.topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP) {
+      Logger::warn(str::format("[Hair Test] Tagged mesh has unsupported topology ", source.topology, "; no hair grown."));
+      return 0.0f;
+    }
+
+    const uint8_t* pPositions = static_cast<const uint8_t*>(source.positionBuffer.mapPtr(source.positionBuffer.offsetFromSlice()));
+    if (pPositions == nullptr || source.positionBuffer.isPendingGpuWrite()) {
+      Logger::warn("[Hair Test] Tagged mesh vertex data is not CPU-readable; no hair grown.");
+      return 0.0f;
+    }
+    const uint32_t positionStride = source.positionBuffer.stride();
+
+    const uint16_t* pIndices16 = nullptr;
+    const uint32_t* pIndices32 = nullptr;
+    uint32_t indexCount = 0;
+
+    if (source.indexBuffer.defined() && source.indexCount > 0) {
+      const void* pIndexData = source.indexBuffer.mapPtr(source.indexBuffer.offsetFromSlice());
+      if (pIndexData == nullptr) {
+        Logger::warn("[Hair Test] Tagged mesh index data is not CPU-readable; no hair grown.");
+        return 0.0f;
+      }
+      if (source.indexBuffer.indexType() == VK_INDEX_TYPE_UINT16) {
+        pIndices16 = static_cast<const uint16_t*>(pIndexData);
+      } else {
+        pIndices32 = static_cast<const uint32_t*>(pIndexData);
+      }
+      indexCount = source.indexCount;
+    } else {
+      indexCount = source.vertexCount;
+    }
+
+    const auto readIndex = [&](uint32_t i) -> uint32_t {
+      if (pIndices16 != nullptr) {
+        return pIndices16[i];
+      }
+      if (pIndices32 != nullptr) {
+        return pIndices32[i];
+      }
+      return i;
+    };
+
+    const auto readPosition = [&](uint32_t vertexIndex) {
+      math::float3 result;
+      std::memcpy(&result, pPositions + static_cast<size_t>(vertexIndex) * positionStride, 3 * sizeof(float));
+      return result;
+    };
+
+    const bool isStrip = source.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    const uint32_t triangleCount = isStrip
+      ? (indexCount >= 3 ? indexCount - 2 : 0)
+      : indexCount / 3;
+
+    float totalArea = 0.0f;
+
+    for (uint32_t triangleIndex = 0; triangleIndex < triangleCount; ++triangleIndex) {
+      uint32_t i0, i1, i2;
+      if (isStrip) {
+        i0 = readIndex(triangleIndex);
+        i1 = readIndex(triangleIndex + 1);
+        i2 = readIndex(triangleIndex + 2);
+      } else {
+        i0 = readIndex(triangleIndex * 3);
+        i1 = readIndex(triangleIndex * 3 + 1);
+        i2 = readIndex(triangleIndex * 3 + 2);
+      }
+
+      if (i0 >= source.vertexCount || i1 >= source.vertexCount || i2 >= source.vertexCount ||
+          i0 == i1 || i1 == i2 || i0 == i2) {
+        continue;
+      }
+
+      const math::float3 p0 = readPosition(i0);
+      const math::float3 p1 = readPosition(i1);
+      const math::float3 p2 = readPosition(i2);
+      const math::float3 crossProduct = math::cross(p1 - p0, p2 - p0);
+      const float area = 0.5f * std::sqrt(math::dot(crossProduct, crossProduct));
+
+      if (!(area > 1e-10f) || !std::isfinite(area)) {
+        continue;
+      }
+
+      totalArea += area;
+    }
+
+    return totalArea;
+  }
+
+  bool RtxHairTest::buildSurfaceHairGeometry(const DrawCallState& input, XXH64_hash_t cacheKey, uint32_t strandCount, SurfaceHairEntry& entry) const {
     using namespace rtxcr::geometry;
 
     const RasterGeometry& source = input.getGeometryData();
@@ -851,7 +1102,7 @@ namespace dxvk {
     // Scatter strand roots area-weighted across the triangles and grow each
     // strand in bind pose, exactly like the test sphere's strands but rooted
     // on the mesh surface along its interpolated normal.
-    const uint32_t strands = static_cast<uint32_t>(std::max(surfaceStrandCount(), 1));
+    const uint32_t strands = std::max(strandCount, 1u);
     const uint32_t segmentsEach = static_cast<uint32_t>(std::clamp(segmentsPerStrand(), 1, 16));
     const uint32_t totalSegments = strands * segmentsEach;
 
@@ -1622,15 +1873,18 @@ namespace dxvk {
 
       ImGui::TextWrapped(
         "Tag a model's texture with the 'Grow Hair Strands' category in the Game Setup tab and hair "
-        "grows across every mesh drawn with it, colored by that texture and deforming with the model's "
-        "skinning. Strand shape uses the shared parameters below.");
+        "grows across every mesh drawn with it, colored by that texture and following the model's "
+        "animation. The strand budget below is shared by all tagged meshes, split by surface area "
+        "(a character is typically dozens of submeshes), and large batches grow over a few frames. "
+        "Strand shape uses the shared parameters below.");
 
       uint32_t totalClusters = 0;
       for (const auto& [meshHash, meshEntry] : m_surfaceHair) {
         totalClusters += static_cast<uint32_t>(meshEntry.clusters.size());
       }
-      ImGui::Text("Hair-grown meshes this session: %u (%u bone clusters)",
-                  static_cast<uint32_t>(m_surfaceHair.size()), totalClusters);
+      ImGui::Text("Hair-grown meshes: %u (%u bone clusters), strands: %u / %d budget",
+                  static_cast<uint32_t>(m_surfaceHair.size()), totalClusters,
+                  m_surfaceStrandsLive, surfaceStrandCount());
 
       RemixGui::Combo("Attachment", &surfaceAttachmentModeObject(), "Rigid Per-Bone Clusters\0Skinned (Exact Deformation)\0");
       if (surfaceAttachmentMode() == 0) {
@@ -1644,7 +1898,7 @@ namespace dxvk {
           "The hair BLAS rebuilds every frame the pose changes, which costs GPU time at high strand counts.");
       }
 
-      RemixGui::DragInt("Strands Per Mesh", &surfaceStrandCountObject(), 100.0f, 1, 300000, "%d", ImGuiSliderFlags_AlwaysClamp);
+      RemixGui::DragInt("Total Strand Budget", &surfaceStrandCountObject(), 100.0f, 1, 500000, "%d", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragFloat("Surface Hair Length", &surfaceHairLengthObject(), 0.01f, 0.001f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragFloat("Surface Strand Radius", &surfaceStrandRadiusObject(), 0.001f, 0.0001f, 100.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
 

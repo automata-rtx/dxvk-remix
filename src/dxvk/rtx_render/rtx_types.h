@@ -700,6 +700,15 @@ struct DrawCallState {
     return skinningData;
   }
 
+  // Detaches the draw from its source's skinning. Geometry caching keys on the
+  // bone hash, so a draw that reuses static geometry but carries an animated
+  // source's bones would be treated as newly-deformed every frame (full
+  // geometry re-processing and BLAS rebuild) instead of a transform update.
+  void clearSkinningState() {
+    skinningData = SkinningData();
+    futureSkinningData = Future<SkinningData>();
+  }
+
   const FogState& getFogState() const {
     return fogState;
   }
