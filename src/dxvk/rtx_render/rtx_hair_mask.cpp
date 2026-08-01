@@ -614,47 +614,23 @@ namespace dxvk {
   // Alignment
   // -------------------------------------------------------------------------
 
-  void alignHairMaskToLiveMesh(HairMaskMesh& mask, const HairPointGrid& liveGrid) {
+  void alignHairMaskToLiveMesh(HairMaskMesh& mask, const HairPointGrid& liveGrid,
+                               HairMaskMirrorMode mirrorMode) {
     if (!mask.loaded || liveGrid.empty()) {
       return;
     }
 
-    // Size references. The RMS radius ratio estimates the export's uniform
-    // scale (a capture edited at 0.01x viewer scale exports 100x too small);
-    // the live RMS radius is also the yardstick residuals are judged by.
+    // Live-side references, shared by both handedness fits. The RMS radius
+    // is the yardstick residuals are judged by (and one scale estimate).
     const HairMaskVec3 liveCentroid = liveGrid.centroid();
     double liveRmsSq = 0.0;
     for (const HairMaskVec3& p : liveGrid.points()) {
       liveRmsSq += lengthSq(sub(p, liveCentroid));
     }
     const float liveRms = static_cast<float>(std::sqrt(liveRmsSq / static_cast<double>(liveGrid.size())));
-
-    double mx = 0.0, my = 0.0, mz = 0.0;
-    for (const HairMaskVec3& p : mask.positions) {
-      mx += p.x; my += p.y; mz += p.z;
-    }
-    const double invCount = 1.0 / static_cast<double>(mask.positions.size());
-    const HairMaskVec3 maskCentroid {
-      static_cast<float>(mx * invCount), static_cast<float>(my * invCount), static_cast<float>(mz * invCount)
-    };
-    double maskRmsSq = 0.0;
-    for (const HairMaskVec3& p : mask.positions) {
-      maskRmsSq += lengthSq(sub(p, maskCentroid));
-    }
-    const double maskRms = std::sqrt(maskRmsSq * invCount);
-    if (!(maskRms > 1e-12) || !(liveRms > 1e-12f)) {
+    if (!(liveRms > 1e-12f)) {
       mask.status += "; alignment failed (degenerate geometry)";
       return;
-    }
-    const double initialScale = static_cast<double>(liveRms) / maskRms;
-
-    // Sample a subset of mask vertices for correspondences and scoring.
-    const size_t sampleCount = std::min<size_t>(mask.positions.size(), 512);
-    const size_t sampleStep = std::max<size_t>(mask.positions.size() / sampleCount, 1);
-    std::vector<HairMaskVec3> samples;
-    samples.reserve(sampleCount);
-    for (size_t i = 0; i < mask.positions.size(); i += sampleStep) {
-      samples.push_back(mask.positions[i]);
     }
 
     // Bounds of the live points: queries far outside cannot have a nearby
@@ -682,8 +658,16 @@ namespace dxvk {
       return liveGrid.nearest(p, distanceOut);
     };
 
+    double liveFrame[3][3];
+    double liveEigenvalues[3];
+    principalFrame(liveGrid.points().data(), liveGrid.size(), liveCentroid, liveFrame, liveEigenvalues);
+
+    static const std::vector<AxisCandidate> axisCandidates = buildAxisCandidates();
+
+    // Scratch shared by the scoring and ICP lambdas; fitPositions refills
+    // `samples` for the handedness it is working on.
+    std::vector<HairMaskVec3> samples;
     std::vector<float> distances;
-    distances.reserve(samples.size());
     const auto scoreMedian = [&](const Similarity& transform) -> float {
       distances.clear();
       for (const HairMaskVec3& sample : samples) {
@@ -695,137 +679,6 @@ namespace dxvk {
       return distances[distances.size() / 2];
     };
 
-    // Principal frames of both point sets, shared by the scale hypotheses
-    // and the PCA rotation seeds below.
-    double maskFrame[3][3], liveFrame[3][3];
-    double maskEigenvalues[3], liveEigenvalues[3];
-    principalFrame(mask.positions.data(), mask.positions.size(), maskCentroid, maskFrame, maskEigenvalues);
-    principalFrame(liveGrid.points().data(), liveGrid.size(), liveCentroid, liveFrame, liveEigenvalues);
-
-    // Stage 1: score every seed rotation under each scale hypothesis with a
-    // centroid translation; keep the best few as ICP starting points.
-    // Three scales, because no single estimate survives every authoring
-    // accident: the RMS-radius ratio is unbiased only when the mask covers
-    // most of the mesh (a large cut shrinks the mask's radius and inflates
-    // the ratio); 1.0 is exactly right whenever the export kept the
-    // capture's units; and the median of the per-principal-axis extent
-    // ratios is robust to a cut along ONE axis, since the other two axes
-    // still measure the true scale.
-    static const std::vector<AxisCandidate> axisCandidates = buildAxisCandidates();
-
-    double scaleHypotheses[3] = { initialScale, 1.0, initialScale };
-    if (maskEigenvalues[0] > 1e-12 && maskEigenvalues[1] > 1e-12 && maskEigenvalues[2] > 1e-12) {
-      double ratios[3];
-      for (int k = 0; k < 3; ++k) {
-        ratios[k] = std::sqrt(std::max(liveEigenvalues[k], 0.0) / maskEigenvalues[k]);
-      }
-      if (ratios[0] > ratios[1]) std::swap(ratios[0], ratios[1]);
-      if (ratios[1] > ratios[2]) std::swap(ratios[1], ratios[2]);
-      if (ratios[0] > ratios[1]) std::swap(ratios[0], ratios[1]);
-      if (std::isfinite(ratios[1]) && ratios[1] > 1e-12) {
-        scaleHypotheses[2] = ratios[1];
-      }
-    }
-    int scaleCount = 0;
-    double uniqueScales[3];
-    for (const double hypothesis : scaleHypotheses) {
-      bool duplicate = false;
-      for (int k = 0; k < scaleCount; ++k) {
-        duplicate = duplicate || std::fabs(hypothesis - uniqueScales[k]) < 0.01 * uniqueScales[k];
-      }
-      if (!duplicate) {
-        uniqueScales[scaleCount++] = hypothesis;
-      }
-    }
-
-    struct Seed {
-      Similarity transform;
-      float median;
-      const char* name;
-    };
-    std::vector<Seed> seeds;
-
-    // The as-exported placement first: an export with correct settings puts
-    // every mask vertex bit-exactly on its live source vertex, and no
-    // centroid adjustment must then perturb it - the centroid seeds below
-    // are biased by however much the mask's deleted faces move its centroid
-    // off the full mesh's.
-    {
-      Similarity identity;
-      seeds.push_back({ identity, scoreMedian(identity), "as exported" });
-    }
-
-    for (const AxisCandidate& axis : axisCandidates) {
-      for (int scaleIndex = 0; scaleIndex < scaleCount; ++scaleIndex) {
-        Similarity transform;
-        for (int k = 0; k < 9; ++k) {
-          transform.r[k] = axis.m[k];
-        }
-        transform.s = uniqueScales[scaleIndex];
-        const HairMaskVec3 rotatedCentroid = applyAxis(axis, maskCentroid);
-        transform.t[0] = liveCentroid.x - transform.s * rotatedCentroid.x;
-        transform.t[1] = liveCentroid.y - transform.s * rotatedCentroid.y;
-        transform.t[2] = liveCentroid.z - transform.s * rotatedCentroid.z;
-        seeds.push_back({ transform, scoreMedian(transform), axis.name });
-      }
-    }
-
-    // PCA seeds: rotate the mask's principal frame onto the live mesh's.
-    // This is what catches arbitrary rotations baked into an export (an
-    // applied object transform) that no axis permutation can represent. The
-    // per-axis sign ambiguity gives four proper-rotation candidates.
-    {
-      for (int signBits = 0; signBits < 4; ++signBits) {
-        const double sign0 = (signBits & 1) != 0 ? -1.0 : 1.0;
-        const double sign1 = (signBits & 2) != 0 ? -1.0 : 1.0;
-        const double sign2 = sign0 * sign1; // keep det = +1
-        const double signs[3] = { sign0, sign1, sign2 };
-
-        for (int scaleIndex = 0; scaleIndex < scaleCount; ++scaleIndex) {
-          Similarity transform;
-          // R = liveFrame * diag(signs) * maskFrame^T.
-          for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-              double sum = 0.0;
-              for (int k = 0; k < 3; ++k) {
-                sum += liveFrame[r][k] * signs[k] * maskFrame[c][k];
-              }
-              transform.r[r * 3 + c] = sum;
-            }
-          }
-          transform.s = uniqueScales[scaleIndex];
-          const double rc[3] = {
-            transform.r[0] * maskCentroid.x + transform.r[1] * maskCentroid.y + transform.r[2] * maskCentroid.z,
-            transform.r[3] * maskCentroid.x + transform.r[4] * maskCentroid.y + transform.r[5] * maskCentroid.z,
-            transform.r[6] * maskCentroid.x + transform.r[7] * maskCentroid.y + transform.r[8] * maskCentroid.z,
-          };
-          transform.t[0] = liveCentroid.x - transform.s * rc[0];
-          transform.t[1] = liveCentroid.y - transform.s * rc[1];
-          transform.t[2] = liveCentroid.z - transform.s * rc[2];
-          seeds.push_back({ transform, scoreMedian(transform), "pca" });
-        }
-      }
-    }
-
-    std::sort(seeds.begin(), seeds.end(), [](const Seed& a, const Seed& b) { return a.median < b.median; });
-
-    // Stage 2: similarity ICP from the best seeds. Each iteration pairs
-    // sampled mask vertices with their nearest live vertex, trims the worst
-    // fifth (edited-away regions, early mismatches), and re-solves the FULL
-    // transform from the original sample positions - absolute re-solves
-    // cannot accumulate drift. Mask vertices are unmoved copies of live
-    // vertices, so a mask that belongs to this mesh converges to ~zero
-    // residual regardless of the export's scale, axes or baked transforms.
-    Similarity best = seeds[0].transform;
-    float bestMedian = seeds[0].median;
-    const char* bestName = seeds[0].name;
-
-    // Refine EVERY seed: the pre-ICP score cannot rank reliably - a
-    // wrong-scale placement that collapses the mask inside the surface
-    // cloud scores better than a correct-scale start still offset by the
-    // cut's centroid bias, yet only the latter converges to the true fit.
-    // Alignment runs once per mask load, so the extra polish is cheap.
-    const size_t startCount = seeds.size();
     struct Correspondence {
       float distance;
       uint32_t sample;
@@ -890,24 +743,213 @@ namespace dxvk {
       return std::make_pair(current, currentMedian);
     };
 
-    for (size_t start = 0; start < startCount; ++start) {
-      const auto [refined, refinedMedian] = runIcp(seeds[start].transform, seeds[start].median);
-      if (refinedMedian < bestMedian) {
-        best = refined;
-        bestMedian = refinedMedian;
-        bestName = seeds[start].name;
+    // One full seeded-and-refined fit of a position set (one handedness).
+    struct Fit {
+      Similarity transform;
+      float median = 3.4e38f;
+      const char* name = "";
+      bool ok = false;
+    };
+    const auto fitPositions = [&](const std::vector<HairMaskVec3>& positions) -> Fit {
+      Fit fit;
+
+      double mx = 0.0, my = 0.0, mz = 0.0;
+      for (const HairMaskVec3& p : positions) {
+        mx += p.x; my += p.y; mz += p.z;
       }
-      if (bestMedian <= 1e-5f * liveRms) {
-        break; // no better fit exists
+      const double invCount = 1.0 / static_cast<double>(positions.size());
+      const HairMaskVec3 maskCentroid {
+        static_cast<float>(mx * invCount), static_cast<float>(my * invCount), static_cast<float>(mz * invCount)
+      };
+      double maskRmsSq = 0.0;
+      for (const HairMaskVec3& p : positions) {
+        maskRmsSq += lengthSq(sub(p, maskCentroid));
       }
+      const double maskRms = std::sqrt(maskRmsSq * invCount);
+      if (!(maskRms > 1e-12)) {
+        return fit;
+      }
+      const double initialScale = static_cast<double>(liveRms) / maskRms;
+
+      // Sample a subset of mask vertices for correspondences and scoring.
+      const size_t sampleCount = std::min<size_t>(positions.size(), 512);
+      const size_t sampleStep = std::max<size_t>(positions.size() / sampleCount, 1);
+      samples.clear();
+      for (size_t i = 0; i < positions.size(); i += sampleStep) {
+        samples.push_back(positions[i]);
+      }
+
+      double maskFrame[3][3];
+      double maskEigenvalues[3];
+      principalFrame(positions.data(), positions.size(), maskCentroid, maskFrame, maskEigenvalues);
+
+      // Three scale hypotheses, because no single estimate survives every
+      // authoring accident: the RMS-radius ratio is unbiased only when the
+      // mask covers most of the mesh (a large cut shrinks the mask's radius
+      // and inflates the ratio); 1.0 is exactly right whenever the export
+      // kept the capture's units; and the median of the per-principal-axis
+      // extent ratios is robust to a cut along ONE axis, since the other
+      // two axes still measure the true scale.
+      double scaleHypotheses[3] = { initialScale, 1.0, initialScale };
+      if (maskEigenvalues[0] > 1e-12 && maskEigenvalues[1] > 1e-12 && maskEigenvalues[2] > 1e-12) {
+        double ratios[3];
+        for (int k = 0; k < 3; ++k) {
+          ratios[k] = std::sqrt(std::max(liveEigenvalues[k], 0.0) / maskEigenvalues[k]);
+        }
+        if (ratios[0] > ratios[1]) std::swap(ratios[0], ratios[1]);
+        if (ratios[1] > ratios[2]) std::swap(ratios[1], ratios[2]);
+        if (ratios[0] > ratios[1]) std::swap(ratios[0], ratios[1]);
+        if (std::isfinite(ratios[1]) && ratios[1] > 1e-12) {
+          scaleHypotheses[2] = ratios[1];
+        }
+      }
+      int scaleCount = 0;
+      double uniqueScales[3];
+      for (const double hypothesis : scaleHypotheses) {
+        bool duplicate = false;
+        for (int k = 0; k < scaleCount; ++k) {
+          duplicate = duplicate || std::fabs(hypothesis - uniqueScales[k]) < 0.01 * uniqueScales[k];
+        }
+        if (!duplicate) {
+          uniqueScales[scaleCount++] = hypothesis;
+        }
+      }
+
+      struct Seed {
+        Similarity transform;
+        float median;
+        const char* name;
+      };
+      std::vector<Seed> seeds;
+
+      // The as-exported placement first: an export with correct settings
+      // puts every mask vertex bit-exactly on its live source vertex, and
+      // no centroid adjustment must then perturb it - the centroid seeds
+      // below are biased by however much the mask's deleted faces move its
+      // centroid off the full mesh's.
+      {
+        Similarity identity;
+        seeds.push_back({ identity, scoreMedian(identity), "as exported" });
+      }
+
+      for (const AxisCandidate& axis : axisCandidates) {
+        for (int scaleIndex = 0; scaleIndex < scaleCount; ++scaleIndex) {
+          Similarity transform;
+          for (int k = 0; k < 9; ++k) {
+            transform.r[k] = axis.m[k];
+          }
+          transform.s = uniqueScales[scaleIndex];
+          const HairMaskVec3 rotatedCentroid = applyAxis(axis, maskCentroid);
+          transform.t[0] = liveCentroid.x - transform.s * rotatedCentroid.x;
+          transform.t[1] = liveCentroid.y - transform.s * rotatedCentroid.y;
+          transform.t[2] = liveCentroid.z - transform.s * rotatedCentroid.z;
+          seeds.push_back({ transform, scoreMedian(transform), axis.name });
+        }
+      }
+
+      // PCA seeds: rotate the mask's principal frame onto the live mesh's.
+      // This is what catches arbitrary rotations baked into an export (an
+      // applied object transform) that no axis permutation can represent.
+      // The per-axis sign ambiguity gives four proper-rotation candidates.
+      for (int signBits = 0; signBits < 4; ++signBits) {
+        const double sign0 = (signBits & 1) != 0 ? -1.0 : 1.0;
+        const double sign1 = (signBits & 2) != 0 ? -1.0 : 1.0;
+        const double sign2 = sign0 * sign1; // keep det = +1
+        const double signs[3] = { sign0, sign1, sign2 };
+
+        for (int scaleIndex = 0; scaleIndex < scaleCount; ++scaleIndex) {
+          Similarity transform;
+          // R = liveFrame * diag(signs) * maskFrame^T.
+          for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+              double sum = 0.0;
+              for (int k = 0; k < 3; ++k) {
+                sum += liveFrame[r][k] * signs[k] * maskFrame[c][k];
+              }
+              transform.r[r * 3 + c] = sum;
+            }
+          }
+          transform.s = uniqueScales[scaleIndex];
+          const double rc[3] = {
+            transform.r[0] * maskCentroid.x + transform.r[1] * maskCentroid.y + transform.r[2] * maskCentroid.z,
+            transform.r[3] * maskCentroid.x + transform.r[4] * maskCentroid.y + transform.r[5] * maskCentroid.z,
+            transform.r[6] * maskCentroid.x + transform.r[7] * maskCentroid.y + transform.r[8] * maskCentroid.z,
+          };
+          transform.t[0] = liveCentroid.x - transform.s * rc[0];
+          transform.t[1] = liveCentroid.y - transform.s * rc[1];
+          transform.t[2] = liveCentroid.z - transform.s * rc[2];
+          seeds.push_back({ transform, scoreMedian(transform), "pca" });
+        }
+      }
+
+      std::sort(seeds.begin(), seeds.end(), [](const Seed& a, const Seed& b) { return a.median < b.median; });
+
+      // Refine EVERY seed with trimmed ICP re-solving the FULL transform
+      // from the original sample positions (absolute re-solves cannot
+      // accumulate drift). The pre-ICP score cannot rank reliably - a
+      // wrong-scale placement that collapses the mask inside the surface
+      // cloud scores better than a correct-scale start still offset by the
+      // cut's centroid bias, yet only the latter converges to the true
+      // fit. Alignment runs once per mask load, so the polish is cheap.
+      fit.transform = seeds[0].transform;
+      fit.median = seeds[0].median;
+      fit.name = seeds[0].name;
+      fit.ok = true;
+      for (const Seed& seed : seeds) {
+        const auto [refined, refinedMedian] = runIcp(seed.transform, seed.median);
+        if (refinedMedian < fit.median) {
+          fit.transform = refined;
+          fit.median = refinedMedian;
+          fit.name = seed.name;
+        }
+        if (fit.median <= 1e-5f * liveRms) {
+          break; // no better fit exists
+        }
+      }
+      return fit;
+    };
+
+    // Fit the requested handednesses. Exports can bake a reflection, and on
+    // a bilaterally symmetric character the reflected mask fits the MIRROR
+    // pose almost perfectly with a proper rotation - the authored cut then
+    // lands on the wrong side. A genuine unmirrored export is bit-exact and
+    // cannot lose the comparison; ties (a perfectly symmetric mesh) prefer
+    // as-authored, and the forced modes decide the tie by hand.
+    Fit asAuthored, mirroredFit;
+    std::vector<HairMaskVec3> mirroredPositions;
+    if (mirrorMode != HairMaskMirrorMode::Mirrored) {
+      asAuthored = fitPositions(mask.positions);
+    }
+    if (mirrorMode != HairMaskMirrorMode::AsAuthored) {
+      mirroredPositions.reserve(mask.positions.size());
+      for (const HairMaskVec3& p : mask.positions) {
+        mirroredPositions.push_back({ -p.x, p.y, p.z });
+      }
+      mirroredFit = fitPositions(mirroredPositions);
     }
 
-    // Apply the winning fit to all positions and (rotation only) normals.
+    const bool useMirrored = mirrorMode == HairMaskMirrorMode::Mirrored ||
+                             (mirrorMode == HairMaskMirrorMode::Auto && mirroredFit.ok &&
+                              (!asAuthored.ok || mirroredFit.median < asAuthored.median));
+    const Fit& chosen = useMirrored ? mirroredFit : asAuthored;
+    if (!chosen.ok) {
+      mask.status += "; alignment failed (degenerate geometry)";
+      return;
+    }
+
+    // Apply the winning fit to all positions and (rotation only) normals,
+    // mirroring first when that handedness won.
     for (HairMaskVec3& p : mask.positions) {
-      p = best.apply(p);
+      if (useMirrored) {
+        p.x = -p.x;
+      }
+      p = chosen.transform.apply(p);
     }
     for (HairMaskVec3& n : mask.normals) {
-      n = best.rotate(n);
+      if (useMirrored) {
+        n.x = -n.x;
+      }
+      n = chosen.transform.rotate(n);
       const float len = std::sqrt(lengthSq(n));
       if (len > 1e-6f) {
         n.x /= len; n.y /= len; n.z /= len;
@@ -915,9 +957,10 @@ namespace dxvk {
     }
 
     // Full residual statistics with the fit applied.
+    const size_t statStep = std::max<size_t>(mask.positions.size() / std::min<size_t>(mask.positions.size(), 512), 1);
     float maxResidual = 0.0f;
     distances.clear();
-    for (size_t i = 0; i < mask.positions.size(); i += sampleStep) {
+    for (size_t i = 0; i < mask.positions.size(); i += statStep) {
       float d = 0.0f;
       liveGrid.nearest(mask.positions[i], &d);
       distances.push_back(d);
@@ -926,8 +969,9 @@ namespace dxvk {
     std::nth_element(distances.begin(), distances.begin() + distances.size() / 2, distances.end());
 
     mask.aligned = true;
-    mask.alignmentName = bestName;
-    mask.alignmentScale = static_cast<float>(best.s);
+    mask.mirrored = useMirrored;
+    mask.alignmentName = chosen.name;
+    mask.alignmentScale = static_cast<float>(chosen.transform.s);
     mask.medianResidual = distances.empty() ? -1.0f : distances[distances.size() / 2];
     mask.maxResidual = maxResidual;
     mask.liveRmsRadius = liveRms;
@@ -937,11 +981,25 @@ namespace dxvk {
     // guards the residual: a mask collapsed deep inside (or blown far
     // beyond) the surface cloud can sit near many vertices without covering
     // anything.
-    const double transformedSpread = best.s * maskRms;
+    double transformedSpreadSq = 0.0;
+    {
+      HairMaskVec3 alignedCentroid {};
+      for (const HairMaskVec3& p : mask.positions) {
+        alignedCentroid.x += p.x; alignedCentroid.y += p.y; alignedCentroid.z += p.z;
+      }
+      const float inv = 1.0f / static_cast<float>(mask.positions.size());
+      alignedCentroid.x *= inv; alignedCentroid.y *= inv; alignedCentroid.z *= inv;
+      for (const HairMaskVec3& p : mask.positions) {
+        transformedSpreadSq += lengthSq(sub(p, alignedCentroid));
+      }
+      transformedSpreadSq /= static_cast<double>(mask.positions.size());
+    }
+    const double transformedSpread = std::sqrt(transformedSpreadSq);
     const bool spreadSane = transformedSpread > 0.1 * liveRms && transformedSpread < 10.0 * liveRms;
     mask.wellFitted = spreadSane && mask.medianResidual >= 0.0f && mask.medianResidual <= 0.02f * liveRms;
-    mask.status += "; aligned (seed " + std::string(bestName)
+    mask.status += "; aligned (seed " + std::string(chosen.name)
                  + ", scale " + std::to_string(mask.alignmentScale)
+                 + (useMirrored ? ", mirrored export detected" : "")
                  + "), median residual " + std::to_string(mask.medianResidual)
                  + ", max " + std::to_string(mask.maxResidual)
                  + " (mesh RMS radius " + std::to_string(liveRms) + ")"

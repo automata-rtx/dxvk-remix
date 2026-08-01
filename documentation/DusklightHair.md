@@ -176,6 +176,16 @@ Runtime (`rtx_hair_mask.{h,cpp}`):
   copies of live vertices, a correct export converges to ~zero residual
   under any settings; median/max residual, the recovered scale and the mesh
   RMS radius are reported in the status line.
+- **Both handednesses are fitted** (`rtx.hairTest.maskMirrorMode`, default
+  Auto). Exports can bake a reflection - a handedness-flipping axis
+  convention or negative scale - and on a bilaterally symmetric character
+  the reflected mask fits the MIRROR pose almost perfectly with a proper
+  rotation, which grew the authored cut on the wrong side of Wolf Link.
+  Auto fits the mask as-loaded and mirrored and keeps the strictly closer
+  one: a genuine unmirrored export is bit-exact and cannot lose. A
+  PERFECTLY symmetric mesh ties (geometry cannot decide), the tie prefers
+  as-authored, and the overlay's Mask Handedness combo forces either way;
+  the status line says "mirrored" when the flip was applied.
 - **Fitted per mesh, on a copy.** Several meshes can share one tagged
   texture (Wolf Link plus a small second piece); each build fits its own
   copy of the mask against its own live vertices. A mesh the mask does not
@@ -253,6 +263,7 @@ If this gets re-implemented for upstream Remix:
 | `hybridSeamStrandCount` | 15000 | extra strands for the hybrid's skinned seam set |
 | `evenScatter` | true | best-candidate scattering |
 | `maskDirectory` | `hair_masks` | scatter mask directory, relative to the game exe |
+| `maskMirrorMode` | 0 | mask handedness: 0 auto-detect, 1 as authored, 2 force mirrored |
 | `surfaceHairLength` / `surfaceStrandRadius` | 2.0 / 0.02 | strand shape (plus the shared jitter/frizz/curl/droop set) |
 
 Sphere-demo options (strand shape, BCSDF material, placement) are documented

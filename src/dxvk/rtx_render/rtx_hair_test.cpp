@@ -641,6 +641,7 @@ namespace dxvk {
       evenScatter() ? 1 : 0,
       hybridClusterRadiusScale(),
       hybridSeamStrandCount(),
+      maskMirrorMode(),
     };
 
     return XXH64(&parameters, sizeof(parameters), 0x48414952u);
@@ -1235,7 +1236,7 @@ namespace dxvk {
         // belong to (poor converged fit) scatters on its full surface
         // instead of wearing a misplaced mask.
         alignedMask = maskIt->second;
-        alignHairMaskToLiveMesh(alignedMask, liveGrid);
+        alignHairMaskToLiveMesh(alignedMask, liveGrid, static_cast<HairMaskMirrorMode>(maskMirrorMode()));
         Logger::info(str::format("[Hair Test] Scatter mask: ", alignedMask.status));
         if (alignedMask.wellFitted) {
           mask = &alignedMask;
@@ -1249,6 +1250,7 @@ namespace dxvk {
         // own alignment report - so only the numeric fields are mirrored.
         if (alignedMask.wellFitted || !maskIt->second.aligned) {
           maskIt->second.aligned = alignedMask.aligned;
+          maskIt->second.mirrored = alignedMask.mirrored;
           maskIt->second.wellFitted = alignedMask.wellFitted;
           maskIt->second.alignmentName = alignedMask.alignmentName;
           maskIt->second.alignmentScale = alignedMask.alignmentScale;
@@ -2257,12 +2259,18 @@ namespace dxvk {
             const std::string fit = std::string(maskIt->second.wellFitted ? "fitted" : "POOR FIT (mask ignored)")
               + " - seed " + maskIt->second.alignmentName
               + ", scale " + std::to_string(maskIt->second.alignmentScale)
+              + (maskIt->second.mirrored ? ", mirrored" : "")
               + ", median residual " + std::to_string(maskIt->second.medianResidual)
               + " / max " + std::to_string(maskIt->second.maxResidual)
               + " (mesh RMS radius " + std::to_string(maskIt->second.liveRmsRadius) + ")";
             ImGui::Text("%s: %s; %s", expectedPath.c_str(), maskIt->second.status.c_str(), fit.c_str());
           }
         }
+        RemixGui::Combo("Mask Handedness", &maskMirrorModeObject(),
+                        "Auto Detect\0As Authored (Never Mirror)\0Mirrored (Force)\0");
+        ImGui::TextWrapped(
+          "If the fur pattern appears on the wrong side of a symmetric character, the export baked a reflection and "
+          "the mesh is too symmetric for auto-detection - force Mirrored (or As Authored) here; changing it regrows.");
         if (RtxOptions::hairStrandTextures().empty()) {
           ImGui::Text("No hair-tagged textures yet.");
         }

@@ -156,6 +156,16 @@ namespace dxvk {
                "capture, which exports skinned meshes in rest pose - with the faces that should not grow fur deleted. When "
                "present, strand roots scatter over the mask instead of the full surface and bind to the nearest live vertex "
                "for bone, UV and fallback normal data.");
+    RTX_OPTION_ARGS("rtx.hairTest", int, maskMirrorMode, 0,
+                    "Scatter mask handedness. Mask exports can bake a reflection (a handedness-flipping axis convention or "
+                    "negative scale), and on a bilaterally symmetric character the reflected mask fits the MIRROR pose almost "
+                    "perfectly - the authored cut then lands on the wrong side.\n"
+                    "0: Auto (default) - both handednesses are fitted and the closer one wins; an unmirrored export is "
+                    "bit-exact and cannot lose, so this is safe, but a PERFECTLY symmetric mesh ties and the tie prefers "
+                    "as-authored.\n"
+                    "1: As Authored - never mirror.\n"
+                    "2: Mirrored - always mirror; use when Auto guessed wrong on a perfectly symmetric mesh.",
+                    args.minValue = 0, args.maxValue = 2);
     RTX_OPTION_ARGS("rtx.hairTest", int, surfaceStrandCount, 60000,
                     "Total strand budget shared by all hair-tagged meshes, distributed across them by surface area. "
                     "A tagged texture is often used by many submeshes (a character is typically split into dozens), so a "

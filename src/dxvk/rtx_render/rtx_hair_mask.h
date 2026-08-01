@@ -79,6 +79,11 @@ namespace dxvk {
     // Load / alignment diagnostics for the caller's log and overlay.
     bool loaded = false;
     bool aligned = false;
+    // True when the winning fit mirrored the mask (the export baked a
+    // reflection - a handedness-flipping axis convention or negative
+    // scale). Detected by fitting both handednesses; see
+    // alignHairMaskToLiveMesh.
+    bool mirrored = false;
     // True when the converged fit lands mask vertices on live vertices
     // (median residual within a small fraction of the live mesh's RMS
     // radius). A false value means the mask does not belong to this mesh -
@@ -129,14 +134,30 @@ namespace dxvk {
   // returns an unloaded mask whose status says why.
   HairMaskMesh loadHairMaskObj(const std::string& path);
 
+  // Handedness handling for the alignment. Exports can bake a reflection
+  // (an axis convention or negative scale that flips handedness), and on a
+  // bilaterally symmetric character a reflected mask fits the mirror pose
+  // almost perfectly with a proper rotation - fur then grows on the wrong
+  // side. Auto fits both handednesses and keeps the strictly better one
+  // (a genuine unmirrored export is bit-exact and cannot lose; ties from a
+  // perfectly symmetric mesh prefer as-authored). The forced modes exist
+  // for that tie, where geometry alone cannot decide.
+  enum class HairMaskMirrorMode : int {
+    Auto = 0,
+    AsAuthored = 1,
+    Mirrored = 2,
+  };
+
   // Fits the mask onto the live mesh by solving the full similarity
-  // transform (rotation, uniform scale, translation): axis-permutation
-  // candidates scaled by the RMS-radius ratio seed an ICP that solves Horn's
-  // absolute orientation on nearest-live-vertex correspondences until it
-  // converges. The best transform is applied to positions (rotation only to
-  // normals) and the residual statistics recorded; wellFitted reports
+  // transform (rotation, uniform scale, translation): axis-permutation and
+  // principal-axis candidates under several scale hypotheses seed an ICP
+  // that solves Horn's absolute orientation on nearest-live-vertex
+  // correspondences until it converges, in both handednesses per
+  // mirrorMode. The best transform is applied to positions (rotation only
+  // to normals) and the residual statistics recorded; wellFitted reports
   // whether the converged fit is close enough to trust. The live grid must
   // be built over the live mesh's rest-pose vertex positions.
-  void alignHairMaskToLiveMesh(HairMaskMesh& mask, const HairPointGrid& liveGrid);
+  void alignHairMaskToLiveMesh(HairMaskMesh& mask, const HairPointGrid& liveGrid,
+                               HairMaskMirrorMode mirrorMode = HairMaskMirrorMode::Auto);
 
 } // namespace dxvk
