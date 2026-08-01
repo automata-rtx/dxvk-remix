@@ -1,43 +1,41 @@
-# Dusklight hair — LSS strand hair for Remix scenes
+# Dusklight hair — strand fur for Remix scenes
 
 Status: working feature on `Fixed-Function-dev` lineage. This documents the
-whole hair system: the sphere tech demo, surface hair on hair-tagged meshes,
-the data-lifetime rules that were expensive to learn, artist scatter masks,
-and the attachment modes. It is written so the system could later be
-re-implemented as an upstream Remix PR (§8) — the modules are deliberately
-layered for that.
+whole fur system: surface hair on hair-tagged meshes, the data-lifetime
+rules that were expensive to learn, the strand disk cache, artist scatter
+masks, shading, and the attachment modes. It is written so the system could
+later be re-implemented as an upstream Remix PR (§8) — the modules are
+deliberately layered for that.
+
+(The hair-covered test sphere this system was bootstrapped on — its own
+BLAS/TLAS and a BCSDF shading pass — was removed once surface fur shipped;
+`git log src/dxvk/shaders/rtx/pass/hair_test` finds it if it is ever wanted
+again.)
 
 ## 1. What it is
 
-Strand hair rendered inside the path-traced Remix scene, built from the RTX
-Character Rendering SDK's curve representation:
+Fur grown across game meshes whose color texture carries the
+`rtx.hairStrandTextures` tag (Game Setup tab), built from the RTX Character
+Rendering SDK's curve representation:
 
-- Strands are chains of Linear Swept Sphere (LSS) segments. On drivers with
-  `VK_NV_ray_tracing_linear_swept_spheres` (RTX 50 series) they trace as
-  native LSS primitives; otherwise the SDK's DOTS tessellation (4 triangles /
-  12 vertices per segment, radii pre-divided by `(π/4)/sin(π/4)` so the
-  silhouette matches) represents the same segments.
-- Two consumers:
-  1. **The test sphere** (Hair Test tab): its own BLAS/TLAS, shaded by the
-     SDK's Chiang / far-field BCSDFs against the scene light pool, composited
-     before upscaling with depth + motion vectors. A DOTS proxy of the same
-     strands always lives in the scene TLAS so hair shadows, occludes, and
-     appears in GI.
-  2. **Surface hair**: fur grown across game meshes whose color texture
-     carries the `rtx.hairStrandTextures` tag (Game Setup tab). Strand
-     geometry goes through the regular draw path — it is ordinary scene
-     geometry, path traced and denoised, colored by the source diffuse at
-     each strand's root UV.
+- Strands are chains of curve segments tessellated with the SDK's DOTS
+  scheme (4 triangles / 12 vertices per segment, radii pre-divided by
+  `(π/4)/sin(π/4)` so the silhouette matches the SDK's Linear Swept Sphere
+  reference).
+- Strand geometry goes through the regular draw path — it is ordinary scene
+  geometry, path traced and denoised, casting shadows and appearing in GI
+  and reflections, colored by the source diffuse at each strand's root UV.
+  There is no separate hair shading pass and the main path tracer is
+  untouched.
 
 Files:
 
 | File | Role |
 | :-- | :-- |
-| `src/dxvk/rtx_render/rtx_hair_test.{h,cpp}` | the system: sphere demo + surface hair growth, caching, attachment modes, overlay UI |
-| `src/dxvk/rtx_render/rtx_hair_mask.{h,cpp}` | artist scatter masks: OBJ load, alignment auto-fit, nearest-vertex grid. **Std-only, no dxvk types** — unit-testable standalone |
-| `src/dxvk/rtx_render/rtxcr_geometry/` | vendored RTXCR geometry lib (LSS/DOTS conversion), byte-identical to the SDK |
-| `submodules/rtxcr` | RTXCR material lib (hair BCSDFs), pinned v1.2.0 |
-| `src/dxvk/shaders/rtx/pass/hair_test/` | the sphere demo's shading pass |
+| `src/dxvk/rtx_render/rtx_hair_test.{h,cpp}` | the system: growth, caching (RAM + disk), attachment modes, shading bake, overlay UI |
+| `src/dxvk/rtx_render/rtx_hair_mask.{h,cpp}` | artist scatter masks: OBJ load, similarity-ICP alignment, nearest-vertex grid. **Std-only, no dxvk types** — unit-testable standalone |
+| `src/dxvk/rtx_render/rtxcr_geometry/` | vendored RTXCR geometry lib (DOTS conversion), byte-identical to the SDK |
+| `submodules/rtxcr` | RTXCR SDK submodule (pinned v1.2.0) |
 
 ## 2. The data-lifetime rule (why snapshots exist)
 
@@ -64,6 +62,14 @@ The fix is the snapshot protocol:
   the flag drops and no copies are made.
 - Snapshot bytes are identical to what Remix hashes, so cache keys are
   unaffected.
+- **The strand disk cache short-circuits all of this.** Built strands are
+  serialized under `rtx.hairTest.strandCacheDirectory` (default
+  `hair_cache`, next to `rtx.conf`), keyed by mesh identity ^ parameter
+  hash ^ mask content hash with a format version. A later run with the
+  identical mesh, parameters and mask loads the file — checked *before*
+  the snapshot gate, so a fully cached startup never copies source
+  geometry at all. Any change misses the key and regrows; stale files are
+  never read again (delete the directory to reclaim space).
 - **Marked draws bypass the `isPendingGpuWrite()` guard.** dxvk tracks every
   storage-buffer descriptor as a *write* — read-only `StructuredBuffer`
   inputs included — so a snapshot buffer consumed by the frame's
@@ -120,8 +126,7 @@ changes, or eviction after ~300 unseen frames):
    fallback normal.
 3. **Growth**: strands extend along the interpolated surface normal (the
    mask's own smooth-shaded normals when it has them — author them smooth in
-   Blender for low-poly meshes) with jitter/frizz/curl/droop, identical
-   construction to the sphere demo.
+   Blender for low-poly meshes) with jitter/frizz/curl/droop.
 4. **Assembly**: strand subsets become `RasterGeometry` pieces (36-byte
    interleaved vertices, DOTS triangles, stable derived hashes) submitted as
    copies of the source draw with swapped geometry — material, transforms
@@ -130,9 +135,21 @@ changes, or eviction after ~300 unseen frames):
    alpha-tested source material once turned 39M strand triangles into a
    6.2 GB micromap request).
 
+5. **Shading bake**: every strand vertex carries the *smooth* surface
+   normal its root grew from (the mask's authored normal when present), so
+   fur shades with the pelt's curvature instead of individual tube facets,
+   and a root-to-tip darkening gradient in the vertex colors
+   (`strandOcclusion`) stands in for the strand-to-strand self-shadowing
+   the path tracer cannot afford to resolve — a real coat is darkest where
+   it is deepest. The strands otherwise shade with the source mesh's
+   converted legacy material: there is **no hair BCSDF in the main
+   integrator** (an anisotropic fiber response would be an upstream-scale
+   material-system change; see §8).
+
 Budget: `surfaceStrandCount` is a **total** across all tagged meshes, split
 by surface area, grown amortized (~30k strands/frame), with a live
-`strands / budget` readout in the overlay.
+`strands / budget` readout in the overlay. Disk-cached meshes load outside
+the amortization (a file read instead of growth).
 
 ## 5. Artist scatter masks
 
@@ -234,6 +251,10 @@ Development happens in a Linux container; nothing here requires a GPU:
   mask-confined scatter (all strands land on the masked half and bind to
   its bone), and the hybrid partition (cluster counts, seam set size, seam
   blend data, distinct hashes).
+- The surface harness also validates the shading bake (root vertices
+  strictly darker than tips) and round-trips the strand disk cache
+  bit-identically for skinned entries (blend buffers included) and rigid
+  cluster entries, plus rejection of corrupt cache files.
 - MSVC builds run in CI on every push of `claude/**`.
 
 ## 8. Notes toward an upstream PR
@@ -256,15 +277,20 @@ If this gets re-implemented for upstream Remix:
 
 | Option | Default | Meaning |
 | :-- | :-- | :-- |
-| `enable` | false | master switch (sphere demo + surface hair) |
-| `surfaceStrandCount` | 60000 | total strand budget across all tagged meshes, area-split |
+| `enable` | false | master switch for strand fur |
+| `surfaceStrandCount` | 60000 | total strand budget across all tagged meshes, area-split (max 2M; ~36 B × 12 verts × segments per strand) |
+| `surfaceHairLength` / `surfaceStrandRadius` | 2.0 / 0.02 | strand shape in world units |
+| `segmentsPerStrand` | 4 | curve segments per strand (geometry cost scales linearly) |
+| `hairLengthJitter` | 0.3 | per-strand length variation 0..1 |
+| `tipRadiusScale` | 0.4 | tip radius relative to root |
+| `frizz` / `curliness` / `curlTurns` | 0.3 / 0.15 / 2.0 | growth direction jitter and helical curl |
+| `gravityDroop` | 0.15 | downward bend along the strand |
+| `strandOcclusion` | 0.45 | root-to-tip darkening baked into vertex colors |
+| `scatterSeed` | 1337 | scatter/variation seed |
 | `surfaceAttachmentMode` | 0 | 0 rigid clusters, 1 skinned, 2 hybrid |
 | `hybridClusterRadiusScale` | 0.75 | rigid-core cutoff as a fraction of each bone's influence radius |
 | `hybridSeamStrandCount` | 15000 | extra strands for the hybrid's skinned seam set |
 | `evenScatter` | true | best-candidate scattering |
 | `maskDirectory` | `hair_masks` | scatter mask directory, relative to the game exe |
 | `maskMirrorMode` | 0 | mask handedness: 0 auto-detect, 1 as authored, 2 force mirrored |
-| `surfaceHairLength` / `surfaceStrandRadius` | 2.0 / 0.02 | strand shape (plus the shared jitter/frizz/curl/droop set) |
-
-Sphere-demo options (strand shape, BCSDF material, placement) are documented
-inline in `rtx_hair_test.h`.
+| `strandCacheDirectory` | `hair_cache` | strand disk cache directory; empty disables |
