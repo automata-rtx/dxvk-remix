@@ -76,6 +76,11 @@ namespace dxvk {
     std::vector<HairMaskVec3> normals;
     std::vector<Triangle> triangles;
 
+    // Content hash over positions/normals/triangles, set by the caller after
+    // a successful load. Folded into derived cache keys so an edited mask
+    // invalidates results computed against the old one.
+    uint64_t contentHash = 0;
+
     // Load / alignment diagnostics for the caller's log and overlay.
     bool loaded = false;
     bool aligned = false;

@@ -29,8 +29,11 @@
 #include "rtx_scene_manager.h"
 #include "rtx_options.h"
 #include "rtx_imgui.h"
+#include "../util/util_env.h"
 #include "../util/util_fast_cache.h"
 #include "../util/util_once.h"
+
+#include <cstdio>
 
 // RTX Character Rendering SDK Geometry Library (vendored): curve segment ->
 // LSS / DOTS conversion.
@@ -69,6 +72,146 @@ namespace dxvk {
     // matches the Linear Swept Sphere silhouette the SDK targets.
     const float kDotsVolumeCompensationScale =
       1.0f / (std::sin(rtxcr::geometry::math::kPi / 4.0f) / (rtxcr::geometry::math::kPi / 4.0f));
+
+    // Strand disk cache format. Version bumps whenever the vertex layout,
+    // the geometry assembly, or the meaning of any growth parameter changes,
+    // so stale files fail the header check instead of decoding wrongly.
+    constexpr uint32_t kHairCacheMagic = 0x31434844u; // 'DHC1'
+    constexpr uint32_t kHairCacheVersion = 1;
+
+    Rc<DxvkBuffer> allocHairGeometryBuffer(DxvkDevice* device, size_t sizeInBytes, const char* name) {
+      // Identical to the growth path's allocBuffer (buildSurfaceHairGeometry):
+      // cached geometry must reach the renderer through the same buffer shape.
+      DxvkBufferCreateInfo bufferInfo = {};
+      bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+        | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+        | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+      bufferInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+      bufferInfo.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+      bufferInfo.size = align(sizeInBytes, CACHE_LINE_SIZE);
+
+      return device->createBuffer(bufferInfo,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                                  DxvkMemoryStats::Category::RTXBuffer, name);
+    }
+
+    // The interleaved strand vertex layout shared with assembleGeometry.
+    constexpr uint32_t kHairVertexStride = 36;
+
+    bool writeBlob(std::FILE* file, const void* data, size_t size) {
+      return size == 0 || std::fwrite(data, 1, size, file) == size;
+    }
+
+    bool readBlob(std::FILE* file, void* data, size_t size) {
+      return size == 0 || std::fread(data, 1, size, file) == size;
+    }
+
+    // Serialized alongside each geometry's raw buffer bytes.
+    struct HairCacheGeometryHeader {
+      uint32_t vertexCount = 0;
+      uint32_t indexCount = 0;
+      uint32_t numBonesPerVertex = 0;
+      uint32_t blendWeightStride = 0;   // 0: no blend weight buffer
+      uint32_t blendIndicesFormat = 0;  // VkFormat; 0: no blend index buffer
+      uint64_t hashes[static_cast<size_t>(HashComponents::Count)] = {};
+    };
+
+    struct HairCacheFileHeader {
+      uint32_t magic = kHairCacheMagic;
+      uint32_t version = kHairCacheVersion;
+      uint64_t diskKey = 0;
+      uint32_t rigidClusters = 0;
+      uint32_t hasSeamSet = 0;
+      uint32_t hasMainGeometry = 0;
+      uint32_t strandCount = 0;
+      uint32_t seamStrandCount = 0;
+      uint32_t clusterCount = 0;
+    };
+
+    bool writeGeometry(std::FILE* file, const RasterGeometry& geometry) {
+      HairCacheGeometryHeader header;
+      header.vertexCount = geometry.vertexCount;
+      header.indexCount = geometry.indexCount;
+      header.numBonesPerVertex = geometry.numBonesPerVertex;
+      header.blendWeightStride = geometry.blendWeightBuffer.defined() ? geometry.blendWeightBuffer.stride() : 0;
+      header.blendIndicesFormat = geometry.blendIndicesBuffer.defined()
+        ? static_cast<uint32_t>(geometry.blendIndicesBuffer.vertexFormat()) : 0;
+      for (size_t component = 0; component < static_cast<size_t>(HashComponents::Count); ++component) {
+        header.hashes[component] = geometry.hashes[static_cast<HashComponents>(component)];
+      }
+
+      // The interleaved vertex buffer starts at the position attribute's
+      // slice (offset 0); indices and blend data are their own buffers.
+      return writeBlob(file, &header, sizeof(header))
+          && writeBlob(file, geometry.positionBuffer.mapPtr(0), static_cast<size_t>(header.vertexCount) * kHairVertexStride)
+          && writeBlob(file, geometry.indexBuffer.mapPtr(0), static_cast<size_t>(header.indexCount) * sizeof(uint32_t))
+          && (header.blendWeightStride == 0
+              || writeBlob(file, geometry.blendWeightBuffer.mapPtr(0), static_cast<size_t>(header.vertexCount) * header.blendWeightStride))
+          && (header.blendIndicesFormat == 0
+              || writeBlob(file, geometry.blendIndicesBuffer.mapPtr(0), static_cast<size_t>(header.vertexCount) * sizeof(uint32_t)));
+    }
+
+    bool readGeometry(std::FILE* file, DxvkDevice* device, RasterGeometry& geometry) {
+      HairCacheGeometryHeader header;
+      if (!readBlob(file, &header, sizeof(header)) || header.vertexCount == 0 || header.indexCount == 0) {
+        return false;
+      }
+      // Sanity bound: a corrupt header must not drive a multi-gigabyte
+      // allocation. 2M strands at 16 segments is still far below this.
+      constexpr uint32_t kMaxCachedVertices = 512u * 1024u * 1024u / kHairVertexStride;
+      if (header.vertexCount > kMaxCachedVertices || header.indexCount != header.vertexCount) {
+        return false;
+      }
+
+      Rc<DxvkBuffer> vertexBuffer = allocHairGeometryBuffer(device, static_cast<size_t>(header.vertexCount) * kHairVertexStride, "Surface Hair Vertices (cached)");
+      DxvkBufferSlice vertexSlice { vertexBuffer };
+      if (!readBlob(file, vertexSlice.mapPtr(0), static_cast<size_t>(header.vertexCount) * kHairVertexStride)) {
+        return false;
+      }
+
+      Rc<DxvkBuffer> indexBuffer = allocHairGeometryBuffer(device, static_cast<size_t>(header.indexCount) * sizeof(uint32_t), "Surface Hair Indices (cached)");
+      DxvkBufferSlice indexSlice { indexBuffer };
+      if (!readBlob(file, indexSlice.mapPtr(0), static_cast<size_t>(header.indexCount) * sizeof(uint32_t))) {
+        return false;
+      }
+
+      // Mirrors assembleGeometry's RasterGeometry setup exactly.
+      geometry = {};
+      geometry.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      geometry.cullMode = VK_CULL_MODE_NONE;
+      geometry.frontFace = VK_FRONT_FACE_CLOCKWISE;
+      geometry.vertexCount = header.vertexCount;
+      geometry.positionBuffer = RasterBuffer { vertexSlice, 0, kHairVertexStride, VK_FORMAT_R32G32B32_SFLOAT };
+      geometry.normalBuffer = RasterBuffer { vertexSlice, 12, kHairVertexStride, VK_FORMAT_R32G32B32_SFLOAT };
+      geometry.texcoordBuffer = RasterBuffer { vertexSlice, 24, kHairVertexStride, VK_FORMAT_R32G32_SFLOAT };
+      geometry.color0Buffer = RasterBuffer { vertexSlice, 32, kHairVertexStride, VK_FORMAT_B8G8R8A8_UNORM };
+      geometry.indexCount = header.indexCount;
+      geometry.indexBuffer = RasterBuffer { indexSlice, 0, sizeof(uint32_t), VK_INDEX_TYPE_UINT32 };
+
+      if (header.blendWeightStride != 0) {
+        Rc<DxvkBuffer> weightBuffer = allocHairGeometryBuffer(device, static_cast<size_t>(header.vertexCount) * header.blendWeightStride, "Surface Hair Blend Weights (cached)");
+        DxvkBufferSlice weightSlice { weightBuffer };
+        if (!readBlob(file, weightSlice.mapPtr(0), static_cast<size_t>(header.vertexCount) * header.blendWeightStride)) {
+          return false;
+        }
+        geometry.blendWeightBuffer = RasterBuffer { weightSlice, 0, header.blendWeightStride, VK_FORMAT_R32_SFLOAT };
+        geometry.numBonesPerVertex = header.numBonesPerVertex;
+      }
+      if (header.blendIndicesFormat != 0) {
+        Rc<DxvkBuffer> blendIndexBuffer = allocHairGeometryBuffer(device, static_cast<size_t>(header.vertexCount) * sizeof(uint32_t), "Surface Hair Blend Indices (cached)");
+        DxvkBufferSlice blendIndexSlice { blendIndexBuffer };
+        if (!readBlob(file, blendIndexSlice.mapPtr(0), static_cast<size_t>(header.vertexCount) * sizeof(uint32_t))) {
+          return false;
+        }
+        geometry.blendIndicesBuffer = RasterBuffer { blendIndexSlice, 0, sizeof(uint32_t), static_cast<VkFormat>(header.blendIndicesFormat) };
+      }
+
+      for (size_t component = 0; component < static_cast<size_t>(HashComponents::Count); ++component) {
+        geometry.hashes[static_cast<HashComponents>(component)] = header.hashes[component];
+      }
+      geometry.hashes.precombine();
+      return true;
+    }
 
     // Deterministic per-strand random stream.
     struct StrandRng {
@@ -180,6 +323,129 @@ namespace dxvk {
     return XXH64(&parameters, sizeof(parameters), 0x48414952u);
   }
 
+  const HairMaskMesh& RtxHairTest::ensureMaskLoaded(XXH64_hash_t textureHash) {
+    auto maskIt = m_hairMasks.find(textureHash);
+    if (maskIt == m_hairMasks.end()) {
+      const std::string maskPath = maskDirectory() + "/" + hashToString(textureHash) + ".obj";
+      maskIt = m_hairMasks.emplace(textureHash, loadHairMaskObj(maskPath)).first;
+      HairMaskMesh& mask = maskIt->second;
+      if (mask.loaded) {
+        // Content hash over the parsed geometry (robust to comments and
+        // formatting), folded into the disk-cache key so an edited mask
+        // invalidates strands cached against the old one.
+        XXH64_hash_t contentHash = XXH64(mask.positions.data(), mask.positions.size() * sizeof(HairMaskVec3), 0x4D41534Bu);
+        contentHash = XXH64(mask.triangles.data(), mask.triangles.size() * sizeof(HairMaskMesh::Triangle), contentHash);
+        if (!mask.normals.empty()) {
+          contentHash = XXH64(mask.normals.data(), mask.normals.size() * sizeof(HairMaskVec3), contentHash);
+        }
+        mask.contentHash = contentHash;
+      }
+      Logger::info(str::format("[Hair Test] Scatter mask ", maskPath, ": ", mask.status));
+    }
+    return maskIt->second;
+  }
+
+  XXH64_hash_t RtxHairTest::computeSurfaceHairDiskKey(const DrawCallState& source, XXH64_hash_t cacheKey) {
+    const HairMaskMesh& mask = ensureMaskLoaded(source.getMaterialData().getColorTexture().getImageHash());
+    struct DiskKey {
+      uint64_t cacheKey;
+      uint64_t maskContentHash;
+      uint32_t formatVersion;
+    } key = { cacheKey, mask.loaded ? mask.contentHash : 0, kHairCacheVersion };
+    return XXH64(&key, sizeof(key), 0x44484331u);
+  }
+
+  bool RtxHairTest::loadCachedSurfaceHair(XXH64_hash_t diskKey, SurfaceHairEntry& entry) {
+    if (strandCacheDirectory().empty()) {
+      return false;
+    }
+    const std::string path = strandCacheDirectory() + "/" + hashToString(diskKey) + ".hairbin";
+    std::FILE* file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) {
+      return false;
+    }
+
+    bool ok = false;
+    do {
+      HairCacheFileHeader header;
+      if (!readBlob(file, &header, sizeof(header)) ||
+          header.magic != kHairCacheMagic || header.version != kHairCacheVersion ||
+          header.diskKey != diskKey || header.clusterCount > 4096) {
+        break;
+      }
+
+      entry = {};
+      entry.rigidClusters = header.rigidClusters != 0;
+      entry.hasSeamSet = header.hasSeamSet != 0;
+      entry.strandCount = header.strandCount;
+      entry.seamStrandCount = header.seamStrandCount;
+
+      bool geometryOk = true;
+      entry.clusters.reserve(header.clusterCount);
+      for (uint32_t clusterIndex = 0; clusterIndex < header.clusterCount && geometryOk; ++clusterIndex) {
+        SurfaceHairCluster cluster;
+        geometryOk = readBlob(file, &cluster.boneIndex, sizeof(cluster.boneIndex))
+                  && readBlob(file, &cluster.strandCount, sizeof(cluster.strandCount))
+                  && readGeometry(file, m_device, cluster.geometry);
+        if (geometryOk) {
+          entry.clusters.push_back(std::move(cluster));
+        }
+      }
+      if (geometryOk && header.hasMainGeometry != 0) {
+        geometryOk = readGeometry(file, m_device, entry.geometry);
+      }
+      ok = geometryOk;
+    } while (false);
+
+    std::fclose(file);
+    if (!ok) {
+      Logger::warn(str::format("[Hair Test] Strand cache file unreadable (regrowing): ", path));
+      entry = {};
+    }
+    return ok;
+  }
+
+  void RtxHairTest::saveCachedSurfaceHair(XXH64_hash_t diskKey, const SurfaceHairEntry& entry) const {
+    if (strandCacheDirectory().empty() || entry.buildFailed) {
+      return;
+    }
+    env::createDirectory(strandCacheDirectory());
+
+    const std::string path = strandCacheDirectory() + "/" + hashToString(diskKey) + ".hairbin";
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    if (file == nullptr) {
+      ONCE(Logger::warn(str::format("[Hair Test] Cannot write the strand cache (check the directory): ", path)));
+      return;
+    }
+
+    HairCacheFileHeader header;
+    header.diskKey = diskKey;
+    header.rigidClusters = entry.rigidClusters ? 1 : 0;
+    header.hasSeamSet = entry.hasSeamSet ? 1 : 0;
+    // The main geometry slot is used by skinned mode and by the hybrid seam
+    // set; rigid-only entries have clusters alone.
+    header.hasMainGeometry = entry.geometry.vertexCount > 0 ? 1 : 0;
+    header.strandCount = entry.strandCount;
+    header.seamStrandCount = entry.seamStrandCount;
+    header.clusterCount = static_cast<uint32_t>(entry.clusters.size());
+
+    bool ok = writeBlob(file, &header, sizeof(header));
+    for (const SurfaceHairCluster& cluster : entry.clusters) {
+      ok = ok && writeBlob(file, &cluster.boneIndex, sizeof(cluster.boneIndex))
+              && writeBlob(file, &cluster.strandCount, sizeof(cluster.strandCount))
+              && writeGeometry(file, cluster.geometry);
+    }
+    if (ok && header.hasMainGeometry != 0) {
+      ok = writeGeometry(file, entry.geometry);
+    }
+    std::fclose(file);
+
+    if (!ok) {
+      Logger::warn(str::format("[Hair Test] Strand cache write failed: ", path));
+      std::remove(path.c_str());
+    }
+  }
+
   std::atomic<bool> RtxHairTest::s_wantsSourceSnapshot { false };
 
   void RtxHairTest::reloadHairMasks() {
@@ -253,6 +519,22 @@ namespace dxvk {
           readyDraws.push_back(queueIndex);
         }
         continue;
+      }
+
+      // Disk cache: strands grown in a previous run for the identical mesh,
+      // parameters and mask load directly - no geometry snapshot and no
+      // regrowth. Checked before the snapshot gate on purpose: a cached
+      // startup never copies source geometry at all.
+      {
+        SurfaceHairEntry cached;
+        if (loadCachedSurfaceHair(computeSurfaceHairDiskKey(source, cacheKey), cached)) {
+          cached.lastSeenFrame = currentFrame;
+          m_surfaceStrandsLive += cached.strandCount;
+          Logger::info(str::format("[Hair Test] Loaded ", cached.strandCount, " cached strands for a tagged mesh"));
+          readyDraws.push_back(queueIndex);
+          m_surfaceHair.emplace(cacheKey, std::move(cached));
+          continue;
+        }
       }
 
       // Only grow from draws whose data was snapshot-captured: the default
@@ -332,6 +614,7 @@ namespace dxvk {
           remaining -= std::min(remaining, entry.strandCount);
           grownThisFrame += entry.strandCount;
           readyDraws.push_back(mesh.queueIndex);
+          saveCachedSurfaceHair(computeSurfaceHairDiskKey(m_taggedDrawQueue[mesh.queueIndex], mesh.cacheKey), entry);
         }
         m_surfaceHair.emplace(mesh.cacheKey, std::move(entry));
       }
@@ -1376,6 +1659,12 @@ namespace dxvk {
 
       RemixGui::DragInt("Total Strand Budget", &surfaceStrandCountObject(), 100.0f, 1, 2000000, "%d", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::Checkbox("Even Scatter (Best Candidate)", &evenScatterObject());
+
+      const std::string cacheNote = strandCacheDirectory().empty()
+        ? std::string("Strand disk cache: disabled (rtx.hairTest.strandCacheDirectory is empty).")
+        : "Strand disk cache: '" + strandCacheDirectory() + "' - identical mesh, parameters and mask reload "
+          "instantly across runs; any change regrows and writes a new file.";
+      ImGui::TextWrapped("%s", cacheNote.c_str());
 
       RemixGui::Combo("Attachment", &surfaceAttachmentModeObject(), "Rigid Per-Bone Clusters\0Skinned (Exact Deformation)\0Hybrid (Rigid + Skinned Seams)\0");
       if (surfaceAttachmentMode() == 0) {

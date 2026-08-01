@@ -165,6 +165,12 @@ namespace dxvk {
                     args.minValue = 0.0f, args.maxValue = 1.0f);
     RTX_OPTION("rtx.hairTest", int, scatterSeed, 1337,
                "Random seed for strand scattering and per-strand variation.");
+    RTX_OPTION("rtx.hairTest", std::string, strandCacheDirectory, "hair_cache",
+               "Directory (relative to the game executable, like rtx.conf) where generated strand geometry is cached "
+               "on disk. A mesh whose strands were grown in a previous run with identical parameters (and an identical "
+               "scatter mask) loads its strands from here instead of regrowing them - and needs no geometry snapshots "
+               "at all. Files are keyed by mesh + parameters + mask content, so stale files are simply never read "
+               "again; delete the directory to reclaim the space. Empty disables the cache.");
     RTX_OPTION_ARGS("rtx.hairTest", float, strandOcclusion, 0.45f,
                     "Root-to-tip darkening baked into the strand vertex colors: 0 leaves the whole strand at the surface "
                     "color, 1 fades the roots to black. A real coat is darkest where it is deepest; the gradient stands in "
@@ -219,6 +225,14 @@ namespace dxvk {
     static float measureSurfaceArea(const DrawCallState& input);
     bool buildSurfaceHairGeometry(const DrawCallState& input, XXH64_hash_t cacheKey, uint32_t strandCount, SurfaceHairEntry& entry);
     XXH64_hash_t computeSurfaceHairParamsHash() const;
+
+    // Disk cache for generated strands: identical mesh + parameters + mask
+    // content across runs loads the previous run's geometry instead of
+    // regrowing it (and needs no geometry snapshots at all).
+    const HairMaskMesh& ensureMaskLoaded(XXH64_hash_t textureHash);
+    XXH64_hash_t computeSurfaceHairDiskKey(const DrawCallState& source, XXH64_hash_t cacheKey);
+    bool loadCachedSurfaceHair(XXH64_hash_t diskKey, SurfaceHairEntry& entry);
+    void saveCachedSurfaceHair(XXH64_hash_t diskKey, const SurfaceHairEntry& entry) const;
 
     std::unordered_map<XXH64_hash_t, SurfaceHairEntry> m_surfaceHair;
     // Loaded (or failed-to-load, to avoid retrying every build) hair masks,
