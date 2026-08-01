@@ -38,16 +38,20 @@ namespace dxvk {
       return v.x * v.x + v.y * v.y + v.z * v.z;
     }
 
-    // Axis-permutation candidates the auto-fit tries: identity plus the
+    // Axis-permutation candidates that seed the ICP: identity plus the
     // 90/180-degree frame swaps common across exporters (Blender's Z-up
-    // internal frame vs Y-up export conventions, in both directions).
+    // internal frame vs Y-up export conventions, in both directions),
+    // followed by every remaining proper signed axis permutation - 24 seed
+    // rotations in total, so any axis-preset combination starts the ICP
+    // inside its convergence basin. The named six come first so common
+    // exports report a readable name.
     struct AxisCandidate {
       const char* name;
       // Row-major 3x3; applied as m * v.
       float m[9];
     };
 
-    constexpr AxisCandidate kAxisCandidates[] = {
+    constexpr AxisCandidate kNamedAxisCandidates[] = {
       { "identity",  { 1, 0, 0,   0, 1, 0,   0, 0, 1 } },
       { "rotX+90",   { 1, 0, 0,   0, 0, -1,  0, 1, 0 } },
       { "rotX-90",   { 1, 0, 0,   0, 0, 1,   0, -1, 0 } },
@@ -56,12 +60,273 @@ namespace dxvk {
       { "rotZ180",   { -1, 0, 0,  0, -1, 0,  0, 0, 1 } },
     };
 
+    std::vector<AxisCandidate> buildAxisCandidates() {
+      std::vector<AxisCandidate> candidates(std::begin(kNamedAxisCandidates), std::end(kNamedAxisCandidates));
+      // Generate all signed permutation matrices with determinant +1 and
+      // append the ones the named list does not already carry.
+      const int perms[6][3] = { {0,1,2}, {0,2,1}, {1,0,2}, {1,2,0}, {2,0,1}, {2,1,0} };
+      for (const auto& perm : perms) {
+        for (int signBits = 0; signBits < 8; ++signBits) {
+          float m[9] = {};
+          for (int row = 0; row < 3; ++row) {
+            m[row * 3 + perm[row]] = (signBits >> row & 1) != 0 ? -1.0f : 1.0f;
+          }
+          const float det = m[0] * (m[4] * m[8] - m[5] * m[7])
+                          - m[1] * (m[3] * m[8] - m[5] * m[6])
+                          + m[2] * (m[3] * m[7] - m[4] * m[6]);
+          if (det < 0.5f) {
+            continue; // reflections would mirror the mask
+          }
+          bool duplicate = false;
+          for (const AxisCandidate& existing : candidates) {
+            bool same = true;
+            for (int k = 0; k < 9; ++k) {
+              same = same && existing.m[k] == m[k];
+            }
+            duplicate = duplicate || same;
+          }
+          if (!duplicate) {
+            AxisCandidate c { "axis swap", {} };
+            std::memcpy(c.m, m, sizeof(m));
+            candidates.push_back(c);
+          }
+        }
+      }
+      return candidates;
+    }
+
     inline HairMaskVec3 applyAxis(const AxisCandidate& c, const HairMaskVec3& v) {
       return {
         c.m[0] * v.x + c.m[1] * v.y + c.m[2] * v.z,
         c.m[3] * v.x + c.m[4] * v.y + c.m[5] * v.z,
         c.m[6] * v.x + c.m[7] * v.y + c.m[8] * v.z,
       };
+    }
+
+    // Similarity transform p' = s * R * p + t (R row-major, applied to
+    // column vectors). Double precision: the ICP solves it from sums over
+    // hundreds of points whose coordinates can span very different scales.
+    struct Similarity {
+      double r[9] = { 1, 0, 0,  0, 1, 0,  0, 0, 1 };
+      double s = 1.0;
+      double t[3] = { 0, 0, 0 };
+
+      HairMaskVec3 apply(const HairMaskVec3& p) const {
+        return {
+          static_cast<float>(s * (r[0] * p.x + r[1] * p.y + r[2] * p.z) + t[0]),
+          static_cast<float>(s * (r[3] * p.x + r[4] * p.y + r[5] * p.z) + t[1]),
+          static_cast<float>(s * (r[6] * p.x + r[7] * p.y + r[8] * p.z) + t[2]),
+        };
+      }
+
+      // Rotation only - normals ignore scale and translation.
+      HairMaskVec3 rotate(const HairMaskVec3& v) const {
+        return {
+          static_cast<float>(r[0] * v.x + r[1] * v.y + r[2] * v.z),
+          static_cast<float>(r[3] * v.x + r[4] * v.y + r[5] * v.z),
+          static_cast<float>(r[6] * v.x + r[7] * v.y + r[8] * v.z),
+        };
+      }
+    };
+
+    // Jacobi eigen decomposition of a symmetric 3x3 matrix. Eigenvalues and
+    // matching eigenvectors (columns of v) are returned sorted descending.
+    void jacobiEigen(const double a[3][3], double eigenvalues[3], double v[3][3]) {
+      double m[3][3];
+      std::memcpy(m, a, sizeof(m));
+      for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+          v[r][c] = r == c ? 1.0 : 0.0;
+        }
+      }
+      for (int sweep = 0; sweep < 32; ++sweep) {
+        // Largest off-diagonal element.
+        int p = 0, q = 1;
+        double largest = std::fabs(m[0][1]);
+        if (std::fabs(m[0][2]) > largest) { largest = std::fabs(m[0][2]); p = 0; q = 2; }
+        if (std::fabs(m[1][2]) > largest) { largest = std::fabs(m[1][2]); p = 1; q = 2; }
+        if (largest < 1e-14) {
+          break;
+        }
+        const double theta = (m[q][q] - m[p][p]) / (2.0 * m[p][q]);
+        const double sign = theta >= 0.0 ? 1.0 : -1.0;
+        const double tTan = sign / (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
+        const double cRot = 1.0 / std::sqrt(tTan * tTan + 1.0);
+        const double sRot = tTan * cRot;
+        for (int k = 0; k < 3; ++k) {
+          const double mkp = m[k][p], mkq = m[k][q];
+          m[k][p] = cRot * mkp - sRot * mkq;
+          m[k][q] = sRot * mkp + cRot * mkq;
+        }
+        for (int k = 0; k < 3; ++k) {
+          const double mpk = m[p][k], mqk = m[q][k];
+          m[p][k] = cRot * mpk - sRot * mqk;
+          m[q][k] = sRot * mpk + cRot * mqk;
+        }
+        for (int k = 0; k < 3; ++k) {
+          const double vkp = v[k][p], vkq = v[k][q];
+          v[k][p] = cRot * vkp - sRot * vkq;
+          v[k][q] = sRot * vkp + cRot * vkq;
+        }
+      }
+      int order[3] = { 0, 1, 2 };
+      const double lambda[3] = { m[0][0], m[1][1], m[2][2] };
+      // Sort indices by eigenvalue, descending (3 elements: manual).
+      if (lambda[order[0]] < lambda[order[1]]) std::swap(order[0], order[1]);
+      if (lambda[order[1]] < lambda[order[2]]) std::swap(order[1], order[2]);
+      if (lambda[order[0]] < lambda[order[1]]) std::swap(order[0], order[1]);
+      double sortedV[3][3];
+      for (int c = 0; c < 3; ++c) {
+        eigenvalues[c] = lambda[order[c]];
+        for (int r = 0; r < 3; ++r) {
+          sortedV[r][c] = v[r][order[c]];
+        }
+      }
+      std::memcpy(v, sortedV, sizeof(sortedV));
+    }
+
+    // Principal-axis frame of a point set: columns are the eigenvectors of
+    // the covariance (eigenvalues returned alongside, descending), made
+    // right-handed. Handles arbitrary baked rotations the fixed
+    // axis-permutation seeds cannot: aligning the mask's frame to the live
+    // mesh's frame is (up to per-axis sign) the true rotation.
+    void principalFrame(const HairMaskVec3* points, size_t count, const HairMaskVec3& centroid, double frame[3][3],
+                        double eigenvaluesOut[3]) {
+      double cov[3][3] = {};
+      for (size_t i = 0; i < count; ++i) {
+        const double d[3] = { points[i].x - centroid.x, points[i].y - centroid.y, points[i].z - centroid.z };
+        for (int r = 0; r < 3; ++r) {
+          for (int c = 0; c < 3; ++c) {
+            cov[r][c] += d[r] * d[c];
+          }
+        }
+      }
+      jacobiEigen(cov, eigenvaluesOut, frame);
+      // Right-handed: flip the last column if needed.
+      const double det =
+          frame[0][0] * (frame[1][1] * frame[2][2] - frame[1][2] * frame[2][1])
+        - frame[0][1] * (frame[1][0] * frame[2][2] - frame[1][2] * frame[2][0])
+        + frame[0][2] * (frame[1][0] * frame[2][1] - frame[1][1] * frame[2][0]);
+      if (det < 0.0) {
+        for (int r = 0; r < 3; ++r) {
+          frame[r][2] = -frame[r][2];
+        }
+      }
+    }
+
+    // Horn's closed-form absolute orientation: the similarity transform
+    // mapping src points onto dst points (least squares). The optimal
+    // rotation is the dominant eigenvector of Horn's 4x4 quaternion matrix,
+    // found by power iteration; uniform scale and translation follow in
+    // closed form. Returns false on degenerate input.
+    bool solveSimilarity(const std::vector<HairMaskVec3>& src, const std::vector<HairMaskVec3>& dst, Similarity& out) {
+      const size_t count = src.size();
+      if (count < 4 || dst.size() != count) {
+        return false;
+      }
+
+      double srcCentroid[3] = {}, dstCentroid[3] = {};
+      for (size_t i = 0; i < count; ++i) {
+        srcCentroid[0] += src[i].x; srcCentroid[1] += src[i].y; srcCentroid[2] += src[i].z;
+        dstCentroid[0] += dst[i].x; dstCentroid[1] += dst[i].y; dstCentroid[2] += dst[i].z;
+      }
+      const double inv = 1.0 / static_cast<double>(count);
+      for (int k = 0; k < 3; ++k) {
+        srcCentroid[k] *= inv;
+        dstCentroid[k] *= inv;
+      }
+
+      // Covariance sums S[a][b] = sum(srcCentered[a] * dstCentered[b]).
+      double S[3][3] = {};
+      double srcSq = 0.0;
+      for (size_t i = 0; i < count; ++i) {
+        const double p[3] = { src[i].x - srcCentroid[0], src[i].y - srcCentroid[1], src[i].z - srcCentroid[2] };
+        const double q[3] = { dst[i].x - dstCentroid[0], dst[i].y - dstCentroid[1], dst[i].z - dstCentroid[2] };
+        for (int a = 0; a < 3; ++a) {
+          for (int b = 0; b < 3; ++b) {
+            S[a][b] += p[a] * q[b];
+          }
+        }
+        srcSq += p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+      }
+      if (srcSq < 1e-12) {
+        return false;
+      }
+
+      const double N[4][4] = {
+        { S[0][0] + S[1][1] + S[2][2], S[1][2] - S[2][1],           S[2][0] - S[0][2],           S[0][1] - S[1][0] },
+        { S[1][2] - S[2][1],           S[0][0] - S[1][1] - S[2][2], S[0][1] + S[1][0],           S[2][0] + S[0][2] },
+        { S[2][0] - S[0][2],           S[0][1] + S[1][0],           -S[0][0] + S[1][1] - S[2][2], S[1][2] + S[2][1] },
+        { S[0][1] - S[1][0],           S[2][0] + S[0][2],           S[1][2] + S[2][1],           -S[0][0] - S[1][1] + S[2][2] },
+      };
+
+      // Shifted power iteration: adding a bound on the spectral radius makes
+      // the most positive eigenvalue dominant in magnitude.
+      double shift = 0.0;
+      for (int row = 0; row < 4; ++row) {
+        double rowSum = 0.0;
+        for (int col = 0; col < 4; ++col) {
+          rowSum += std::fabs(N[row][col]);
+        }
+        shift = std::max(shift, rowSum);
+      }
+
+      double q[4] = { 1.0, 0.0, 0.0, 0.0 };
+      for (int iteration = 0; iteration < 100; ++iteration) {
+        double next[4];
+        for (int row = 0; row < 4; ++row) {
+          next[row] = shift * q[row];
+          for (int col = 0; col < 4; ++col) {
+            next[row] += N[row][col] * q[col];
+          }
+        }
+        const double len = std::sqrt(next[0] * next[0] + next[1] * next[1] + next[2] * next[2] + next[3] * next[3]);
+        if (len < 1e-30) {
+          // Started orthogonal to the dominant eigenvector; reseed.
+          q[0] = 0.5; q[1] = 0.5; q[2] = 0.5; q[3] = 0.5;
+          continue;
+        }
+        for (int k = 0; k < 4; ++k) {
+          q[k] = next[k] / len;
+        }
+      }
+
+      const double w = q[0], x = q[1], y = q[2], z = q[3];
+      out.r[0] = 1.0 - 2.0 * (y * y + z * z);
+      out.r[1] = 2.0 * (x * y - w * z);
+      out.r[2] = 2.0 * (x * z + w * y);
+      out.r[3] = 2.0 * (x * y + w * z);
+      out.r[4] = 1.0 - 2.0 * (x * x + z * z);
+      out.r[5] = 2.0 * (y * z - w * x);
+      out.r[6] = 2.0 * (x * z - w * y);
+      out.r[7] = 2.0 * (y * z + w * x);
+      out.r[8] = 1.0 - 2.0 * (x * x + y * y);
+
+      // Uniform scale: sum(dstCentered . (R * srcCentered)) / sum|srcCentered|^2.
+      double dotSum = 0.0;
+      for (size_t i = 0; i < count; ++i) {
+        const double p[3] = { src[i].x - srcCentroid[0], src[i].y - srcCentroid[1], src[i].z - srcCentroid[2] };
+        const double rp[3] = {
+          out.r[0] * p[0] + out.r[1] * p[1] + out.r[2] * p[2],
+          out.r[3] * p[0] + out.r[4] * p[1] + out.r[5] * p[2],
+          out.r[6] * p[0] + out.r[7] * p[1] + out.r[8] * p[2],
+        };
+        dotSum += rp[0] * (dst[i].x - dstCentroid[0]) + rp[1] * (dst[i].y - dstCentroid[1]) + rp[2] * (dst[i].z - dstCentroid[2]);
+      }
+      out.s = dotSum / srcSq;
+      if (!(out.s > 1e-12) || !std::isfinite(out.s)) {
+        return false;
+      }
+
+      const double rc[3] = {
+        out.r[0] * srcCentroid[0] + out.r[1] * srcCentroid[1] + out.r[2] * srcCentroid[2],
+        out.r[3] * srcCentroid[0] + out.r[4] * srcCentroid[1] + out.r[5] * srcCentroid[2],
+        out.r[6] * srcCentroid[0] + out.r[7] * srcCentroid[1] + out.r[8] * srcCentroid[2],
+      };
+      for (int k = 0; k < 3; ++k) {
+        out.t[k] = dstCentroid[k] - out.s * rc[k];
+      }
+      return std::isfinite(out.t[0]) && std::isfinite(out.t[1]) && std::isfinite(out.t[2]);
     }
 
     // Resolves an OBJ index (1-based, negative counts from the end) to a
@@ -354,125 +619,333 @@ namespace dxvk {
       return;
     }
 
-    // Sample a subset of mask vertices for scoring.
+    // Size references. The RMS radius ratio estimates the export's uniform
+    // scale (a capture edited at 0.01x viewer scale exports 100x too small);
+    // the live RMS radius is also the yardstick residuals are judged by.
+    const HairMaskVec3 liveCentroid = liveGrid.centroid();
+    double liveRmsSq = 0.0;
+    for (const HairMaskVec3& p : liveGrid.points()) {
+      liveRmsSq += lengthSq(sub(p, liveCentroid));
+    }
+    const float liveRms = static_cast<float>(std::sqrt(liveRmsSq / static_cast<double>(liveGrid.size())));
+
+    double mx = 0.0, my = 0.0, mz = 0.0;
+    for (const HairMaskVec3& p : mask.positions) {
+      mx += p.x; my += p.y; mz += p.z;
+    }
+    const double invCount = 1.0 / static_cast<double>(mask.positions.size());
+    const HairMaskVec3 maskCentroid {
+      static_cast<float>(mx * invCount), static_cast<float>(my * invCount), static_cast<float>(mz * invCount)
+    };
+    double maskRmsSq = 0.0;
+    for (const HairMaskVec3& p : mask.positions) {
+      maskRmsSq += lengthSq(sub(p, maskCentroid));
+    }
+    const double maskRms = std::sqrt(maskRmsSq * invCount);
+    if (!(maskRms > 1e-12) || !(liveRms > 1e-12f)) {
+      mask.status += "; alignment failed (degenerate geometry)";
+      return;
+    }
+    const double initialScale = static_cast<double>(liveRms) / maskRms;
+
+    // Sample a subset of mask vertices for correspondences and scoring.
     const size_t sampleCount = std::min<size_t>(mask.positions.size(), 512);
     const size_t sampleStep = std::max<size_t>(mask.positions.size() / sampleCount, 1);
+    std::vector<HairMaskVec3> samples;
+    samples.reserve(sampleCount);
+    for (size_t i = 0; i < mask.positions.size(); i += sampleStep) {
+      samples.push_back(mask.positions[i]);
+    }
 
-    const HairMaskVec3 liveCentroid = liveGrid.centroid();
-
-    int bestCandidate = -1;
-    float bestMedian = 3.4e38f;
-    HairMaskVec3 bestDelta {};
+    // Bounds of the live points: queries far outside cannot have a nearby
+    // vertex, and answering them through the grid is its worst case (ring
+    // walks ending in a full scan). The distance to the box is a correct
+    // lower bound and a fine score for what is a hopeless placement anyway.
+    HairMaskVec3 liveLo { 3.4e38f, 3.4e38f, 3.4e38f };
+    HairMaskVec3 liveHi { -3.4e38f, -3.4e38f, -3.4e38f };
+    for (const HairMaskVec3& p : liveGrid.points()) {
+      liveLo.x = std::min(liveLo.x, p.x); liveHi.x = std::max(liveHi.x, p.x);
+      liveLo.y = std::min(liveLo.y, p.y); liveHi.y = std::max(liveHi.y, p.y);
+      liveLo.z = std::min(liveLo.z, p.z); liveHi.z = std::max(liveHi.z, p.z);
+    }
+    const float boundsMargin = 0.05f * liveRms;
+    const auto nearestBounded = [&](const HairMaskVec3& p, float* distanceOut) -> int32_t {
+      const float cx = std::min(std::max(p.x, liveLo.x), liveHi.x);
+      const float cy = std::min(std::max(p.y, liveLo.y), liveHi.y);
+      const float cz = std::min(std::max(p.z, liveLo.z), liveHi.z);
+      const float dx = p.x - cx, dy = p.y - cy, dz = p.z - cz;
+      const float outsideSq = dx * dx + dy * dy + dz * dz;
+      if (outsideSq > boundsMargin * boundsMargin) {
+        *distanceOut = std::sqrt(outsideSq);
+        return -1;
+      }
+      return liveGrid.nearest(p, distanceOut);
+    };
 
     std::vector<float> distances;
-    distances.reserve(sampleCount);
-
-    for (size_t candidate = 0; candidate < sizeof(kAxisCandidates) / sizeof(kAxisCandidates[0]); ++candidate) {
-      const AxisCandidate& axis = kAxisCandidates[candidate];
-
-      // Centroid of the rotated mask, for the translation term.
-      double sx = 0.0, sy = 0.0, sz = 0.0;
-      for (const HairMaskVec3& p : mask.positions) {
-        const HairMaskVec3 r = applyAxis(axis, p);
-        sx += r.x; sy += r.y; sz += r.z;
-      }
-      const double inv = 1.0 / static_cast<double>(mask.positions.size());
-      const HairMaskVec3 delta {
-        liveCentroid.x - static_cast<float>(sx * inv),
-        liveCentroid.y - static_cast<float>(sy * inv),
-        liveCentroid.z - static_cast<float>(sz * inv),
-      };
-
+    distances.reserve(samples.size());
+    const auto scoreMedian = [&](const Similarity& transform) -> float {
       distances.clear();
-      for (size_t i = 0; i < mask.positions.size(); i += sampleStep) {
-        HairMaskVec3 r = applyAxis(axis, mask.positions[i]);
-        r.x += delta.x; r.y += delta.y; r.z += delta.z;
+      for (const HairMaskVec3& sample : samples) {
         float d = 0.0f;
-        liveGrid.nearest(r, &d);
+        nearestBounded(transform.apply(sample), &d);
         distances.push_back(d);
       }
-      if (distances.empty()) {
-        continue;
-      }
-
       std::nth_element(distances.begin(), distances.begin() + distances.size() / 2, distances.end());
-      const float median = distances[distances.size() / 2];
+      return distances[distances.size() / 2];
+    };
 
-      if (median < bestMedian) {
-        bestMedian = median;
-        bestCandidate = static_cast<int>(candidate);
-        bestDelta = delta;
+    // Principal frames of both point sets, shared by the scale hypotheses
+    // and the PCA rotation seeds below.
+    double maskFrame[3][3], liveFrame[3][3];
+    double maskEigenvalues[3], liveEigenvalues[3];
+    principalFrame(mask.positions.data(), mask.positions.size(), maskCentroid, maskFrame, maskEigenvalues);
+    principalFrame(liveGrid.points().data(), liveGrid.size(), liveCentroid, liveFrame, liveEigenvalues);
+
+    // Stage 1: score every seed rotation under each scale hypothesis with a
+    // centroid translation; keep the best few as ICP starting points.
+    // Three scales, because no single estimate survives every authoring
+    // accident: the RMS-radius ratio is unbiased only when the mask covers
+    // most of the mesh (a large cut shrinks the mask's radius and inflates
+    // the ratio); 1.0 is exactly right whenever the export kept the
+    // capture's units; and the median of the per-principal-axis extent
+    // ratios is robust to a cut along ONE axis, since the other two axes
+    // still measure the true scale.
+    static const std::vector<AxisCandidate> axisCandidates = buildAxisCandidates();
+
+    double scaleHypotheses[3] = { initialScale, 1.0, initialScale };
+    if (maskEigenvalues[0] > 1e-12 && maskEigenvalues[1] > 1e-12 && maskEigenvalues[2] > 1e-12) {
+      double ratios[3];
+      for (int k = 0; k < 3; ++k) {
+        ratios[k] = std::sqrt(std::max(liveEigenvalues[k], 0.0) / maskEigenvalues[k]);
+      }
+      if (ratios[0] > ratios[1]) std::swap(ratios[0], ratios[1]);
+      if (ratios[1] > ratios[2]) std::swap(ratios[1], ratios[2]);
+      if (ratios[0] > ratios[1]) std::swap(ratios[0], ratios[1]);
+      if (std::isfinite(ratios[1]) && ratios[1] > 1e-12) {
+        scaleHypotheses[2] = ratios[1];
+      }
+    }
+    int scaleCount = 0;
+    double uniqueScales[3];
+    for (const double hypothesis : scaleHypotheses) {
+      bool duplicate = false;
+      for (int k = 0; k < scaleCount; ++k) {
+        duplicate = duplicate || std::fabs(hypothesis - uniqueScales[k]) < 0.01 * uniqueScales[k];
+      }
+      if (!duplicate) {
+        uniqueScales[scaleCount++] = hypothesis;
       }
     }
 
-    if (bestCandidate < 0) {
-      mask.status += "; alignment failed";
-      return;
+    struct Seed {
+      Similarity transform;
+      float median;
+      const char* name;
+    };
+    std::vector<Seed> seeds;
+
+    // The as-exported placement first: an export with correct settings puts
+    // every mask vertex bit-exactly on its live source vertex, and no
+    // centroid adjustment must then perturb it - the centroid seeds below
+    // are biased by however much the mask's deleted faces move its centroid
+    // off the full mesh's.
+    {
+      Similarity identity;
+      seeds.push_back({ identity, scoreMedian(identity), "as exported" });
+    }
+
+    for (const AxisCandidate& axis : axisCandidates) {
+      for (int scaleIndex = 0; scaleIndex < scaleCount; ++scaleIndex) {
+        Similarity transform;
+        for (int k = 0; k < 9; ++k) {
+          transform.r[k] = axis.m[k];
+        }
+        transform.s = uniqueScales[scaleIndex];
+        const HairMaskVec3 rotatedCentroid = applyAxis(axis, maskCentroid);
+        transform.t[0] = liveCentroid.x - transform.s * rotatedCentroid.x;
+        transform.t[1] = liveCentroid.y - transform.s * rotatedCentroid.y;
+        transform.t[2] = liveCentroid.z - transform.s * rotatedCentroid.z;
+        seeds.push_back({ transform, scoreMedian(transform), axis.name });
+      }
+    }
+
+    // PCA seeds: rotate the mask's principal frame onto the live mesh's.
+    // This is what catches arbitrary rotations baked into an export (an
+    // applied object transform) that no axis permutation can represent. The
+    // per-axis sign ambiguity gives four proper-rotation candidates.
+    {
+      for (int signBits = 0; signBits < 4; ++signBits) {
+        const double sign0 = (signBits & 1) != 0 ? -1.0 : 1.0;
+        const double sign1 = (signBits & 2) != 0 ? -1.0 : 1.0;
+        const double sign2 = sign0 * sign1; // keep det = +1
+        const double signs[3] = { sign0, sign1, sign2 };
+
+        for (int scaleIndex = 0; scaleIndex < scaleCount; ++scaleIndex) {
+          Similarity transform;
+          // R = liveFrame * diag(signs) * maskFrame^T.
+          for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+              double sum = 0.0;
+              for (int k = 0; k < 3; ++k) {
+                sum += liveFrame[r][k] * signs[k] * maskFrame[c][k];
+              }
+              transform.r[r * 3 + c] = sum;
+            }
+          }
+          transform.s = uniqueScales[scaleIndex];
+          const double rc[3] = {
+            transform.r[0] * maskCentroid.x + transform.r[1] * maskCentroid.y + transform.r[2] * maskCentroid.z,
+            transform.r[3] * maskCentroid.x + transform.r[4] * maskCentroid.y + transform.r[5] * maskCentroid.z,
+            transform.r[6] * maskCentroid.x + transform.r[7] * maskCentroid.y + transform.r[8] * maskCentroid.z,
+          };
+          transform.t[0] = liveCentroid.x - transform.s * rc[0];
+          transform.t[1] = liveCentroid.y - transform.s * rc[1];
+          transform.t[2] = liveCentroid.z - transform.s * rc[2];
+          seeds.push_back({ transform, scoreMedian(transform), "pca" });
+        }
+      }
+    }
+
+    std::sort(seeds.begin(), seeds.end(), [](const Seed& a, const Seed& b) { return a.median < b.median; });
+
+    // Stage 2: similarity ICP from the best seeds. Each iteration pairs
+    // sampled mask vertices with their nearest live vertex, trims the worst
+    // fifth (edited-away regions, early mismatches), and re-solves the FULL
+    // transform from the original sample positions - absolute re-solves
+    // cannot accumulate drift. Mask vertices are unmoved copies of live
+    // vertices, so a mask that belongs to this mesh converges to ~zero
+    // residual regardless of the export's scale, axes or baked transforms.
+    Similarity best = seeds[0].transform;
+    float bestMedian = seeds[0].median;
+    const char* bestName = seeds[0].name;
+
+    // Refine EVERY seed: the pre-ICP score cannot rank reliably - a
+    // wrong-scale placement that collapses the mask inside the surface
+    // cloud scores better than a correct-scale start still offset by the
+    // cut's centroid bias, yet only the latter converges to the true fit.
+    // Alignment runs once per mask load, so the extra polish is cheap.
+    const size_t startCount = seeds.size();
+    struct Correspondence {
+      float distance;
+      uint32_t sample;
+      int32_t live;
+    };
+    std::vector<Correspondence> pairs;
+    std::vector<HairMaskVec3> pairSrc, pairDst;
+
+    const auto runIcp = [&](Similarity current, float currentMedian) {
+      const float startMedian = currentMedian;
+      for (int iteration = 0; iteration < 20; ++iteration) {
+        // Abandon starts that are going nowhere: a genuine fit collapses
+        // geometrically within a few iterations, and most seeds are junk
+        // whose full refinement would dominate the alignment's cost.
+        if (iteration == 3 && currentMedian > 0.9f * startMedian) {
+          break;
+        }
+        pairs.clear();
+        for (uint32_t i = 0; i < samples.size(); ++i) {
+          float d = 0.0f;
+          const int32_t nearestIndex = nearestBounded(current.apply(samples[i]), &d);
+          if (nearestIndex >= 0) {
+            pairs.push_back({ d, i, nearestIndex });
+          }
+        }
+        // Trimmed correspondences: keep the best 80%.
+        const size_t keep = std::max<size_t>(pairs.size() * 4 / 5, 8);
+        if (pairs.size() > keep) {
+          std::nth_element(pairs.begin(), pairs.begin() + keep, pairs.end(),
+                           [](const Correspondence& a, const Correspondence& b) { return a.distance < b.distance; });
+          pairs.resize(keep);
+        }
+        if (pairs.size() < 8) {
+          break;
+        }
+
+        pairSrc.clear();
+        pairDst.clear();
+        for (const Correspondence& pair : pairs) {
+          pairSrc.push_back(samples[pair.sample]);
+          pairDst.push_back(liveGrid.points()[pair.live]);
+        }
+
+        Similarity solved;
+        if (!solveSimilarity(pairSrc, pairDst, solved)) {
+          break;
+        }
+        const float solvedMedian = scoreMedian(solved);
+        if (solvedMedian >= currentMedian - 1e-7f * liveRms) {
+          if (solvedMedian < currentMedian) {
+            current = solved;
+            currentMedian = solvedMedian;
+          }
+          break; // converged
+        }
+        current = solved;
+        currentMedian = solvedMedian;
+        if (currentMedian <= 1e-5f * liveRms) {
+          break; // residual at float noise already
+        }
+      }
+      return std::make_pair(current, currentMedian);
+    };
+
+    for (size_t start = 0; start < startCount; ++start) {
+      const auto [refined, refinedMedian] = runIcp(seeds[start].transform, seeds[start].median);
+      if (refinedMedian < bestMedian) {
+        best = refined;
+        bestMedian = refinedMedian;
+        bestName = seeds[start].name;
+      }
+      if (bestMedian <= 1e-5f * liveRms) {
+        break; // no better fit exists
+      }
     }
 
     // Apply the winning fit to all positions and (rotation only) normals.
-    const AxisCandidate& axis = kAxisCandidates[bestCandidate];
     for (HairMaskVec3& p : mask.positions) {
-      p = applyAxis(axis, p);
-      p.x += bestDelta.x; p.y += bestDelta.y; p.z += bestDelta.z;
+      p = best.apply(p);
     }
     for (HairMaskVec3& n : mask.normals) {
-      n = applyAxis(axis, n);
-    }
-
-    // Translation refinement. The centroid fit above is off by however much
-    // the mask's deleted faces shift its centroid away from the full mesh's
-    // (an eyes-only cut barely moves it; cutting a large region does).
-    // Nearest-neighbor correspondences pull that residual out: once mask
-    // points sit within a vertex spacing of their source vertices, the mean
-    // offset to the nearest live vertex IS the remaining translation error.
-    for (int iteration = 0; iteration < 3; ++iteration) {
-      double ox = 0.0, oy = 0.0, oz = 0.0;
-      size_t used = 0;
-      for (size_t i = 0; i < mask.positions.size(); i += sampleStep) {
-        const int32_t nearestIndex = liveGrid.nearest(mask.positions[i]);
-        if (nearestIndex < 0) {
-          continue;
-        }
-        const HairMaskVec3 offset = sub(liveGrid.points()[nearestIndex], mask.positions[i]);
-        ox += offset.x; oy += offset.y; oz += offset.z;
-        ++used;
-      }
-      if (used == 0) {
-        break;
-      }
-      const HairMaskVec3 shift {
-        static_cast<float>(ox / static_cast<double>(used)),
-        static_cast<float>(oy / static_cast<double>(used)),
-        static_cast<float>(oz / static_cast<double>(used)),
-      };
-      for (HairMaskVec3& p : mask.positions) {
-        p.x += shift.x; p.y += shift.y; p.z += shift.z;
-      }
-      if (lengthSq(shift) < 1e-12f) {
-        break;
+      n = best.rotate(n);
+      const float len = std::sqrt(lengthSq(n));
+      if (len > 1e-6f) {
+        n.x /= len; n.y /= len; n.z /= len;
       }
     }
 
     // Full residual statistics with the fit applied.
     float maxResidual = 0.0f;
-    double residualSum = 0.0;
     distances.clear();
     for (size_t i = 0; i < mask.positions.size(); i += sampleStep) {
       float d = 0.0f;
       liveGrid.nearest(mask.positions[i], &d);
       distances.push_back(d);
       maxResidual = std::max(maxResidual, d);
-      residualSum += d;
     }
     std::nth_element(distances.begin(), distances.begin() + distances.size() / 2, distances.end());
 
     mask.aligned = true;
-    mask.alignmentName = axis.name;
+    mask.alignmentName = bestName;
+    mask.alignmentScale = static_cast<float>(best.s);
     mask.medianResidual = distances.empty() ? -1.0f : distances[distances.size() / 2];
     mask.maxResidual = maxResidual;
-    mask.status += "; aligned (" + std::string(axis.name) + "), median residual "
-                 + std::to_string(mask.medianResidual) + ", max " + std::to_string(mask.maxResidual);
+    mask.liveRmsRadius = liveRms;
+    // A mask that belongs to this mesh converges to ~zero; anything beyond a
+    // small fraction of the mesh size means it is the wrong mesh or a broken
+    // export, and scattering on it would misplace fur. The spread ratio
+    // guards the residual: a mask collapsed deep inside (or blown far
+    // beyond) the surface cloud can sit near many vertices without covering
+    // anything.
+    const double transformedSpread = best.s * maskRms;
+    const bool spreadSane = transformedSpread > 0.1 * liveRms && transformedSpread < 10.0 * liveRms;
+    mask.wellFitted = spreadSane && mask.medianResidual >= 0.0f && mask.medianResidual <= 0.02f * liveRms;
+    mask.status += "; aligned (seed " + std::string(bestName)
+                 + ", scale " + std::to_string(mask.alignmentScale)
+                 + "), median residual " + std::to_string(mask.medianResidual)
+                 + ", max " + std::to_string(mask.maxResidual)
+                 + " (mesh RMS radius " + std::to_string(liveRms) + ")"
+                 + (mask.wellFitted ? "" : "; POOR FIT - mask ignored for this mesh");
   }
 
 } // namespace dxvk

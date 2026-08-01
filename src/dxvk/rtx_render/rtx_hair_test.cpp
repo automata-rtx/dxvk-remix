@@ -1216,6 +1216,7 @@ namespace dxvk {
     }
 
     HairPointGrid liveGrid;
+    HairMaskMesh alignedMask;
     const HairMaskMesh* mask = nullptr;
     {
       auto maskIt = m_hairMasks.find(maskTextureHash);
@@ -1226,11 +1227,35 @@ namespace dxvk {
       }
       if (maskIt->second.loaded) {
         liveGrid.build(livePositions.data(), livePositions.size());
-        if (!maskIt->second.aligned) {
-          alignHairMaskToLiveMesh(maskIt->second, liveGrid);
-          Logger::info(str::format("[Hair Test] Scatter mask: ", maskIt->second.status));
+        // Aligned per mesh, on a copy: several meshes can share one tagged
+        // texture and therefore one mask file (a character plus a small
+        // extra piece), and one similarity transform cannot fit both. The
+        // shared entry stays in file space; each build fits its own copy
+        // against its own live vertices, and a mesh the mask does not
+        // belong to (poor converged fit) scatters on its full surface
+        // instead of wearing a misplaced mask.
+        alignedMask = maskIt->second;
+        alignHairMaskToLiveMesh(alignedMask, liveGrid);
+        Logger::info(str::format("[Hair Test] Scatter mask: ", alignedMask.status));
+        if (alignedMask.wellFitted) {
+          mask = &alignedMask;
+        } else {
+          Logger::warn("[Hair Test] Scatter mask does not fit this mesh; falling back to the full surface.");
         }
-        mask = &maskIt->second;
+        // The overlay shows one status line per mask file: keep the best
+        // fit seen (the mesh the mask was authored for), or the latest
+        // attempt while none has fitted yet. The shared entry's status
+        // string stays load-only - each build copies it as the base of its
+        // own alignment report - so only the numeric fields are mirrored.
+        if (alignedMask.wellFitted || !maskIt->second.aligned) {
+          maskIt->second.aligned = alignedMask.aligned;
+          maskIt->second.wellFitted = alignedMask.wellFitted;
+          maskIt->second.alignmentName = alignedMask.alignmentName;
+          maskIt->second.alignmentScale = alignedMask.alignmentScale;
+          maskIt->second.medianResidual = alignedMask.medianResidual;
+          maskIt->second.maxResidual = alignedMask.maxResidual;
+          maskIt->second.liveRmsRadius = alignedMask.liveRmsRadius;
+        }
       }
     }
 
@@ -2216,16 +2241,26 @@ namespace dxvk {
         ImGui::TextWrapped(
           "Optional per-texture scatter masks: a copy of the mesh with the no-fur faces deleted (eyes, "
           "accessories), exported as OBJ from a Remix capture - captures store skinned meshes in rest "
-          "pose, so an edit that only deletes faces stays aligned automatically. Axis conventions and "
-          "origin shifts are corrected by an auto-fit at load; the residual below should be ~0.");
+          "pose, so an edit that only deletes faces stays aligned automatically. Any export scale, axis "
+          "convention or baked transform is solved by a similarity ICP at load (no manual rescaling "
+          "needed); the residual below converges to ~0 for a correct mask, and a mask that cannot be "
+          "fitted is ignored for that mesh.");
 
         for (const XXH64_hash_t maskHash : RtxOptions::hairStrandTextures()) {
           const std::string expectedPath = maskDirectory() + "/" + hashToString(maskHash) + ".obj";
           const auto maskIt = m_hairMasks.find(maskHash);
           if (maskIt == m_hairMasks.end()) {
             ImGui::Text("%s: not checked yet (grows without a mask until seen)", expectedPath.c_str());
-          } else {
+          } else if (!maskIt->second.aligned) {
             ImGui::Text("%s: %s", expectedPath.c_str(), maskIt->second.status.c_str());
+          } else {
+            const std::string fit = std::string(maskIt->second.wellFitted ? "fitted" : "POOR FIT (mask ignored)")
+              + " - seed " + maskIt->second.alignmentName
+              + ", scale " + std::to_string(maskIt->second.alignmentScale)
+              + ", median residual " + std::to_string(maskIt->second.medianResidual)
+              + " / max " + std::to_string(maskIt->second.maxResidual)
+              + " (mesh RMS radius " + std::to_string(maskIt->second.liveRmsRadius) + ")";
+            ImGui::Text("%s: %s; %s", expectedPath.c_str(), maskIt->second.status.c_str(), fit.c_str());
           }
         }
         if (RtxOptions::hairStrandTextures().empty()) {

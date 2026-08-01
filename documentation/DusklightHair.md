@@ -155,20 +155,35 @@ Authoring loop:
    `rtx.conf`, where `<TEXHASH>` is the tagged texture's hash exactly as the
    texture UI shows it (16 uppercase hex digits). The overlay's Scatter
    Masks panel lists the expected filename per tagged texture, the load
-   status, and a Reload button (regrows without restarting).
+   status, and a Reload button (regrows without restarting). **Export
+   settings do not matter**: any axis preset, any uniform viewer/import
+   scale (working on a capture scaled to 0.01 is fine), and applied object
+   transforms are all solved by the alignment - what still matters is never
+   moving individual vertices.
 
 Runtime (`rtx_hair_mask.{h,cpp}`):
 
 - Minimal OBJ parser (`v`/`vn`/`f`, quads/n-gons fan-triangulated, negative
   indices).
-- **Alignment auto-fit**: tries identity plus the common exporter axis swaps
-  (±90°/180° frame rotations), a centroid translation, then ICP-style
-  translation refinement against nearest live vertices. Because mask
-  vertices are unmoved copies of live vertices, a correct export fits with
-  ~zero residual; the median/max residual is reported in the status line, so
-  a wrong export setting is a visible number, not mystery fur.
-- Missing/broken mask → falls back to full-surface scatter with a status
-  note.
+- **Similarity ICP alignment**: solves the full rotation + uniform scale +
+  translation. Seeds = the as-exported placement, 24 proper axis
+  permutations, and 4 principal-axis (PCA) frame alignments - the PCA seeds
+  are what catch arbitrary baked rotations - each under three scale
+  hypotheses (RMS-radius ratio, 1.0, and the median per-principal-axis
+  extent ratio, which survives a cut along one axis). Every seed is refined
+  by trimmed ICP re-solving Horn's closed-form absolute orientation from
+  nearest-live-vertex correspondences. Because mask vertices are unmoved
+  copies of live vertices, a correct export converges to ~zero residual
+  under any settings; median/max residual, the recovered scale and the mesh
+  RMS radius are reported in the status line.
+- **Fitted per mesh, on a copy.** Several meshes can share one tagged
+  texture (Wolf Link plus a small second piece); each build fits its own
+  copy of the mask against its own live vertices. A mesh the mask does not
+  belong to converges poorly, is flagged **POOR FIT**, and scatters on its
+  full surface instead of wearing a misplaced mask - same fallback as a
+  missing/broken mask file. The known limitation: a mask missing a large
+  fraction of its mesh combined with a wrong scale can defeat the fit; the
+  residual number and POOR FIT flag make that loud rather than silent.
 
 ## 6. Attachment modes (`surfaceAttachmentMode`)
 

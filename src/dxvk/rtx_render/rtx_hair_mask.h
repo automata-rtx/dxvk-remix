@@ -34,12 +34,18 @@
 // over the mask's triangles and bind to the nearest live-mesh vertex for
 // bone, UV and (fallback) normal data.
 //
-// Exporters disagree about axes and captures can recenter positions, so the
-// loader never trusts the file's frame: alignHairMaskToLiveMesh tries a set
-// of axis-permutation candidates plus a centroid translation against the live
-// vertices and keeps whichever fit lands mask vertices on live vertices,
-// reporting the residual so a bad export shows up as a number in the overlay
-// instead of misplaced fur.
+// Exporters disagree about axes, captures recenter positions, and authoring
+// round-trips bake in scene scale (a capture viewed at 0.01x in Blender
+// exports 100x too small), so the loader never trusts the file's frame:
+// alignHairMaskToLiveMesh solves the full similarity transform - rotation,
+// uniform scale and translation - by seeding axis-permutation candidates
+// with an RMS-radius scale estimate and refining with ICP (Horn's
+// closed-form absolute orientation on nearest-vertex correspondences).
+// Because mask vertices are unmoved copies of live vertices, a correct
+// export converges to ~zero residual under ANY export settings; the residual
+// is reported so a broken export shows up as a number in the overlay
+// instead of misplaced fur, and a fit that stays poor is flagged so the
+// caller can ignore the mask rather than scatter into the wrong place.
 //
 // This module deliberately depends only on the C++ standard library (no dxvk
 // types, no logging) so it can be unit-tested standalone and lifted into
@@ -73,10 +79,19 @@ namespace dxvk {
     // Load / alignment diagnostics for the caller's log and overlay.
     bool loaded = false;
     bool aligned = false;
+    // True when the converged fit lands mask vertices on live vertices
+    // (median residual within a small fraction of the live mesh's RMS
+    // radius). A false value means the mask does not belong to this mesh -
+    // callers should scatter on the full surface instead.
+    bool wellFitted = false;
     std::string status;
     const char* alignmentName = "";
+    float alignmentScale = 1.0f;
     float medianResidual = -1.0f;
     float maxResidual = -1.0f;
+    // RMS distance of live vertices from their centroid, the size reference
+    // the residuals should be read against.
+    float liveRmsRadius = 0.0f;
   };
 
   // Uniform hash grid over a point set. Used both to bind mask-scattered
@@ -114,10 +129,14 @@ namespace dxvk {
   // returns an unloaded mask whose status says why.
   HairMaskMesh loadHairMaskObj(const std::string& path);
 
-  // Fits the mask onto the live mesh: tries axis-permutation candidates plus
-  // a centroid translation, applies the best to positions and normals, and
-  // records the residual statistics. The live grid must be built over the
-  // live mesh's rest-pose vertex positions.
+  // Fits the mask onto the live mesh by solving the full similarity
+  // transform (rotation, uniform scale, translation): axis-permutation
+  // candidates scaled by the RMS-radius ratio seed an ICP that solves Horn's
+  // absolute orientation on nearest-live-vertex correspondences until it
+  // converges. The best transform is applied to positions (rotation only to
+  // normals) and the residual statistics recorded; wellFitted reports
+  // whether the converged fit is close enough to trust. The live grid must
+  // be built over the live mesh's rest-pose vertex positions.
   void alignHairMaskToLiveMesh(HairMaskMesh& mask, const HairPointGrid& liveGrid);
 
 } // namespace dxvk
