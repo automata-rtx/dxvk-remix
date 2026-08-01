@@ -70,16 +70,27 @@ The fix is the snapshot protocol:
 Surface hair caches per mesh under `VertexPosition hash ^ params hash`. This
 works because the game side guarantees:
 
-- rest-pose vertices (stable bytes frame over frame), and
+- rest-pose vertices (stable bytes frame over frame),
 - one draw per character material run — aurora's DX9 draw batcher merges a
   GX character's shape packets into a single indexed draw against a virtual
   256-entry world palette (matching Remix's `SkinningArgs::bones[256]`),
   with palette entries allocated per (slot, load-generation) so the merged
-  bytes are deterministic under animation.
+  bytes are deterministic under animation — and
+- **one coherent coordinate space across the merged mesh.** J3D stores
+  single-joint ("full weight") shapes' vertices in the joint's local frame
+  and enveloped shapes' vertices in model/bind space; raw merged bytes
+  therefore showed a character's full-weight parts (Wolf Link's head and
+  tail) as spikes collapsed at the model origin — captures exported that
+  explosion and hair scattered across it, while rendering looked fine
+  because each part's matrix undoes its own storage space. The game now
+  annotates each position-matrix load with the storage→rest transform
+  (aurora `GXSetPosMtxRest`); the DX9 backend rewrites vertices into bind
+  pose and compensates the world matrices, so the bytes Remix hashes,
+  skins, captures — and grows hair on — are one bind-pose mesh.
 
 Accessories with their own material (eye decals, a chained paw) break the
 batch and stay separate meshes — which is also what keeps them furless even
-without a mask. See aurora `docs/dx9/progress.md` §3.19.
+without a mask. See aurora `docs/dx9/progress.md` §3.19–3.20.
 
 ## 4. Growth pipeline
 
@@ -124,7 +135,9 @@ Authoring loop:
 1. Take a Remix capture with the character on screen. For skinned meshes the
    capturer exports the **rest-pose input geometry** plus skeleton
    (`rtx_game_capturer.cpp`), so the captured mesh is byte-compatible with
-   the live draw's vertex data.
+   the live draw's vertex data. With the game side's rest-space annotations
+   (§3) the export is the character's coherent bind pose; a capture showing
+   parts collapsed at the origin means the game build predates them.
 2. Import the capture USD in Blender, duplicate the character mesh, delete
    the faces that should not grow fur. **Only delete — never move
    vertices.** Blender stores mesh data in rest pose (the armature is a
