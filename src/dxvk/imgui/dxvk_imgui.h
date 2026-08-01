@@ -204,7 +204,7 @@ namespace dxvk {
     bool m_lastRenderVsyncStatus = false;
     std::unique_ptr<RtxGraphGUI> m_graphGUI;
 
-    static constexpr const char* tabNames[] = { "Rendering", "Game Setup", "Enhancements", "About" , "Dev Settings", "Hair Test"};
+    static constexpr const char* tabNames[] = { "Rendering", "Game Setup", "Enhancements", "About" , "Dev Settings", "Hair"};
     static_assert(sizeof(tabNames) / sizeof(tabNames[0]) == kTab_Count,
                   "tabNames must stay in step with Tabs");
     Tabs m_curTab = kTab_Count;
