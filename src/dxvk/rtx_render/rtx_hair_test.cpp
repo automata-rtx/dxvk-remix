@@ -916,8 +916,18 @@ namespace dxvk {
       return 0.0f;
     }
 
+    // Snapshot-captured draws own their buffers: the bytes are written once on
+    // the CPU at capture time and the GPU only ever reads them, so a
+    // concurrent CPU read is always safe. isPendingGpuWrite() still reports
+    // true while any consuming pass is in flight, because dxvk tracks every
+    // storage-buffer descriptor as a write - read-only StructuredBuffer
+    // inputs included (dxvk_context.cpp, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+    // - and the hair pass runs before the frame's geometry passes retire.
+    // Left in place, that false positive blocked growth on every frame.
+    // Non-snapshot sources keep the guard: for shared ring memory, in-flight
+    // use really does mean the bytes may be rewritten under the read.
     const uint8_t* pPositions = static_cast<const uint8_t*>(source.positionBuffer.mapPtr(source.positionBuffer.offsetFromSlice()));
-    if (pPositions == nullptr || source.positionBuffer.isPendingGpuWrite()) {
+    if (pPositions == nullptr || (!input.capturedForHairSnapshot && source.positionBuffer.isPendingGpuWrite())) {
       Logger::warn("[Hair Test] Tagged mesh vertex data is not CPU-readable; no hair grown.");
       return 0.0f;
     }
@@ -1017,8 +1027,12 @@ namespace dxvk {
       return false;
     }
 
+    // Same snapshot bypass as measureSurfaceArea: dxvk's conservative
+    // storage-descriptor tracking makes isPendingGpuWrite() a false positive
+    // for the draw-owned snapshot buffers, whose bytes are immutable after
+    // the capture-time CPU write.
     const uint8_t* pPositions = static_cast<const uint8_t*>(source.positionBuffer.mapPtr(source.positionBuffer.offsetFromSlice()));
-    if (pPositions == nullptr || source.positionBuffer.isPendingGpuWrite()) {
+    if (pPositions == nullptr || (!input.capturedForHairSnapshot && source.positionBuffer.isPendingGpuWrite())) {
       Logger::warn("[Hair Test] Tagged mesh vertex data is not CPU-readable; no hair grown.");
       return false;
     }

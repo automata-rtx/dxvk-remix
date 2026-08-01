@@ -64,6 +64,15 @@ The fix is the snapshot protocol:
   the flag drops and no copies are made.
 - Snapshot bytes are identical to what Remix hashes, so cache keys are
   unaffected.
+- **Marked draws bypass the `isPendingGpuWrite()` guard.** dxvk tracks every
+  storage-buffer descriptor as a *write* — read-only `StructuredBuffer`
+  inputs included — so a snapshot buffer consumed by the frame's
+  interleave/skinning passes reports "pending GPU write" until the command
+  list retires, which is after the hair pass runs. For draw-owned snapshot
+  buffers that is a false positive (bytes are CPU-written once at capture,
+  then only read); left in place it blocked all growth. The guard still
+  applies to unmarked sources, where in-flight use genuinely means the ring
+  bytes may be rewritten.
 
 ## 3. Mesh identity (the aurora batcher contract)
 
