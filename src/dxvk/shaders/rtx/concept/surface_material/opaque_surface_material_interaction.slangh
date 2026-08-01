@@ -886,7 +886,7 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   {
     opaqueSurfaceMaterialInteraction.flags |= OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR;
 
-    const vec3 fiberTangent = safeNormalize(surfaceInteraction.debugInterpolatedVertexNormal, surfaceInteraction.geometryNormal);
+    const vec3 fiberTangent = safeNormalize(surfaceInteraction.interpolatedVertexNormal, surfaceInteraction.geometryNormal);
     const HairFiberFrame fiberFrame =
       hairFiberFrameCreate(fiberTangent, surfaceInteraction.geometryNormal, minimalRayInteraction.viewDirection);
 

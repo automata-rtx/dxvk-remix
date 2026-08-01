@@ -531,6 +531,13 @@ struct SurfaceInteraction : MinimalSurfaceInteraction
 #endif
 #endif
 
+  // The raw interpolated vertex normal attribute, before any bending toward the
+  // triangle normal. Hair fibers need it unbent because for strand geometry the
+  // attribute carries the fiber TANGENT (which is roughly perpendicular to the
+  // triangle normal, so bending would destroy it) - see
+  // OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR.
+  vec3 interpolatedVertexNormal = 0.f;
+
   vec3 motion = 0..xxx;
   vec2 textureCoordinates = 0..xx;
   vec2 textureGradientX = 0..xx;
