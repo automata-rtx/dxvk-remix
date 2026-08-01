@@ -156,6 +156,7 @@ namespace dxvk {
       float hybridRadiusScale;
       int hybridSeamStrands;
       int maskMirror;
+      float occlusion;
     } parameters = {
       surfaceStrandCount(),
       surfaceHairLength(),
@@ -173,6 +174,7 @@ namespace dxvk {
       hybridClusterRadiusScale(),
       hybridSeamStrandCount(),
       maskMirrorMode(),
+      strandOcclusion(),
     };
 
     return XXH64(&parameters, sizeof(parameters), 0x48414952u);
@@ -892,6 +894,11 @@ namespace dxvk {
 
     struct RootAttachment {
       uint32_t nearestVertex;
+      // The smooth surface normal the strand grew from (the mask's authored
+      // normal or the interpolated live normal) - also the strands' shading
+      // normal, so fur shades with the pelt's curvature instead of the raw
+      // normal of whichever vertex happened to be nearest.
+      float normal[3];
     };
     std::vector<RootAttachment> rootAttachments;
     rootAttachments.reserve(totalStrands);
@@ -1060,7 +1067,7 @@ namespace dxvk {
         }
       }
 
-      rootAttachments.push_back({ attachVertex });
+      rootAttachments.push_back({ attachVertex, { surfaceNormal.x, surfaceNormal.y, surfaceNormal.z } });
 
       // Grow the strand along the jittered surface normal.
       const float jitterX = rng.next() * 2.0f - 1.0f;
@@ -1189,19 +1196,24 @@ namespace dxvk {
         HairVertex& vertex = hairVertices[vertexIndex];
         std::memcpy(vertex.position, &dotsPositionData[static_cast<size_t>(vertexIndex) * 3], 3 * sizeof(float));
         std::memcpy(vertex.texcoord, &dotsTexcoordData[static_cast<size_t>(vertexIndex) * 2], 2 * sizeof(float));
-        vertex.color = 0xFFFFFFFFu;
 
         const uint32_t localStrand = vertexIndex / verticesPerStrand;
-        const uint32_t attachmentVertex = rootAttachments[strandList[localStrand]].nearestVertex;
+        const RootAttachment& attachment = rootAttachments[strandList[localStrand]];
+        const uint32_t attachmentVertex = attachment.nearestVertex;
 
-        // Root surface normal: recomputed cheaply from the attachment vertex.
-        if (pNormals != nullptr) {
-          std::memcpy(vertex.normal, pNormals + static_cast<size_t>(attachmentVertex) * normalStride, 3 * sizeof(float));
-        } else {
-          vertex.normal[0] = 0.0f;
-          vertex.normal[1] = 1.0f;
-          vertex.normal[2] = 0.0f;
-        }
+        // Root-to-tip occlusion gradient in the vertex color: a real coat is
+        // darkest where it is deepest, and the modulation reads as the
+        // self-shadowing/ambient occlusion the path tracer cannot afford to
+        // resolve between individual strands. The color multiplies the
+        // strand's albedo through the source material's diffuse modulation.
+        const uint32_t segmentOfVertex = (vertexIndex % verticesPerStrand) / kDotsVerticesPerSegment;
+        const float strandT = (static_cast<float>(segmentOfVertex) + 0.5f) / static_cast<float>(segmentsEach);
+        const float occlusionScale = 1.0f - strandOcclusion() * (1.0f - std::min(strandT, 1.0f));
+        const auto occlusionByte = static_cast<uint32_t>(std::max(occlusionScale, 0.0f) * 255.0f + 0.5f);
+        vertex.color = 0xFF000000u | (occlusionByte << 16) | (occlusionByte << 8) | occlusionByte;
+
+        // Shading normal: the smooth surface normal the strand grew from.
+        std::memcpy(vertex.normal, attachment.normal, 3 * sizeof(float));
 
         // Raw-copy the attachment vertex's blend data: the skinning shader's
         // conventions (numBones-1 weights, byte-packed indices) carry over
@@ -1399,6 +1411,7 @@ namespace dxvk {
       RemixGui::DragFloat("Curliness", &curlinessObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragFloat("Curl Turns", &curlTurnsObject(), 0.05f, 0.0f, 16.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragFloat("Gravity Droop", &gravityDroopObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+      RemixGui::DragFloat("Root Occlusion", &strandOcclusionObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragInt("Scatter Seed", &scatterSeedObject(), 1.0f);
 
       ImGui::Unindent();

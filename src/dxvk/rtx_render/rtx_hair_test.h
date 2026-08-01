@@ -165,6 +165,12 @@ namespace dxvk {
                     args.minValue = 0.0f, args.maxValue = 1.0f);
     RTX_OPTION("rtx.hairTest", int, scatterSeed, 1337,
                "Random seed for strand scattering and per-strand variation.");
+    RTX_OPTION_ARGS("rtx.hairTest", float, strandOcclusion, 0.45f,
+                    "Root-to-tip darkening baked into the strand vertex colors: 0 leaves the whole strand at the surface "
+                    "color, 1 fades the roots to black. A real coat is darkest where it is deepest; the gradient stands in "
+                    "for the strand-to-strand self-shadowing the path tracer cannot afford to resolve individually, and is "
+                    "the main thing separating 'fur' from 'colored spikes' under uniform lighting.",
+                    args.minValue = 0.0f, args.maxValue = 1.0f);
 
   private:
     DxvkDevice* m_device;
