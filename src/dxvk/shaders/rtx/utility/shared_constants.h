@@ -44,10 +44,23 @@ static const uint8_t surfaceMaterialTypeMask = uint8_t(0x3u);
 #define OPAQUE_SURFACE_MATERIAL_FLAG_IGNORE_ALPHA_CHANNEL (1 << COMMON_MATERIAL_FLAG_TYPE_OFFSET(2))
 #define OPAQUE_SURFACE_MATERIAL_FLAG_IS_RAYTRACED_RENDER_TARGET (1 << COMMON_MATERIAL_FLAG_TYPE_OFFSET(3))
 #define OPAQUE_SURFACE_MATERIAL_FLAG_HAS_DISPLACEMENT (1 << COMMON_MATERIAL_FLAG_TYPE_OFFSET(4))
+// Hair fiber: the surface shades with the RTX Character Rendering hair BCSDF
+// (R / TT / TRT lobes) instead of the GGX + Lambert opaque model, and the
+// interpolated normal attribute carries the fiber TANGENT rather than a
+// normal. Hair rides the opaque material rather than being a fourth
+// polymorphic surface material type on purpose: the 2-bit material type field
+// is fully allocated (the fourth encoding is the subsurface extension), and
+// widening it would shift every material flag, the instance custom index and
+// the GBuffer packing. Riding the opaque path also keeps hair inside RTXDI,
+// ReSTIR, NEE and the denoiser, which is what makes it converge.
+#define OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR (1 << COMMON_MATERIAL_FLAG_TYPE_OFFSET(5))
 
 
 #define OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_HAS_HEIGHT_TEXTURE (1 << 0)
 #define OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_USE_THIN_FILM_LAYER (1 << 1)
+// Note: Set for hair fiber interactions (see OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR). Survives into the
+// GBuffer, where hair reuses the emissive words of the packed data to carry its fiber tangent.
+#define OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR (1 << 2)
 // flags overlap with type field when in gbuffer, which occupies last 2 bits.
 #define OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_MASK 0x3F
 

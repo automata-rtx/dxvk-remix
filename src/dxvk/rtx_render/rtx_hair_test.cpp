@@ -300,6 +300,7 @@ namespace dxvk {
       int hybridSeamStrands;
       int maskMirror;
       float occlusion;
+      int fiberBcsdf;
     } parameters = {
       surfaceStrandCount(),
       surfaceHairLength(),
@@ -318,6 +319,7 @@ namespace dxvk {
       hybridSeamStrandCount(),
       maskMirrorMode(),
       strandOcclusion(),
+      enableFiberBcsdf() ? 1 : 0,
     };
 
     return XXH64(&parameters, sizeof(parameters), 0x48414952u);
@@ -651,6 +653,9 @@ namespace dxvk {
       DrawCallState seamDraw = source;
       seamDraw.modifyGeometryData() = entry.geometry;
       seamDraw.modifyCategoryFlags().set(InstanceCategories::IgnoreOpacityMicromap);
+      // Selects the hair fiber BCSDF for this draw's material and declares the
+      // normal attribute as the fiber tangent (see DrawCallState).
+      seamDraw.isHairStrandGeometry = enableFiberBcsdf();
 
       ctx->getSceneManager().submitDrawState(ctx, seamDraw, nullptr);
     }
@@ -667,6 +672,9 @@ namespace dxvk {
       // makes every hair triangle an opacity micromap candidate, and tens of
       // millions of strand triangles overwhelm the OMM budget instantly.
       hairDraw.modifyCategoryFlags().set(InstanceCategories::IgnoreOpacityMicromap);
+      // Selects the hair fiber BCSDF for this draw's material and declares the
+      // normal attribute as the fiber tangent (see DrawCallState).
+      hairDraw.isHairStrandGeometry = enableFiberBcsdf();
 
       ctx->getSceneManager().submitDrawState(ctx, hairDraw, nullptr);
       return;
@@ -696,6 +704,9 @@ namespace dxvk {
       DrawCallState hairDraw = source;
       hairDraw.modifyGeometryData() = cluster.geometry;
       hairDraw.modifyCategoryFlags().set(InstanceCategories::IgnoreOpacityMicromap);
+      // Selects the hair fiber BCSDF for this draw's material and declares the
+      // normal attribute as the fiber tangent (see DrawCallState).
+      hairDraw.isHairStrandGeometry = enableFiberBcsdf();
 
       // The copied draw still carries the source's skinning state, and
       // geometry caching keys on its bone hash - left in place, every
@@ -1441,6 +1452,8 @@ namespace dxvk {
     // segments, tessellates to DOTS triangles via the SDK converter,
     // interleaves the vertices, and optionally attaches the source's blend
     // data (skinned mode only; rigid clusters need none).
+    const bool bakeFiberTangents = enableFiberBcsdf();
+
     const auto assembleGeometry = [&](const std::vector<uint32_t>& strandList,
                                       bool includeBlendData,
                                       uint64_t hashSalt) -> RasterGeometry {
@@ -1495,8 +1508,36 @@ namespace dxvk {
         const auto occlusionByte = static_cast<uint32_t>(std::max(occlusionScale, 0.0f) * 255.0f + 0.5f);
         vertex.color = 0xFF000000u | (occlusionByte << 16) | (occlusionByte << 8) | occlusionByte;
 
-        // Shading normal: the smooth surface normal the strand grew from.
-        std::memcpy(vertex.normal, attachment.normal, 3 * sizeof(float));
+        // Normal slot. The hair BCSDF is built around the fiber TANGENT rather
+        // than a normal (Remix reads this attribute as the tangent for hair
+        // materials, see OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR), so when fiber
+        // shading is on the strand direction goes here; otherwise the strand
+        // falls back to ordinary surface shading and wants the smooth root
+        // normal. Included in the parameter hash so switching regrows.
+        if (bakeFiberTangents) {
+          const uint32_t vertexInStrand = vertexIndex % verticesPerStrand;
+          const uint32_t segmentOfStrand = vertexInStrand / kDotsVerticesPerSegment;
+          const LineSegment& strandSegment =
+            clusterSegments[static_cast<size_t>(localStrand) * segmentsEach + segmentOfStrand];
+
+          math::float3 fiberTangent(
+            strandSegment.vertices[1].position[0] - strandSegment.vertices[0].position[0],
+            strandSegment.vertices[1].position[1] - strandSegment.vertices[0].position[1],
+            strandSegment.vertices[1].position[2] - strandSegment.vertices[0].position[2]);
+          const float tangentLengthSq = math::dot(fiberTangent, fiberTangent);
+          if (tangentLengthSq > 1e-12f) {
+            fiberTangent = fiberTangent * (1.0f / std::sqrt(tangentLengthSq));
+          } else {
+            fiberTangent = math::float3(attachment.normal[0], attachment.normal[1], attachment.normal[2]);
+          }
+
+          vertex.normal[0] = fiberTangent.x;
+          vertex.normal[1] = fiberTangent.y;
+          vertex.normal[2] = fiberTangent.z;
+        } else {
+          // Shading normal: the smooth surface normal the strand grew from.
+          std::memcpy(vertex.normal, attachment.normal, 3 * sizeof(float));
+        }
 
         // Raw-copy the attachment vertex's blend data: the skinning shader's
         // conventions (numBones-1 weights, byte-packed indices) carry over
@@ -1702,6 +1743,57 @@ namespace dxvk {
       RemixGui::DragFloat("Gravity Droop", &gravityDroopObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragFloat("Root Occlusion", &strandOcclusionObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragInt("Scatter Seed", &scatterSeedObject(), 1.0f);
+
+      ImGui::Unindent();
+    }
+
+    if (RemixGui::CollapsingHeader("Fiber Shading (Hair BCSDF)", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::Indent();
+
+      ImGui::TextWrapped(
+        "Strands shade with the RTX Character Rendering hair BCSDF: light reflecting off the fiber (the sharp white "
+        "sheen), passing through it (the warm glow when a coat is backlit) and bouncing inside it (the coloured "
+        "secondary highlight), with absorption along the path through each fiber. This is what separates hair from "
+        "geometry that merely has strand shapes.");
+
+      RemixGui::Checkbox("Fiber BCSDF Shading", &enableFiberBcsdfObject());
+      ImGui::TextWrapped("Changing this regrows the strands: the fiber model stores the strand direction where "
+                         "surface shading stores a normal.");
+
+      ImGui::BeginDisabled(!enableFiberBcsdf());
+
+      RemixGui::Combo("Fiber Model", &fiberBsdfModelObject(), "Far-Field BCSDF\0Chiang (Near-Field)\0");
+      if (fiberBsdfModel() == 1) {
+        ImGui::TextWrapped("Chiang has no evaluation pdf, so it cannot participate in multiple importance sampling - "
+                           "expect more noise. Far-Field is the better default.");
+      }
+
+      RemixGui::Combo("Absorption", &fiberAbsorptionModelObject(), "From Strand Color\0Melanin (Physical)\0Melanin (Normalized)\0");
+      if (fiberAbsorptionModel() == 0) {
+        ImGui::TextWrapped("The fiber's colour comes from the source texture at each strand's root, so fur inherits "
+                           "the character's own colours.");
+      } else {
+        RemixGui::DragFloat("Melanin", &fiberMelaninObject(), 0.005f, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        RemixGui::DragFloat("Melanin Redness", &fiberMelaninRednessObject(), 0.005f, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+      }
+
+      if (fiberBsdfModel() == 0) {
+        RemixGui::DragFloat("Fiber Roughness", &fiberRoughnessObject(), 0.005f, 0.01f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+      } else {
+        RemixGui::DragFloat("Longitudinal Roughness", &fiberLongitudinalRoughnessObject(), 0.01f, 0.01f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        RemixGui::DragFloat("Azimuthal Roughness", &fiberAzimuthalRoughnessObject(), 0.01f, 0.01f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+      }
+
+      RemixGui::DragFloat("Cuticle Angle (deg)", &fiberCuticleAngleObject(), 0.05f, 0.0f, 10.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+      RemixGui::DragFloat("IOR", &fiberIorObject(), 0.005f, 1.0f, 2.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+      RemixGui::DragFloat("Primary Highlight", &fiberPrimaryHighlightScaleObject(), 0.01f, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+      RemixGui::DragFloat("Fill Light (Diffuse Lobe)", &fiberDiffuseWeightObject(), 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+      if (fiberDiffuseWeight() > 0.0f) {
+        RemixGui::ColorEdit3("Fill Light Tint", &fiberDiffuseTintObject());
+      }
+      RemixGui::DragFloat("Denoiser Roughness", &fiberDenoiserRoughnessObject(), 0.01f, 0.01f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+
+      ImGui::EndDisabled();
 
       ImGui::Unindent();
     }

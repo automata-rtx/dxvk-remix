@@ -33,6 +33,7 @@
 #include "rtx/concept/surface/surface.slangh"
 
 #include "rtx/concept/surface_material/surface_material_helper.slangh"
+#include "rtx/concept/surface_material/hair_bcsdf.slangh"
 #include "rtx/concept/surface_material/opaque_surface_material.slangh"
 #include "rtx/concept/surface_material/opaque_surface_material_interaction.slangh"
 #include "rtx/concept/surface_material/translucent_surface_material.slangh"

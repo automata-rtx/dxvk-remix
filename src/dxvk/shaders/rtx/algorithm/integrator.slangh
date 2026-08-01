@@ -283,7 +283,11 @@ void evaluateUnshadowedLight(
   out vec3 diffuseLight,
   out vec3 specularLight)
 {
+  // Note: Hair fibers scatter around the strand rather than about a normal, so
+  // a light behind the fiber still contributes (that is the TT lobe) and must
+  // not be rejected by a hemisphere test.
   if (dot(inputDirection, opaqueSurfaceMaterialInteraction.shadingNormal) < 0.0 &&
+      !opaqueSurfaceMaterialInteractionIsHair(opaqueSurfaceMaterialInteraction) &&
       (!cb.sssArgs.enableThinOpaque || !isThinOpaqueSubsurfaceMaterial(opaqueSurfaceMaterialInteraction)))
   {
     diffuseLight = specularLight = 0;

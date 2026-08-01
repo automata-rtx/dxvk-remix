@@ -50,6 +50,11 @@ PolymorphicSurfaceMaterialInteraction polymorphicSurfaceMaterialInteractionCreat
   polymorphicSurfaceMaterialInteraction.bdata0 = opaqueSurfaceMaterialInteraction.flags;
   polymorphicSurfaceMaterialInteraction.bdata1 = opaqueSurfaceMaterialInteraction.subsurfaceMaterialInteraction.volumetricAnisotropy;
   polymorphicSurfaceMaterialInteraction.bdata2 = opaqueSurfaceMaterialInteraction.subsurfaceMaterialInteraction.maxSampleRadius;
+  // Note: idata0 is otherwise unused by the opaque encoding; hair fibers carry
+  // their packed tangent there (see OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR).
+  polymorphicSurfaceMaterialInteraction.idata0 =
+    (opaqueSurfaceMaterialInteraction.flags & OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR) ?
+    sphereDirectionToSnorm2x16(opaqueSurfaceMaterialInteraction.hairTangent) : 0;
 
   polymorphicSurfaceMaterialInteraction.type = surfaceMaterialTypeOpaque;
 

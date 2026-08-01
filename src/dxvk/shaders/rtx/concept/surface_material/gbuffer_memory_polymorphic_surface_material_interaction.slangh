@@ -74,6 +74,15 @@ GBufferMemoryPolymorphicSurfaceMaterialInteraction gBufferMemoryPolymorphicSurfa
     (uint32_t(f32ToUnorm8(gammaEmissiveColor.b)) << 8) |
     (uint32_t(float16BitsToUint16(float16_t(emissiveIntensity))) << 16);
 
+  // Hair fibers need their tangent in the deferred passes (the BCSDF is built
+  // around it) and are never emissive, so the whole emissive word is reused to
+  // carry it at full octahedral precision.
+  if (opaqueSurfaceMaterialInteraction.flags & OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR)
+  {
+    gBufferMemoryPolymorphicSurfaceMaterialInteraction.data1 =
+      sphereDirectionToSnorm2x16(opaqueSurfaceMaterialInteraction.hairTangent);
+  }
+
   return gBufferMemoryPolymorphicSurfaceMaterialInteraction;
 }
 

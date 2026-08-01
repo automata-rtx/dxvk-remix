@@ -586,7 +586,8 @@ struct RtOpaqueSurfaceMaterial {
     uint32_t samplerIndex, float displaceIn, float displaceOut,
     uint32_t subsurfaceMaterialIndex, bool isRaytracedRenderTarget,
     uint16_t samplerFeedbackStamp,
-    uint32_t secondaryTextureIndex = 0
+    uint32_t secondaryTextureIndex = 0,
+    bool isHair = false
   ) :
     m_albedoOpacityTextureIndex{ albedoOpacityTextureIndex }, m_secondaryTextureIndex{secondaryTextureIndex}, m_normalTextureIndex{ normalTextureIndex },
     m_tangentTextureIndex { tangentTextureIndex }, m_heightTextureIndex { heightTextureIndex }, m_roughnessTextureIndex{ roughnessTextureIndex },
@@ -598,6 +599,7 @@ struct RtOpaqueSurfaceMaterial {
     m_ignoreAlphaChannel { ignoreAlphaChannel }, m_enableThinFilm { enableThinFilm }, m_alphaIsThinFilmThickness { alphaIsThinFilmThickness },
     m_thinFilmThicknessConstant { thinFilmThicknessConstant }, m_samplerIndex{ samplerIndex }, m_displaceIn{ displaceIn },
     m_displaceOut{ displaceOut }, m_subsurfaceMaterialIndex(subsurfaceMaterialIndex), m_isRaytracedRenderTarget(isRaytracedRenderTarget),
+    m_isHair(isHair),
     m_samplerFeedbackStamp{ samplerFeedbackStamp }
   {
     updateCachedData();
@@ -629,6 +631,10 @@ struct RtOpaqueSurfaceMaterial {
 
     if (m_isRaytracedRenderTarget) {
       flags |= OPAQUE_SURFACE_MATERIAL_FLAG_IS_RAYTRACED_RENDER_TARGET;
+    }
+
+    if (m_isHair) {
+      flags |= OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR;
     }
 
     float displaceIn = m_displaceIn * getDisplacementInFactor();
@@ -806,7 +812,7 @@ struct RtOpaqueSurfaceMaterial {
 private:
   void updateCachedHash() {
     static_assert(
-      sizeof(*this) == 120,
+      sizeof(*this) == 124,
       "add new member for hashing if needed: add a MEMBER into the struct + add a VALUE into the list-init"
     );
     struct HashStruct {
@@ -833,6 +839,7 @@ private:
       float displaceOut;
       uint32_t subsurfaceMaterialIndex;
       uint32_t isRaytracedRenderTarget;   // NOTE: uint32_t to avoid padding
+      uint32_t isHair;                    // NOTE: uint32_t to avoid padding
       uint32_t samplerFeedbackStamp;      // NOTE: uint32_t to avoid padding
       uint32_t secondaryTextureIndex;
       // NOTE: There must be NO padding between members, as the struct is used for hashing
@@ -862,6 +869,7 @@ private:
       m_displaceOut,
       m_subsurfaceMaterialIndex,
       m_isRaytracedRenderTarget,
+      m_isHair,
       m_samplerFeedbackStamp,
       m_secondaryTextureIndex,
     };
@@ -912,6 +920,14 @@ private:
   uint32_t m_subsurfaceMaterialIndex;
 
   bool m_isRaytracedRenderTarget;
+
+  // Shades with the RTXCR hair fiber BCSDF instead of the opaque GGX + Lambert
+  // model, and reads the interpolated normal attribute as the fiber tangent.
+  // Carried on the opaque material rather than a dedicated surface material
+  // type because the 2 bit material type field is fully allocated, and because
+  // riding the opaque path keeps hair inside NEE, RTXDI/ReSTIR and the
+  // denoiser (see OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR).
+  bool m_isHair;
 
   uint16_t m_samplerFeedbackStamp;
 

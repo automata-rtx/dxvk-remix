@@ -191,6 +191,13 @@ struct OpaqueSurfaceMaterialInteraction
   vec3 albedo;
   float normalDetail; // 1.0 - dot(shadingNormal, interpolatedNormal)
   vec3 baseReflectivity;
+  // Note: Hair fiber tangent (the strand direction), only meaningful when
+  // OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR is set. Hair shades with
+  // the RTXCR fiber BCSDF around this axis instead of the GGX + Lambert model
+  // (see hair_bcsdf.slangh); serialization borrows the emissive words of the
+  // GBuffer and the otherwise unused idata0 of the polymorphic form, both of
+  // which hair never needs.
+  vec3 hairTangent;
   // Note: These roughness values are non-perceptual roughness.
   float isotropicRoughness;
   vec2 anisotropicRoughness;

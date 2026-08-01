@@ -1,0 +1,235 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// Hair fiber BCSDF, wrapping the RTX Character Rendering SDK's hair models.
+//
+// A hair fiber is not a surface: its response is organised around the fiber
+// TANGENT (the strand direction), not a normal, and it splits into the
+// R (surface reflection), TT (transmission through the fiber) and TRT
+// (internally reflected) lobes whose relative strengths produce the
+// characteristic coloured secondary highlight. Absorption inside the fiber is
+// what makes hair colour depend on how far light travels through it.
+//
+// Remix drives this through the Opaque Surface Material Interaction rather
+// than a fourth polymorphic material type (see
+// OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR), so hair keeps NEE, RTXDI/ReSTIR,
+// shadows and denoiser demodulation - all of which are hard-typed to the
+// opaque interaction and all of which hair needs to converge.
+//
+// Everything here works in the fiber's local frame: x along the tangent,
+// z along the fiber normal (the SDK's convention when the interaction surface
+// is built with tangent (1,0,0) / normal (0,0,1)).
+
+#include "rtxcr/HairMaterial.hlsli"
+#include "rtxcr/HairFarFieldBCSDF.hlsli"
+#include "rtxcr/HairChiangBSDF.hlsli"
+
+#define HAIR_BSDF_MODEL_FAR_FIELD 0
+#define HAIR_BSDF_MODEL_CHIANG 1
+
+struct HairFiberFrame
+{
+  // Rows: tangent, bitangent, normal. Transforms world -> fiber local.
+  mat3 tangentBasis;
+  vec3 tangentWorld;
+  vec3 normalWorld;
+  // Outgoing (towards the viewer) direction in fiber local space.
+  vec3 woLocal;
+  RTXCR_HairInteractionSurface interactionSurface;
+};
+
+// Builds the fiber shading frame. The shading normal is orthogonalized against
+// the tangent so the basis is orthonormal; when the view direction is parallel
+// to the fiber (a strand seen exactly end-on) any perpendicular will do.
+HairFiberFrame hairFiberFrameCreate(vec3 tangentWorld, vec3 shadingNormalWorld, vec3 viewDirection)
+{
+  HairFiberFrame frame;
+
+  frame.tangentWorld = normalize(tangentWorld);
+
+  vec3 normalWorld = shadingNormalWorld - dot(shadingNormalWorld, frame.tangentWorld) * frame.tangentWorld;
+  const float normalLength = length(normalWorld);
+
+  if (normalLength > 1e-6f)
+  {
+    frame.normalWorld = normalWorld / normalLength;
+  }
+  else
+  {
+    // Degenerate: pick any vector perpendicular to the fiber.
+    frame.normalWorld = normalize(cross(frame.tangentWorld, abs(frame.tangentWorld.x) < 0.9f ? vec3(1.0f, 0.0f, 0.0f) : vec3(0.0f, 1.0f, 0.0f)));
+  }
+
+  const vec3 biTangentWorld = cross(frame.normalWorld, frame.tangentWorld);
+  frame.tangentBasis = mat3(frame.tangentWorld, biTangentWorld, frame.normalWorld);
+
+  frame.woLocal = mul(frame.tangentBasis, viewDirection);
+
+  frame.interactionSurface.incidentRayDirection = frame.woLocal;
+  frame.interactionSurface.tangent = vec3(1.0f, 0.0f, 0.0f);
+  frame.interactionSurface.shadingNormal = vec3(0.0f, 0.0f, 1.0f);
+
+  return frame;
+}
+
+vec3 hairFiberFrameLocalToWorld(HairFiberFrame frame, vec3 localDirection)
+{
+  // tangentBasis rows are the local axes, so the transpose maps local -> world.
+  return localDirection.x * frame.tangentWorld +
+         localDirection.y * cross(frame.normalWorld, frame.tangentWorld) +
+         localDirection.z * frame.normalWorld;
+}
+
+RTXCR_HairMaterialData hairMaterialDataCreate(vec3 baseColor)
+{
+  RTXCR_HairMaterialData hairMaterialData;
+
+  hairMaterialData.baseColor = baseColor;
+  hairMaterialData.longitudinalRoughness = cb.hairArgs.longitudinalRoughness;
+  hairMaterialData.azimuthalRoughness = cb.hairArgs.azimuthalRoughness;
+  hairMaterialData.fresnelApproximation = 1;
+  hairMaterialData.ior = cb.hairArgs.ior;
+  hairMaterialData.eta = 1.0f / cb.hairArgs.ior;
+  hairMaterialData.cuticleAngleInDegrees = cb.hairArgs.cuticleAngleDegrees;
+  hairMaterialData.absorptionModel = cb.hairArgs.absorptionModel;
+  hairMaterialData.melanin = cb.hairArgs.melanin;
+  hairMaterialData.melaninRedness = cb.hairArgs.melaninRedness;
+
+  return hairMaterialData;
+}
+
+RTXCR_HairMaterialInteractionBcsdf hairFarFieldInteractionCreate(vec3 baseColor)
+{
+  return RTXCR_CreateHairMaterialInteractionBcsdf(
+    hairMaterialDataCreate(baseColor),
+    vec3(cb.hairArgs.diffuseReflectionTintR, cb.hairArgs.diffuseReflectionTintG, cb.hairArgs.diffuseReflectionTintB),
+    cb.hairArgs.diffuseReflectionWeight,
+    cb.hairArgs.farFieldRoughness);
+}
+
+// Evaluates the fiber response for a light direction, split into the sharp
+// R-lobe highlight and the broader transmission lobes. The split matches how
+// the rest of Remix separates signals: the specular part is the tight
+// view-dependent highlight the specular denoiser expects, the diffuse part is
+// the low-frequency coloured energy.
+//
+// Note: The returned values already include the fiber's cosine factor (the
+// SDK folds cos(thetaI) into its BCSDF), so callers must not apply n.l again.
+void hairBcsdfEvalSplit(
+  HairFiberFrame frame, vec3 baseColor, vec3 lightDirectionWorld,
+  out vec3 specularWeight, out vec3 diffuseWeight, out float solidAnglePdf)
+{
+  specularWeight = vec3(0.0f);
+  diffuseWeight = vec3(0.0f);
+  solidAnglePdf = 0.0f;
+
+  const vec3 wiLocal = mul(frame.tangentBasis, lightDirectionWorld);
+
+  if (cb.hairArgs.bsdfModel == HAIR_BSDF_MODEL_CHIANG)
+  {
+    const RTXCR_HairMaterialInteraction hairMaterialInteraction =
+      RTXCR_CreateHairMaterialInteraction(hairMaterialDataCreate(baseColor), frame.interactionSurface);
+
+    const vec3 bsdf = RTXCR_HairChiangBsdfEval(hairMaterialInteraction, wiLocal, frame.woLocal);
+
+    // Chiang's evaluation is a single combined value; treat the fiber's
+    // forward-scattered energy as the diffuse signal and let the highlight
+    // scale ride the specular one so both denoiser signals stay populated.
+    specularWeight = bsdf * cb.hairArgs.primaryHighlightScale;
+    // Chiang provides no evaluation pdf; the sampling pdf is only needed for
+    // MIS, and a zero pdf makes callers fall back to light-sampling weights.
+    solidAnglePdf = 0.0f;
+    return;
+  }
+
+  const RTXCR_HairMaterialInteractionBcsdf hairMaterialInteractionBcsdf = hairFarFieldInteractionCreate(baseColor);
+
+  vec3 bsdfSpecular = vec3(0.0f);
+  vec3 bsdfDiffuse = vec3(0.0f);
+  float pdf = 0.0f;
+
+  RTXCR_HairFarFieldBcsdfEval(
+    frame.interactionSurface, hairMaterialInteractionBcsdf,
+    wiLocal, frame.woLocal,
+    bsdfSpecular, bsdfDiffuse, pdf);
+
+  if (!(pdf > 0.0f) || any(isnan(bsdfSpecular)) || any(isnan(bsdfDiffuse)))
+  {
+    return;
+  }
+
+  specularWeight = max(bsdfSpecular * cb.hairArgs.primaryHighlightScale, vec3(0.0f));
+  diffuseWeight = max(bsdfDiffuse, vec3(0.0f));
+  solidAnglePdf = pdf;
+}
+
+// Importance samples the fiber. Returns false when no usable direction was
+// produced. The throughput already includes the cosine factor and the division
+// by the solid angle pdf, matching SurfaceMaterialInteractionSample.
+bool hairBcsdfSample(
+  HairFiberFrame frame, vec3 baseColor, inout RNG randomState,
+  out vec3 inputDirectionWorld, out vec3 throughput, out float solidAnglePdf, out bool isSpecularLobe)
+{
+  inputDirectionWorld = vec3(0.0f);
+  throughput = vec3(0.0f);
+  solidAnglePdf = 0.0f;
+  isSpecularLobe = true;
+
+  const RTXCR_HairMaterialInteractionBcsdf hairMaterialInteractionBcsdf = hairFarFieldInteractionCreate(baseColor);
+
+  // Offset across the fiber's width; the SDK's far-field model integrates the
+  // fiber cross section analytically but still needs an azimuthal offset.
+  const float h = getNextSampleBlueNoise(randomState) * 2.0f - 1.0f;
+  const float lobeRandom = getNextSampleBlueNoise(randomState);
+
+  vec2 rand2[2];
+  rand2[0] = vec2(getNextSampleBlueNoise(randomState), getNextSampleBlueNoise(randomState));
+  rand2[1] = vec2(getNextSampleBlueNoise(randomState), getNextSampleBlueNoise(randomState));
+
+  vec3 wiLocal = vec3(0.0f);
+  vec3 bsdfSpecular = vec3(0.0f);
+  vec3 bsdfDiffuse = vec3(0.0f);
+  float pdf = 0.0f;
+
+  const bool valid = RTXCR_SampleFarFieldBcsdf(
+    frame.interactionSurface, hairMaterialInteractionBcsdf,
+    frame.woLocal, h, lobeRandom, rand2,
+    wiLocal, bsdfSpecular, bsdfDiffuse, pdf);
+
+  if (!valid || !(pdf > 0.0f) || any(isnan(wiLocal)) || any(isnan(bsdfSpecular)) || any(isnan(bsdfDiffuse)))
+  {
+    return false;
+  }
+
+  bsdfSpecular = max(bsdfSpecular * cb.hairArgs.primaryHighlightScale, vec3(0.0f));
+  bsdfDiffuse = max(bsdfDiffuse, vec3(0.0f));
+
+  inputDirectionWorld = normalize(hairFiberFrameLocalToWorld(frame, wiLocal));
+  solidAnglePdf = pdf;
+  throughput = (bsdfSpecular + bsdfDiffuse) / pdf;
+  // The denoiser routes a sampled lobe into one of two signals; the diffuse
+  // (transmission) lobes are the low-frequency part.
+  isSpecularLobe = calcBt709Luminance(bsdfSpecular) >= calcBt709Luminance(bsdfDiffuse);
+
+  return true;
+}

@@ -1515,6 +1515,14 @@ namespace dxvk {
       preCreationHash = XXH64(&texturePresenceMask, sizeof(texturePresenceMask), preCreationHash);
     }
 
+    // The hair fiber flag changes the shading model, so hair strand draws must
+    // not share a cached material with the ordinary draws of the same texture
+    // (a character's fur and its body use the same albedo).
+    if (drawCallState.isHairStrandGeometry) {
+      const uint32_t isHair = 1u;
+      preCreationHash = XXH64(&isHair, sizeof(isHair), preCreationHash);
+    }
+
     auto iter = m_preCreationSurfaceMaterialMap.find(preCreationHash);
     if (iter != m_preCreationSurfaceMaterialMap.end()) {
       if (out_indexInCache) {
@@ -1671,7 +1679,8 @@ namespace dxvk {
         thinFilmThicknessConstant, samplerIndex, displaceIn, displaceOut, 
         subsurfaceMaterialIndex, isUsingRaytracedRenderTarget,
         samplerFeedbackStamp,
-        secondaryTextureIndex
+        secondaryTextureIndex,
+        drawCallState.isHairStrandGeometry
       };
 
       accumulateOpaqueMaterialAggregates(opaqueSurfaceMaterial);

@@ -403,7 +403,10 @@ SurfaceMaterialInteractionSplitWeight RAB_CalculateBRDF(vec3 L, RAB_Surface surf
   weight.specularReflectionWeight = vec3(0);
   weight.diffuseTransmissionWeight = vec3(0);
 
+  // Note: Hair fibers legitimately scatter light arriving from behind the
+  // strand (the TT lobe), so they are exempt from the hemisphere rejection.
   if (dot(L, surface.minimalSurfaceInteraction.geometryNormal) <= 0.0f &&
+      !opaqueSurfaceMaterialInteractionIsHair(surface.opaqueSurfaceMaterialInteraction) &&
       (!cb.sssArgs.enableThinOpaque || !isThinOpaqueSubsurfaceMaterial(surface.opaqueSurfaceMaterialInteraction)))
   {
     return weight;

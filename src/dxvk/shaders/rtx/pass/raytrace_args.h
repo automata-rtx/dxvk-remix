@@ -129,6 +129,37 @@ struct ShadowTerminatorArgs
   float maxLength;
 };
 
+// Hair fiber BCSDF parameters (RTX Character Rendering SDK). Global rather than
+// per-material: one coat look per game, and it keeps the hair flag the only
+// per-material state (see OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR). Note the
+// members are plain scalars - vector members would risk a C++/HLSL packing
+// mismatch in this shared header.
+struct HairArgs
+{
+  uint  bsdfModel;        // 0: far-field BCSDF, 1: Chiang near-field BSDF
+  uint  absorptionModel;  // 0: from base color, 1: melanin, 2: melanin normalized
+  float melanin;
+  float melaninRedness;
+
+  float longitudinalRoughness; // beta_m (Chiang)
+  float azimuthalRoughness;    // beta_n (Chiang)
+  float farFieldRoughness;
+  float ior;
+
+  float cuticleAngleDegrees;
+  float diffuseReflectionWeight;
+  float diffuseReflectionTintR;
+  float diffuseReflectionTintG;
+
+  float diffuseReflectionTintB;
+  // Scales the R (surface reflection) lobe, which is the sharp white highlight
+  // that reads as "sheen" on a coat.
+  float primaryHighlightScale;
+  // Perceptual roughness reported to the denoiser/demodulation for hair pixels.
+  float denoiserRoughness;
+  float pad0;
+};
+
 #define OBJECT_PICKING_INVALID (cb.clearColorPicking)
 
 // Constant buffer
@@ -163,6 +194,7 @@ struct RaytraceArgs {
   SssArgs sssArgs;
   EyeArgs eyeArgs;
   ShadowTerminatorArgs shadowTerminatorArgs;
+  HairArgs hairArgs;
 
   Camera renderTargetCamera;
 

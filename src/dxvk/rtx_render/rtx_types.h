@@ -768,6 +768,12 @@ struct DrawCallState {
   // draws rewrite long before the hair pass reads it at frame preparation.
   bool capturedForHairSnapshot = false;
 
+  // Set on the strand draws the hair system submits. Selects the RTXCR hair
+  // fiber BCSDF for the draw's material, and declares that the draw's normal
+  // attribute carries the fiber tangent rather than a normal
+  // (OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR).
+  bool isHairStrandGeometry = false;
+
   void setupCategoriesForTexture();
   void setupCategoriesForGeometry();
   void setupCategoriesForHeuristics(uint32_t prevFrameSeenCamerasCount,

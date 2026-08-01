@@ -552,6 +552,9 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction;
   // Note: need initialize the flags explicitely to get rid of garbage data.
   opaqueSurfaceMaterialInteraction.flags = 0;
+  // Note: Only meaningful for hair fibers, but initialized for every surface so
+  // the field is never read undefined.
+  opaqueSurfaceMaterialInteraction.hairTangent = vec3(0.0f);
 
   // Create a tangent to world space matrix for future calculations
 
@@ -874,6 +877,33 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   opaqueSurfaceMaterialInteraction.subsurfaceMaterialInteraction =
     subSurfaceMaterialReadHelper(opaqueSurfaceMaterial.subsurfaceMaterialIndex, surfaceInteraction, opaqueSurfaceMaterial.samplerIndex);
 
+  // Hair fibers: the interpolated normal attribute carries the strand TANGENT
+  // rather than a normal (see OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR), and the
+  // fiber shades with the RTXCR hair BCSDF. The shading normal is rebuilt
+  // perpendicular to the fiber and facing the viewer, which is both what the
+  // BCSDF frame wants and a well behaved normal for the denoiser.
+  if (opaqueSurfaceMaterial.flags & OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR)
+  {
+    opaqueSurfaceMaterialInteraction.flags |= OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR;
+
+    const vec3 fiberTangent = safeNormalize(surfaceInteraction.debugInterpolatedVertexNormal, surfaceInteraction.geometryNormal);
+    const HairFiberFrame fiberFrame =
+      hairFiberFrameCreate(fiberTangent, surfaceInteraction.geometryNormal, minimalRayInteraction.viewDirection);
+
+    opaqueSurfaceMaterialInteraction.hairTangent = fiberFrame.tangentWorld;
+    opaqueSurfaceMaterialInteraction.shadingNormal = fiberFrame.normalWorld;
+    opaqueSurfaceMaterialInteraction.normalDetail = 0.0f;
+    // Hair is never emissive - its emissive words carry the fiber tangent
+    // through the GBuffer instead.
+    opaqueSurfaceMaterialInteraction.emissiveRadiance = vec3(0.0f);
+    // Feed the denoiser a plausible dielectric response rather than the
+    // metallic/roughness values the fiber model does not use.
+    opaqueSurfaceMaterialInteraction.baseReflectivity = vec3(RTXCR_CalculateBaseReflectivity(1.0f, cb.hairArgs.ior));
+    calcRoughness(cb.hairArgs.denoiserRoughness, 0.0f,
+      opaqueSurfaceMaterialInteraction.isotropicRoughness,
+      opaqueSurfaceMaterialInteraction.anisotropicRoughness);
+  }
+
   // For an eye, load a secondary texture (iris) and blend on top of primary texture (whites)
   if (cb.eyeArgs.enableEyes && surface.isEye)
   {
@@ -902,6 +932,11 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(Polymorp
   opaqueSurfaceMaterialInteraction.emissiveRadiance = polymorphicSurfaceMaterialInteraction.emissiveRadiance;
   opaqueSurfaceMaterialInteraction.albedo = polymorphicSurfaceMaterialInteraction.vdata0;
   opaqueSurfaceMaterialInteraction.baseReflectivity = polymorphicSurfaceMaterialInteraction.vdata1;
+  // Note: idata0 is unused by the opaque encoding, so hair borrows it for the
+  // packed fiber tangent (see OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR).
+  opaqueSurfaceMaterialInteraction.hairTangent =
+    (polymorphicSurfaceMaterialInteraction.bdata0 & OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR) ?
+    snorm2x16ToSphereDirection(polymorphicSurfaceMaterialInteraction.idata0) : vec3(0.0f);
 
   if (polymorphicSurfaceMaterialInteraction.fdata0 < 0.0)
   {
@@ -971,6 +1006,16 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   opaqueSurfaceMaterialInteraction.emissiveRadiance = emissiveColor * emissiveIntensity;
   // Note: Thickness set to 0 when thin film is disabled for the same reason the opacity is set to 1 when it is enabled.
   opaqueSurfaceMaterialInteraction.thinFilmThickness = thinFilmEnabled ? opacityOrThinFilmThickness : float(0.0f);
+
+  // Hair fibers store their tangent in place of the emissive words (hair is
+  // never emissive), so the deferred passes can rebuild the fiber frame.
+  opaqueSurfaceMaterialInteraction.hairTangent = vec3(0.0f);
+
+  if (opaqueSurfaceMaterialInteraction.flags & OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR)
+  {
+    opaqueSurfaceMaterialInteraction.hairTangent = snorm2x16ToSphereDirection(data1);
+    opaqueSurfaceMaterialInteraction.emissiveRadiance = vec3(0.0f);
+  }
 
   // We don't store this in the G-buffer
   opaqueSurfaceMaterialInteraction.normalDetail = float(0.0f);
@@ -1512,6 +1557,58 @@ SurfaceMaterialInteractionSample opaqueSurfaceMaterialInteractionCalcOpacityTran
   return materialSample;
 }
 
+// Hair fiber shading entry points. Hair rides the opaque interaction (see
+// OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR) so that it inherits NEE, RTXDI/ReSTIR,
+// shadows and denoiser demodulation, but its response comes from the RTXCR
+// fiber BCSDF rather than the GGX + Lambert model below.
+
+bool opaqueSurfaceMaterialInteractionIsHair(OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction)
+{
+  return (opaqueSurfaceMaterialInteraction.flags & OPAQUE_SURFACE_MATERIAL_INTERACTION_FLAG_IS_HAIR) != 0;
+}
+
+HairFiberFrame opaqueSurfaceMaterialInteractionCreateHairFrame(
+  OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction,
+  MinimalRayInteraction minimalRayInteraction)
+{
+  return hairFiberFrameCreate(
+    opaqueSurfaceMaterialInteraction.hairTangent,
+    opaqueSurfaceMaterialInteraction.shadingNormal,
+    minimalRayInteraction.viewDirection);
+}
+
+// Evaluated fiber response for a light direction, mapped onto the opaque
+// interaction's split weights. The R lobe drives the specular signal (it is
+// the tight view dependent highlight) and the transmission lobes drive the
+// diffuse one.
+SurfaceMaterialInteractionSplitWeight opaqueSurfaceMaterialInteractionCalcHairProjectedWeight(
+  OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction,
+  MinimalRayInteraction minimalRayInteraction,
+  vec3 inputDirection)
+{
+  SurfaceMaterialInteractionSplitWeight splitWeight;
+  splitWeight.diffuseReflectionWeight = vec3(0.0f);
+  splitWeight.specularReflectionWeight = vec3(0.0f);
+  splitWeight.diffuseTransmissionWeight = vec3(0.0f);
+
+  const HairFiberFrame fiberFrame =
+    opaqueSurfaceMaterialInteractionCreateHairFrame(opaqueSurfaceMaterialInteraction, minimalRayInteraction);
+
+  vec3 specularWeight;
+  vec3 diffuseWeight;
+  float solidAnglePdf;
+  hairBcsdfEvalSplit(
+    fiberFrame, opaqueSurfaceMaterialInteraction.albedo, inputDirection,
+    specularWeight, diffuseWeight, solidAnglePdf);
+
+  // Note: The fiber BCSDF already folds in its cosine factor, so unlike the
+  // surface lobes below these weights are used as-is.
+  splitWeight.specularReflectionWeight = specularWeight;
+  splitWeight.diffuseReflectionWeight = diffuseWeight;
+
+  return splitWeight;
+}
+
 void opaqueSurfaceMaterialInteractionCalcSample(
   OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction,
   float lobeRandom,
@@ -1522,6 +1619,39 @@ void opaqueSurfaceMaterialInteractionCalcSample(
   inout SurfaceMaterialInteractionLobeSample surfaceMaterialInteractionLobeSample,
   inout bool insideMedium, inout bool penetrateSurface)
 {
+  if (opaqueSurfaceMaterialInteractionIsHair(opaqueSurfaceMaterialInteraction))
+  {
+    const HairFiberFrame fiberFrame =
+      opaqueSurfaceMaterialInteractionCreateHairFrame(opaqueSurfaceMaterialInteraction, minimalRayInteraction);
+
+    vec3 inputDirection;
+    vec3 throughput;
+    float solidAnglePdf;
+    bool isSpecularLobe;
+
+    const bool valid = hairBcsdfSample(
+      fiberFrame, opaqueSurfaceMaterialInteraction.albedo, randomState,
+      inputDirection, throughput, solidAnglePdf, isSpecularLobe);
+
+    // Note: A fiber scatters around the strand rather than about a normal, so
+    // there is no hemisphere rejection here - light legitimately leaves on the
+    // far side of the fiber (that is the TT lobe).
+    surfaceMaterialInteractionSample.inputDirection = inputDirection;
+    surfaceMaterialInteractionSample.throughput = valid ? throughput : vec3(0.0f);
+    surfaceMaterialInteractionSample.solidAnglePdf = valid ? solidAnglePdf : 0.0f;
+
+    // Reuse the opaque lobe identifiers so the denoiser's diffuse/specular
+    // routing (which keys on opaqueLobeTypeDiffuseReflection) keeps working.
+    surfaceMaterialInteractionLobeSample.lobe =
+      isSpecularLobe ? opaqueLobeTypeSpecularReflection : opaqueLobeTypeDiffuseReflection;
+    surfaceMaterialInteractionLobeSample.pdf = valid ? 1.0f : 0.0f;
+
+    insideMedium = false;
+    penetrateSurface = false;
+
+    return;
+  }
+
   surfaceMaterialInteractionLobeSample = opaqueSurfaceMaterialInteractionCalcLobeSample(
     opaqueSurfaceMaterialInteraction, lobeRandom, minimalRayInteraction, insideMedium);
 
@@ -1795,6 +1925,21 @@ float opaqueSurfaceMaterialInteractionCalcSolidAnglePdf(
   MinimalRayInteraction minimalRayInteraction,
   vec3 inputDirection)
 {
+  if (opaqueSurfaceMaterialInteractionIsHair(opaqueSurfaceMaterialInteraction))
+  {
+    const HairFiberFrame fiberFrame =
+      opaqueSurfaceMaterialInteractionCreateHairFrame(opaqueSurfaceMaterialInteraction, minimalRayInteraction);
+
+    vec3 specularWeight;
+    vec3 diffuseWeight;
+    float solidAnglePdf;
+    hairBcsdfEvalSplit(
+      fiberFrame, opaqueSurfaceMaterialInteraction.albedo, inputDirection,
+      specularWeight, diffuseWeight, solidAnglePdf);
+
+    return solidAnglePdf;
+  }
+
   // Return the average of all the lobe PDFs
   // Note: Only lobes which are possible and specifically involved in reflections are included
 
@@ -1821,6 +1966,15 @@ SurfaceMaterialInteractionSplitWeight opaqueSurfaceMaterialInteractionCalcApprox
   MinimalRayInteraction minimalRayInteraction,
   vec3 inputDirection)
 {
+  if (opaqueSurfaceMaterialInteractionIsHair(opaqueSurfaceMaterialInteraction))
+  {
+    // Note: The fiber model has no meaningfully cheaper approximation, and RIS
+    // candidate selection needs the anisotropy of the real response to pick
+    // useful lights, so the full evaluation is reused here.
+    return opaqueSurfaceMaterialInteractionCalcHairProjectedWeight(
+      opaqueSurfaceMaterialInteraction, minimalRayInteraction, inputDirection);
+  }
+
   const vec3 microfacetNormal = normalize(inputDirection + minimalRayInteraction.viewDirection);
   const float /* n.h */ normalDotMicrofacetNormal = dot(opaqueSurfaceMaterialInteraction.shadingNormal, microfacetNormal);
   const float /* v.h */ outputDirectionDotMicrofacetNormal = dot(minimalRayInteraction.viewDirection, microfacetNormal);
@@ -1888,6 +2042,12 @@ SurfaceMaterialInteractionSplitWeight opaqueSurfaceMaterialInteractionCalcProjec
   MinimalRayInteraction minimalRayInteraction,
   vec3 inputDirection)
 {
+  if (opaqueSurfaceMaterialInteractionIsHair(opaqueSurfaceMaterialInteraction))
+  {
+    return opaqueSurfaceMaterialInteractionCalcHairProjectedWeight(
+      opaqueSurfaceMaterialInteraction, minimalRayInteraction, inputDirection);
+  }
+
   const vec4 tangentToWorldSpaceQuaternion =
     quaternionCreateOrientation(materialTangentSpaceNormal, opaqueSurfaceMaterialInteraction.shadingNormal);
   const vec4 worldToTangentSpaceQuaternion = quaternionInverse(tangentToWorldSpaceQuaternion);

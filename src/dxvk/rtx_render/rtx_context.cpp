@@ -51,6 +51,7 @@
 #include "rtx/utility/debug_view_indices.h"
 #include "rtx/utility/gpu_printing.h"
 #include "rtx_nrd_settings.h"
+#include "rtx_hair_test.h"
 #include "rtx_scene_manager.h"
 #include "rtx_sparse_rendering.h"
 
@@ -1220,6 +1221,28 @@ namespace dxvk {
     constants.sssArgs.diffusionProfileDebuggingPixel = u16vec2 {
       static_cast<uint16_t>(RtxOptions::SubsurfaceScattering::diffusionProfileDebugPixelPosition().x),
       static_cast<uint16_t>(RtxOptions::SubsurfaceScattering::diffusionProfileDebugPixelPosition().y) };
+
+    // Hair fiber BCSDF parameters (see hair_bcsdf.slangh). Global for the
+    // scene: the per-material state is only the hair flag itself.
+    {
+      const Vector3 fiberDiffuseTint = RtxHairTest::fiberDiffuseTint();
+      constants.hairArgs.bsdfModel = static_cast<uint32_t>(RtxHairTest::fiberBsdfModel());
+      constants.hairArgs.absorptionModel = static_cast<uint32_t>(RtxHairTest::fiberAbsorptionModel());
+      constants.hairArgs.melanin = RtxHairTest::fiberMelanin();
+      constants.hairArgs.melaninRedness = RtxHairTest::fiberMelaninRedness();
+      constants.hairArgs.longitudinalRoughness = RtxHairTest::fiberLongitudinalRoughness();
+      constants.hairArgs.azimuthalRoughness = RtxHairTest::fiberAzimuthalRoughness();
+      constants.hairArgs.farFieldRoughness = RtxHairTest::fiberRoughness();
+      constants.hairArgs.ior = RtxHairTest::fiberIor();
+      constants.hairArgs.cuticleAngleDegrees = RtxHairTest::fiberCuticleAngle();
+      constants.hairArgs.diffuseReflectionWeight = RtxHairTest::fiberDiffuseWeight();
+      constants.hairArgs.diffuseReflectionTintR = fiberDiffuseTint.x;
+      constants.hairArgs.diffuseReflectionTintG = fiberDiffuseTint.y;
+      constants.hairArgs.diffuseReflectionTintB = fiberDiffuseTint.z;
+      constants.hairArgs.primaryHighlightScale = RtxHairTest::fiberPrimaryHighlightScale();
+      constants.hairArgs.denoiserRoughness = RtxHairTest::fiberDenoiserRoughness();
+      constants.hairArgs.pad0 = 0.0f;
+    }
 
     auto& restirGI = m_common->metaReSTIRGIRayQuery();
     ReSTIRGISampleStealing restirGISampleStealingMode = restirGI.useSampleStealing();

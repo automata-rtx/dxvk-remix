@@ -171,6 +171,61 @@ namespace dxvk {
                "scatter mask) loads its strands from here instead of regrowing them - and needs no geometry snapshots "
                "at all. Files are keyed by mesh + parameters + mask content, so stale files are simply never read "
                "again; delete the directory to reclaim the space. Empty disables the cache.");
+    // Fiber shading (RTX Character Rendering hair BCSDF). These drive the hair
+    // material the strand draws use; see rtx/concept/surface_material/hair_bcsdf.slangh.
+    RTX_OPTION("rtx.hairTest", bool, enableFiberBcsdf, true,
+               "Shade strands with the RTX Character Rendering hair BCSDF (R / TT / TRT fiber lobes with absorption) "
+               "instead of the standard opaque model. This is what gives hair its directional sheen, its coloured "
+               "secondary highlight and its glow when backlit; a coat shaded as ordinary geometry reads as plastic. "
+               "Turning this off makes strands shade like any other surface (and stores a surface normal instead of "
+               "the fiber tangent), which regrows the strands.");
+    RTX_OPTION_ARGS("rtx.hairTest", int, fiberBsdfModel, 0,
+                    "Fiber model. 0: Far-field BCSDF (default) - analytic, low noise, and provides the evaluation "
+                    "probabilities light sampling needs. 1: Chiang near-field BSDF - reference quality per fiber, "
+                    "noisier, and without an evaluation pdf it cannot take part in multiple importance sampling.",
+                    args.minValue = 0, args.maxValue = 1);
+    RTX_OPTION_ARGS("rtx.hairTest", int, fiberAbsorptionModel, 0,
+                    "Where the fiber's absorption (its colour) comes from. 0: the strand's own base colour, sampled "
+                    "from the source texture at the root - the natural choice for game characters. 1: melanin "
+                    "(physical). 2: melanin, normalized.",
+                    args.minValue = 0, args.maxValue = 2);
+    RTX_OPTION_ARGS("rtx.hairTest", float, fiberMelanin, 0.8f,
+                    "Melanin concentration, 0 (white) to 1 (black). Used by the melanin absorption models.",
+                    args.minValue = 0.0f, args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.hairTest", float, fiberMelaninRedness, 0.05f,
+                    "Pheomelanin fraction: higher values shift the fibers toward red tones.",
+                    args.minValue = 0.0f, args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.hairTest", float, fiberRoughness, 0.25f,
+                    "Fiber roughness for the far-field model. Low values give a tight, wet-looking sheen; high values "
+                    "spread the highlight into a soft coat.",
+                    args.minValue = 0.01f, args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.hairTest", float, fiberLongitudinalRoughness, 0.4f,
+                    "Roughness along the fiber (beta_m), Chiang model only.",
+                    args.minValue = 0.01f, args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.hairTest", float, fiberAzimuthalRoughness, 0.6f,
+                    "Roughness around the fiber's cross-section (beta_n), Chiang model only.",
+                    args.minValue = 0.01f, args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.hairTest", float, fiberIor, 1.55f,
+                    "Index of refraction of the fiber. 1.55 is keratin.",
+                    args.minValue = 1.0f, args.maxValue = 2.0f);
+    RTX_OPTION_ARGS("rtx.hairTest", float, fiberCuticleAngle, 3.0f,
+                    "Cuticle scale tilt in degrees. This is what separates the primary (white) and secondary "
+                    "(coloured) highlights - the visual signature of real hair.",
+                    args.minValue = 0.0f, args.maxValue = 10.0f);
+    RTX_OPTION_ARGS("rtx.hairTest", float, fiberPrimaryHighlightScale, 1.0f,
+                    "Artistic scale on the R lobe, the sharp white sheen running along the coat.",
+                    args.minValue = 0.0f, args.maxValue = 4.0f);
+    RTX_OPTION_ARGS("rtx.hairTest", float, fiberDiffuseWeight, 0.0f,
+                    "Weight of the far-field model's artificial diffuse lobe. 0 keeps the fiber physically based; "
+                    "raising it fills in dense fur that would otherwise need many light bounces to brighten.",
+                    args.minValue = 0.0f, args.maxValue = 1.0f);
+    RTX_OPTION("rtx.hairTest", Vector3, fiberDiffuseTint, Vector3(1.0f, 1.0f, 1.0f),
+               "Tint of the far-field model's artificial diffuse lobe.");
+    RTX_OPTION_ARGS("rtx.hairTest", float, fiberDenoiserRoughness, 0.4f,
+                    "Perceptual roughness hair reports to the denoiser. The fiber model has no single roughness; this "
+                    "only controls how aggressively the specular signal is filtered and demodulated.",
+                    args.minValue = 0.01f, args.maxValue = 1.0f);
+
     RTX_OPTION_ARGS("rtx.hairTest", float, strandOcclusion, 0.45f,
                     "Root-to-tip darkening baked into the strand vertex colors: 0 leaves the whole strand at the surface "
                     "color, 1 fades the roots to black. A real coat is darkest where it is deepest; the gradient stands in "
