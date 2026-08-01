@@ -625,6 +625,7 @@ namespace dxvk {
       int evenScatterMode;
       float hybridRadiusScale;
       int hybridSeamStrands;
+      int maskMirror;
     } parameters = {
       surfaceStrandCount(),
       surfaceHairLength(),
