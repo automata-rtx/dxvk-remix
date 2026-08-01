@@ -4,7 +4,7 @@ Status: working feature on `Fixed-Function-dev` lineage. This documents the
 whole fur system: surface hair on hair-tagged meshes, the data-lifetime
 rules that were expensive to learn, the strand disk cache, artist scatter
 masks, shading, and the attachment modes. It is written so the system could
-later be re-implemented as an upstream Remix PR (§8) — the modules are
+later be re-implemented as an upstream Remix PR (§9) — the modules are
 deliberately layered for that.
 
 (The hair-covered test sphere this system was bootstrapped on — its own
@@ -25,8 +25,10 @@ Rendering SDK's curve representation:
 - Strand geometry goes through the regular draw path — it is ordinary scene
   geometry, path traced and denoised, casting shadows and appearing in GI
   and reflections, colored by the source diffuse at each strand's root UV.
-  There is no separate hair shading pass and the main path tracer is
-  untouched.
+  There is no separate hair shading pass.
+- Strands shade with the SDK's **hair BCSDF** (R / TT / TRT fiber lobes with
+  absorption), carried on the opaque material behind a flag so hair keeps
+  NEE, RTXDI/ReSTIR, shadows and denoising — see §6.
 
 Files:
 
@@ -135,16 +137,14 @@ changes, or eviction after ~300 unseen frames):
    alpha-tested source material once turned 39M strand triangles into a
    6.2 GB micromap request).
 
-5. **Shading bake**: every strand vertex carries the *smooth* surface
-   normal its root grew from (the mask's authored normal when present), so
-   fur shades with the pelt's curvature instead of individual tube facets,
-   and a root-to-tip darkening gradient in the vertex colors
-   (`strandOcclusion`) stands in for the strand-to-strand self-shadowing
-   the path tracer cannot afford to resolve — a real coat is darkest where
-   it is deepest. The strands otherwise shade with the source mesh's
-   converted legacy material: there is **no hair BCSDF in the main
-   integrator** (an anisotropic fiber response would be an upstream-scale
-   material-system change; see §8).
+5. **Shading bake**: the normal slot carries the **fiber tangent** (the
+   strand direction) when fiber shading is on — the hair BCSDF is built
+   around the tangent, not a normal — and the root's *smooth* surface
+   normal when it is off. A root-to-tip darkening gradient in the vertex
+   colors (`strandOcclusion`) stands in for the strand-to-strand
+   self-shadowing the path tracer cannot afford to resolve; a real coat is
+   darkest where it is deepest. Which of the two the bake stores is part of
+   the parameter hash, so toggling it regrows and re-caches.
 
 Budget: `surfaceStrandCount` is a **total** across all tagged meshes, split
 by surface area, grown amortized (~30k strands/frame), with a live
@@ -212,7 +212,65 @@ Runtime (`rtx_hair_mask.{h,cpp}`):
   fraction of its mesh combined with a wrong scale can defeat the fit; the
   residual number and POOR FIT flag make that loud rather than silent.
 
-## 6. Attachment modes (`surfaceAttachmentMode`)
+## 6. Fiber shading (the hair BCSDF)
+
+Strands shade with the RTX Character Rendering SDK's hair BCSDF rather than
+the opaque GGX + Lambert model — the difference between hair and geometry
+that merely has strand shapes. The fiber response has three lobes:
+
+- **R** — light reflecting off the fiber surface: the sharp, near-white
+  sheen that runs along a coat.
+- **TT** — light passing through the fiber: why a backlit animal glows at
+  the silhouette.
+- **TRT** — light reflected inside the fiber: the *coloured* secondary
+  highlight, offset from the white one by the cuticle scale tilt.
+
+Absorption is integrated along the path through each fiber, so colour
+deepens with the distance light travels inside it. By default absorption
+comes from the strand's own base colour (the source texture at the root),
+so fur inherits the character's colours; melanin models are also available.
+
+**Hair rides the opaque surface material interaction**, behind
+`OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR`, instead of being a fourth
+polymorphic surface material type. This is deliberate and load-bearing:
+
+- The material type field is **2 bits and fully allocated** (the fourth
+  encoding is the subsurface extension). Widening it would shift every
+  material flag, the TLAS instance custom index and the GBuffer type bits.
+- Every BSDF *evaluation* entry point — RTXDI/ReSTIR target PDFs,
+  `RAB_CalculateBRDF`, NEE, the NEE-cache MIS weights, ReSTIR GI final
+  shading — is hard-typed to `OpaqueSurfaceMaterialInteraction`, and
+  non-opaque types get **no direct lighting** (`integrator_direct`) and
+  **no shadow attenuation** (`visibility`) at all. Riding the opaque
+  interaction keeps hair inside light sampling, shadows and the denoiser,
+  which is what makes fur converge instead of boiling.
+
+Consequences worth knowing:
+
+- The fiber tangent reaches the shader in the interpolated normal
+  attribute. `SurfaceInteraction::interpolatedVertexNormal` exists (unbent,
+  in every build configuration) precisely for this: the ordinary
+  `geometryNormal` is bent toward the triangle normal, which for strand
+  geometry would blend the tangent with the quad's face normal and destroy
+  it.
+- Transport is free: hair is never emissive, so the GBuffer's emissive
+  words and the polymorphic form's unused `idata0` carry the octahedral
+  tangent.
+- Hair is **exempt from the hemisphere rejection** in NEE and the RTXDI
+  BRDF hook — a fiber legitimately scatters light arriving from behind it.
+- Sampled lobes reuse the opaque lobe identifiers, so the denoiser's
+  diffuse/specular routing keeps working: the R lobe drives the specular
+  signal, the transmission lobes the diffuse one.
+- The far-field model is the default because it provides the evaluation pdf
+  MIS needs. Chiang's near-field model is selectable and is the reference
+  per-fiber response, but without an evaluation pdf it cannot join MIS and
+  is noticeably noisier.
+
+Implementation: `rtx/concept/surface_material/hair_bcsdf.slangh` (frame,
+evaluation, sampling) and the hair branches in
+`opaque_surface_material_interaction.slangh`.
+
+## 7. Attachment modes (`surfaceAttachmentMode`)
 
 - **0 — Rigid per-bone clusters** (default): strands grouped by their root's
   dominant bone; each group is a static mesh whose per-frame transform is
@@ -237,7 +295,7 @@ clusters are already mathematically exact and mode 2 renders identically to
 mode 0. Hybrid exists for multi-influence content (`J3DSkinDeform` actors,
 future GXSetSkinning models with up to 4 weights).
 
-## 7. Validation harness
+## 8. Validation harness
 
 Development happens in a Linux container; nothing here requires a GPU:
 
@@ -257,7 +315,7 @@ Development happens in a Linux container; nothing here requires a GPU:
   cluster entries, plus rejection of corrupt cache files.
 - MSVC builds run in CI on every push of `claude/**`.
 
-## 8. Notes toward an upstream PR
+## 9. Notes toward an upstream PR
 
 If this gets re-implemented for upstream Remix:
 
@@ -267,13 +325,19 @@ If this gets re-implemented for upstream Remix:
   capture time instead of frame prep.
 - The per-texture tag + per-texture mask file convention generalizes; a
   per-material USD attribute would be the Remix-native shape.
+- The fiber BCSDF (§6) is the part with a real upstream design question:
+  riding the opaque interaction behind a flag is the right trade *here*
+  (the alternative is a fourth material type plus a polymorphic BSDF
+  evaluation API that does not exist yet), but upstream would more likely
+  want that polymorphic eval API introduced first, at which point hair
+  becomes a clean fourth type.
 - The attachment modes only assume what Remix already provides: per-vertex
   blend streams, a per-draw bone palette, and instance transforms. Nothing
   is game-specific except the guarantees in §3, which upstream would state
   as requirements ("stable rest-pose geometry, consistent draw
   granularity") rather than implement.
 
-## 9. Options reference (all `rtx.hairTest.*`)
+## 10. Options reference (all `rtx.hairTest.*`)
 
 | Option | Default | Meaning |
 | :-- | :-- | :-- |
@@ -286,6 +350,17 @@ If this gets re-implemented for upstream Remix:
 | `frizz` / `curliness` / `curlTurns` | 0.3 / 0.15 / 2.0 | growth direction jitter and helical curl |
 | `gravityDroop` | 0.15 | downward bend along the strand |
 | `strandOcclusion` | 0.45 | root-to-tip darkening baked into vertex colors |
+| `enableFiberBcsdf` | true | shade strands with the hair BCSDF (regrows: changes what the normal slot stores) |
+| `fiberBsdfModel` | 0 | 0 far-field (has an eval pdf, MIS-capable), 1 Chiang near-field |
+| `fiberAbsorptionModel` | 0 | 0 from the strand's base color, 1 melanin, 2 melanin normalized |
+| `fiberMelanin` / `fiberMelaninRedness` | 0.8 / 0.05 | melanin absorption inputs |
+| `fiberRoughness` | 0.25 | far-field fiber roughness (highlight tightness) |
+| `fiberLongitudinalRoughness` / `fiberAzimuthalRoughness` | 0.4 / 0.6 | Chiang beta_m / beta_n |
+| `fiberCuticleAngle` | 3.0 | cuticle tilt in degrees; separates the white and coloured highlights |
+| `fiberIor` | 1.55 | fiber index of refraction (keratin) |
+| `fiberPrimaryHighlightScale` | 1.0 | artistic scale on the R lobe |
+| `fiberDiffuseWeight` / `fiberDiffuseTint` | 0.0 / white | artificial fill lobe for dense fur |
+| `fiberDenoiserRoughness` | 0.4 | perceptual roughness hair reports for denoising/demodulation |
 | `scatterSeed` | 1337 | scatter/variation seed |
 | `surfaceAttachmentMode` | 0 | 0 rigid clusters, 1 skinned, 2 hybrid |
 | `hybridClusterRadiusScale` | 0.75 | rigid-core cutoff as a fraction of each bone's influence radius |
