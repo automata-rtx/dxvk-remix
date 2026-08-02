@@ -33,6 +33,7 @@
 #include "../util/util_fast_cache.h"
 #include "../util/util_once.h"
 
+#include <cmath>
 #include <cstdio>
 
 // RTX Character Rendering SDK Geometry Library (vendored): curve segment ->
@@ -77,7 +78,9 @@ namespace dxvk {
     // the geometry assembly, or the meaning of any growth parameter changes,
     // so stale files fail the header check instead of decoding wrongly.
     constexpr uint32_t kHairCacheMagic = 0x31434844u; // 'DHC1'
-    constexpr uint32_t kHairCacheVersion = 1;
+    // 2: clusters carry a blend-weight signature rather than one bone index,
+    //    and the skinned/hybrid main geometry slot is gone.
+    constexpr uint32_t kHairCacheVersion = 2;
 
     Rc<DxvkBuffer> allocHairGeometryBuffer(DxvkDevice* device, size_t sizeInBytes, const char* name) {
       // Identical to the growth path's allocBuffer (buildSurfaceHairGeometry):
@@ -120,11 +123,7 @@ namespace dxvk {
       uint32_t magic = kHairCacheMagic;
       uint32_t version = kHairCacheVersion;
       uint64_t diskKey = 0;
-      uint32_t rigidClusters = 0;
-      uint32_t hasSeamSet = 0;
-      uint32_t hasMainGeometry = 0;
       uint32_t strandCount = 0;
-      uint32_t seamStrandCount = 0;
       uint32_t clusterCount = 0;
     };
 
@@ -294,10 +293,8 @@ namespace dxvk {
       float curlTurns;
       float gravityDroop;
       int scatterSeed;
-      int attachmentMode;
+      int weightBuckets;
       int evenScatterMode;
-      float hybridRadiusScale;
-      int hybridSeamStrands;
       int maskMirror;
       float occlusion;
       int fiberBcsdf;
@@ -313,10 +310,8 @@ namespace dxvk {
       curlTurns(),
       gravityDroop(),
       scatterSeed(),
-      surfaceAttachmentMode(),
+      clusterWeightBuckets(),
       evenScatter() ? 1 : 0,
-      hybridClusterRadiusScale(),
-      hybridSeamStrandCount(),
       maskMirrorMode(),
       strandOcclusion(),
       enableFiberBcsdf() ? 1 : 0,
@@ -377,24 +372,21 @@ namespace dxvk {
       }
 
       entry = {};
-      entry.rigidClusters = header.rigidClusters != 0;
-      entry.hasSeamSet = header.hasSeamSet != 0;
       entry.strandCount = header.strandCount;
-      entry.seamStrandCount = header.seamStrandCount;
 
       bool geometryOk = true;
       entry.clusters.reserve(header.clusterCount);
       for (uint32_t clusterIndex = 0; clusterIndex < header.clusterCount && geometryOk; ++clusterIndex) {
         SurfaceHairCluster cluster;
-        geometryOk = readBlob(file, &cluster.boneIndex, sizeof(cluster.boneIndex))
+        geometryOk = readBlob(file, &cluster.boneCount, sizeof(cluster.boneCount))
+                  && cluster.boneCount <= kMaxClusterBones
+                  && readBlob(file, cluster.boneIndices, sizeof(cluster.boneIndices))
+                  && readBlob(file, cluster.boneWeights, sizeof(cluster.boneWeights))
                   && readBlob(file, &cluster.strandCount, sizeof(cluster.strandCount))
                   && readGeometry(file, m_device, cluster.geometry);
         if (geometryOk) {
           entry.clusters.push_back(std::move(cluster));
         }
-      }
-      if (geometryOk && header.hasMainGeometry != 0) {
-        geometryOk = readGeometry(file, m_device, entry.geometry);
       }
       ok = geometryOk;
     } while (false);
@@ -422,23 +414,16 @@ namespace dxvk {
 
     HairCacheFileHeader header;
     header.diskKey = diskKey;
-    header.rigidClusters = entry.rigidClusters ? 1 : 0;
-    header.hasSeamSet = entry.hasSeamSet ? 1 : 0;
-    // The main geometry slot is used by skinned mode and by the hybrid seam
-    // set; rigid-only entries have clusters alone.
-    header.hasMainGeometry = entry.geometry.vertexCount > 0 ? 1 : 0;
     header.strandCount = entry.strandCount;
-    header.seamStrandCount = entry.seamStrandCount;
     header.clusterCount = static_cast<uint32_t>(entry.clusters.size());
 
     bool ok = writeBlob(file, &header, sizeof(header));
     for (const SurfaceHairCluster& cluster : entry.clusters) {
-      ok = ok && writeBlob(file, &cluster.boneIndex, sizeof(cluster.boneIndex))
+      ok = ok && writeBlob(file, &cluster.boneCount, sizeof(cluster.boneCount))
+              && writeBlob(file, cluster.boneIndices, sizeof(cluster.boneIndices))
+              && writeBlob(file, cluster.boneWeights, sizeof(cluster.boneWeights))
               && writeBlob(file, &cluster.strandCount, sizeof(cluster.strandCount))
               && writeGeometry(file, cluster.geometry);
-    }
-    if (ok && header.hasMainGeometry != 0) {
-      ok = writeGeometry(file, entry.geometry);
     }
     std::fclose(file);
 
@@ -644,60 +629,48 @@ namespace dxvk {
   }
 
   void RtxHairTest::submitHairForEntry(RtxContext* ctx, const DrawCallState& source, const SurfaceHairEntry& entry) {
-    // Hybrid seam set: strands covering the areas outside the rigid
-    // clusters' core regions, submitted as a skinned draw exactly like
-    // attachment mode 1 - it carries the source's blend data and deforms
-    // through Remix's skinning in its own BLAS, fully separate from the
-    // static cluster BLASes.
-    if (entry.hasSeamSet) {
-      DrawCallState seamDraw = source;
-      seamDraw.modifyGeometryData() = entry.geometry;
-      seamDraw.modifyCategoryFlags().set(InstanceCategories::IgnoreOpacityMicromap);
-      // Selects the hair fiber BCSDF for this draw's material and declares the
-      // normal attribute as the fiber tangent (see DrawCallState).
-      seamDraw.isHairStrandGeometry = enableFiberBcsdf();
-
-      ctx->getSceneManager().submitDrawState(ctx, seamDraw, nullptr);
-    }
-
-    if (!entry.rigidClusters) {
-      // Skinned mode: the hair draw is the source draw with its geometry
-      // swapped for the grown strands. Material (the source's diffuse,
-      // sampled at each strand's root UV), transforms, and the bone
-      // matrices all carry over, so Remix's own skinning pipeline deforms
-      // the hair with the character.
-      DrawCallState hairDraw = source;
-      hairDraw.modifyGeometryData() = entry.geometry;
-      // Strands are solid; without this the source material's alpha test
-      // makes every hair triangle an opacity micromap candidate, and tens of
-      // millions of strand triangles overwhelm the OMM budget instantly.
-      hairDraw.modifyCategoryFlags().set(InstanceCategories::IgnoreOpacityMicromap);
-      // Selects the hair fiber BCSDF for this draw's material and declares the
-      // normal attribute as the fiber tangent (see DrawCallState).
-      hairDraw.isHairStrandGeometry = enableFiberBcsdf();
-
-      ctx->getSceneManager().submitDrawState(ctx, hairDraw, nullptr);
-      return;
-    }
-
-    // Rigid mode: each cluster is a static mesh carried by its dominant
-    // bone. The per-frame transform composes the source draw's transform
-    // with the bone's current palette matrix (the same matrices the game
-    // submits for skinning this mesh), so the fur follows the animation
-    // with zero per-frame geometry work - and, since each cluster is an
-    // ordinary moving instance, Remix derives its motion vectors for free.
+    // Each cluster is a static mesh carried by the blend of its bones. The
+    // per-frame transform composes the source draw's transform with that
+    // blend of the current palette matrices (the same matrices the game
+    // submits for skinning this mesh), so the fur follows the animation with
+    // zero per-frame geometry work - and, since each cluster is an ordinary
+    // moving instance, Remix derives its motion vectors for free.
+    //
+    // Blending here rather than picking one bone is what keeps the coat
+    // continuous: every strand in a cluster shares one weight signature, so
+    // sum(w_i * M_i) is exactly the skinning matrix linear blend skinning
+    // would give each of its vertices. Grouping by dominant bone instead
+    // leaves enveloped strands rigidly on one bone while the skin under them
+    // moves to the blend, and the fur peels away at every joint.
     const SkinningData& skinning = source.getSkinningState();
 
     for (const SurfaceHairCluster& cluster : entry.clusters) {
       Matrix4 boneMatrix;
 
-      if (cluster.boneIndex != kNoBone) {
-        if (cluster.boneIndex < skinning.pBoneMatrices.size()) {
-          boneMatrix = skinning.pBoneMatrices[cluster.boneIndex];
-        } else {
-          ONCE(Logger::warn(str::format("[Hair Test] Cluster bone ", cluster.boneIndex,
-                                        " is outside the draw's bone palette (", skinning.pBoneMatrices.size(),
-                                        "); cluster follows the draw transform.")));
+      if (cluster.boneCount > 0) {
+        Matrix4 blended(0.0f, 0.0f, 0.0f, 0.0f,
+                        0.0f, 0.0f, 0.0f, 0.0f,
+                        0.0f, 0.0f, 0.0f, 0.0f,
+                        0.0f, 0.0f, 0.0f, 0.0f);
+        float totalWeight = 0.0f;
+
+        for (uint32_t i = 0; i < cluster.boneCount; ++i) {
+          const uint32_t boneIndex = cluster.boneIndices[i];
+          if (boneIndex >= skinning.pBoneMatrices.size()) {
+            ONCE(Logger::warn(str::format("[Hair Test] Cluster bone ", boneIndex,
+                                          " is outside the draw's bone palette (", skinning.pBoneMatrices.size(),
+                                          "); its influence is dropped from the cluster transform.")));
+            continue;
+          }
+          blended = blended + skinning.pBoneMatrices[boneIndex] * cluster.boneWeights[i];
+          totalWeight += cluster.boneWeights[i];
+        }
+
+        // Renormalize rather than trusting the stored weights: dropping an
+        // out-of-palette bone above would otherwise shrink the cluster to the
+        // origin. With every bone present this is a no-op.
+        if (totalWeight > 1e-6f) {
+          boneMatrix = blended * (1.0f / totalWeight);
         }
       }
 
@@ -982,21 +955,28 @@ namespace dxvk {
       return false;
     }
 
-    // Blend-stream availability, needed before scattering for the hybrid
-    // partition and the dominant-bone decode.
+    // Blend-stream availability, needed before scattering for the skin decode.
     const bool sourceHasBlend = pBlendWeights != nullptr && source.numBonesPerVertex > 0;
 
-    // Decodes the dominant (highest-weight) bone at a source vertex, using
-    // the same conventions the skinning shader reads: numBones-1 stored
-    // weights with an implicit last, and raw index bytes in memory order.
-    const auto decodeDominantBone = [&](uint32_t vertexIndex) -> uint32_t {
-      const uint32_t bonesPerVertex = std::min(source.numBonesPerVertex, 4u);
+    // The full skinning binding at a source vertex: every influencing bone
+    // with its weight, read with the same conventions the skinning shader
+    // uses (numBones-1 stored weights with an implicit last, and raw index
+    // bytes in memory order). boneCount 0 means the vertex is unskinned.
+    struct SkinBinding {
+      uint32_t bones[kMaxClusterBones] = { kNoBone, kNoBone, kNoBone, kNoBone };
+      float weights[kMaxClusterBones] = { 0.0f, 0.0f, 0.0f, 0.0f };
+      uint32_t boneCount = 0;
+    };
 
+    const auto decodeSkinBinding = [&](uint32_t vertexIndex) -> SkinBinding {
+      SkinBinding binding;
+
+      const uint32_t bonesPerVertex = std::min(source.numBonesPerVertex, kMaxClusterBones);
       if (bonesPerVertex == 0 || pBlendWeights == nullptr) {
-        return kNoBone;
+        return binding;
       }
 
-      float weights[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+      float weights[kMaxClusterBones] = { 0.0f, 0.0f, 0.0f, 0.0f };
       float lastWeight = 1.0f;
       for (uint32_t i = 0; i + 1 < bonesPerVertex; ++i) {
         float weight;
@@ -1006,31 +986,29 @@ namespace dxvk {
       }
       weights[bonesPerVertex - 1] = lastWeight;
 
-      uint32_t best = 0;
-      for (uint32_t i = 1; i < bonesPerVertex; ++i) {
-        if (weights[i] > weights[best]) {
-          best = i;
+      uint8_t boneIndices[kMaxClusterBones] = { 0, 0, 0, 0 };
+      if (pBlendIndices != nullptr) {
+        std::memcpy(boneIndices, pBlendIndices + static_cast<size_t>(vertexIndex) * blendIndicesStride, sizeof(boneIndices));
+      } else {
+        // No index buffer: weights address the bone palette in order.
+        for (uint32_t i = 0; i < bonesPerVertex; ++i) {
+          boneIndices[i] = static_cast<uint8_t>(i);
         }
       }
 
-      if (pBlendIndices == nullptr) {
-        // No index buffer: weights address the bone palette in order.
-        return best;
+      // Keep only influences that actually move the strand. A zero-weight
+      // slot still carries a bone index, and letting it into the signature
+      // would split one cluster into several identical ones.
+      for (uint32_t i = 0; i < bonesPerVertex; ++i) {
+        if (weights[i] > 1e-4f) {
+          binding.bones[binding.boneCount] = boneIndices[i];
+          binding.weights[binding.boneCount] = weights[i];
+          ++binding.boneCount;
+        }
       }
 
-      uint8_t boneIndices[4] = { 0, 0, 0, 0 };
-      std::memcpy(boneIndices, pBlendIndices + static_cast<size_t>(vertexIndex) * blendIndicesStride, sizeof(boneIndices));
-
-      return boneIndices[best];
+      return binding;
     };
-
-    // Attachment mode, with hybrid degrading to rigid on unskinned sources
-    // (there are no bones to seam between).
-    int attachmentMode = surfaceAttachmentMode();
-    if (attachmentMode == 2 && !sourceHasBlend) {
-      ONCE(Logger::info("[Hair Test] Hybrid attachment on an unskinned mesh behaves as rigid (no bones to seam)."));
-      attachmentMode = 0;
-    }
 
     // Optional artist scatter mask for this texture (see rtx_hair_mask.h):
     // an edited rest-pose copy of the mesh whose triangles replace the live
@@ -1132,54 +1110,7 @@ namespace dxvk {
       scatterArea = totalArea;
     }
 
-    // Hybrid: per-bone influence regions from the live mesh. The region
-    // radius is the RMS distance of the bone's vertices from their centroid,
-    // so the rigid-core cutoff scales with how much surface each bone drives.
-    struct BoneRegion {
-      math::float3 centroid;
-      float radius;
-    };
-    std::unordered_map<uint32_t, BoneRegion> boneRegions;
-    if (attachmentMode == 2) {
-      struct BoneAccum {
-        double sum[3] = { 0.0, 0.0, 0.0 };
-        double sumSq = 0.0;
-        uint64_t count = 0;
-      };
-      std::unordered_map<uint32_t, BoneAccum> boneAccums;
-      for (uint32_t v = 0; v < source.vertexCount; ++v) {
-        BoneAccum& acc = boneAccums[decodeDominantBone(v)];
-        const HairMaskVec3& p = livePositions[v];
-        acc.sum[0] += p.x; acc.sum[1] += p.y; acc.sum[2] += p.z;
-        acc.sumSq += static_cast<double>(p.x) * p.x + static_cast<double>(p.y) * p.y + static_cast<double>(p.z) * p.z;
-        ++acc.count;
-      }
-      for (const auto& [bone, acc] : boneAccums) {
-        const double inv = 1.0 / static_cast<double>(acc.count);
-        const math::float3 centroid(static_cast<float>(acc.sum[0] * inv),
-                                    static_cast<float>(acc.sum[1] * inv),
-                                    static_cast<float>(acc.sum[2] * inv));
-        const double variance = acc.sumSq * inv
-          - (static_cast<double>(centroid.x) * centroid.x + static_cast<double>(centroid.y) * centroid.y + static_cast<double>(centroid.z) * centroid.z);
-        boneRegions[bone] = { centroid, static_cast<float>(std::sqrt(std::max(variance, 0.0))) };
-      }
-    }
-
-    const auto insideBoneCore = [&](const math::float3& root, uint32_t bone) -> bool {
-      const auto it = boneRegions.find(bone);
-      if (it == boneRegions.end()) {
-        return true;
-      }
-      const math::float3 d = root - it->second.centroid;
-      const float coreRadius = hybridClusterRadiusScale() * it->second.radius;
-      return math::dot(d, d) <= coreRadius * coreRadius;
-    };
-
-    // Strand counts: `strands` primary (clusters, or the whole set outside
-    // hybrid) plus the hybrid's separate seam set appended after them.
-    const uint32_t strands = std::max(strandCount, 1u);
-    const uint32_t seamStrands = attachmentMode == 2 ? static_cast<uint32_t>(std::max(hybridSeamStrandCount(), 0)) : 0u;
-    const uint32_t totalStrands = strands + seamStrands;
+    const uint32_t totalStrands = std::max(strandCount, 1u);
     const uint32_t segmentsEach = static_cast<uint32_t>(std::clamp(segmentsPerStrand(), 1, 16));
     const uint32_t totalSegments = totalStrands * segmentsEach;
 
@@ -1276,26 +1207,8 @@ namespace dxvk {
     };
 
     for (uint32_t strandIndex = 0; strandIndex < totalStrands; ++strandIndex) {
-      const bool isSeamStrand = strandIndex >= strands;
-
-      // Root selection. In hybrid mode primary strands prefer roots inside
-      // their bone's rigid core and seam strands prefer roots outside every
-      // core; after bounded retries the last sample is accepted (primary
-      // outliers ride their own bone's cluster, seam outliers stay skinned -
-      // both remain correct, just less tidy).
-      RootSample sample {};
-      uint32_t attachVertex = 0;
-      for (uint32_t attempt = 0; attempt < 8; ++attempt) {
-        sample = drawSpacedSample();
-        attachVertex = bindRoot(sample);
-        if (attachmentMode != 2) {
-          break;
-        }
-        const bool inside = insideBoneCore(sample.root, decodeDominantBone(attachVertex));
-        if (inside != isSeamStrand) {
-          break;
-        }
-      }
+      const RootSample sample = drawSpacedSample();
+      const uint32_t attachVertex = bindRoot(sample);
       if (useEvenScatter) {
         rootSpacingGrid.insert({ sample.root.x, sample.root.y, sample.root.z });
       }
@@ -1429,9 +1342,6 @@ namespace dxvk {
     static_assert(sizeof(HairVertex) == 36, "HairVertex layout is position/normal/uv/color");
 
     const bool hasBlendWeights = pBlendWeights != nullptr && source.numBonesPerVertex > 0;
-    const bool hasBlendIndices = pBlendIndices != nullptr;
-    const uint32_t weightsPerVertex = hasBlendWeights ? std::max<uint32_t>(source.numBonesPerVertex - 1, 1) : 0;
-    const uint32_t hairWeightStride = weightsPerVertex * static_cast<uint32_t>(sizeof(float));
 
     // Host-visible buffers, matching the external mesh path.
     const auto allocBuffer = [this](size_t sizeInBytes, const char* name) -> Rc<DxvkBuffer> {
@@ -1455,7 +1365,6 @@ namespace dxvk {
     const bool bakeFiberTangents = enableFiberBcsdf();
 
     const auto assembleGeometry = [&](const std::vector<uint32_t>& strandList,
-                                      bool includeBlendData,
                                       uint64_t hashSalt) -> RasterGeometry {
       const uint32_t clusterSegmentCount = static_cast<uint32_t>(strandList.size()) * segmentsEach;
       const uint32_t clusterVertexCount = clusterSegmentCount * kDotsVerticesPerSegment;
@@ -1483,8 +1392,6 @@ namespace dxvk {
 
       std::vector<HairVertex> hairVertices(clusterVertexCount);
       std::vector<uint32_t> hairIndices(clusterVertexCount);
-      std::vector<uint8_t> hairBlendWeights(includeBlendData && hasBlendWeights ? static_cast<size_t>(clusterVertexCount) * hairWeightStride : 0);
-      std::vector<uint32_t> hairBlendIndices(includeBlendData && hasBlendIndices ? clusterVertexCount : 0);
 
       const uint32_t verticesPerStrand = segmentsEach * kDotsVerticesPerSegment;
 
@@ -1539,20 +1446,6 @@ namespace dxvk {
           std::memcpy(vertex.normal, attachment.normal, 3 * sizeof(float));
         }
 
-        // Raw-copy the attachment vertex's blend data: the skinning shader's
-        // conventions (numBones-1 weights, byte-packed indices) carry over
-        // unchanged, so no format interpretation is needed.
-        if (!hairBlendWeights.empty()) {
-          std::memcpy(hairBlendWeights.data() + static_cast<size_t>(vertexIndex) * hairWeightStride,
-                      pBlendWeights + static_cast<size_t>(attachmentVertex) * blendWeightStride,
-                      hairWeightStride);
-        }
-        if (!hairBlendIndices.empty()) {
-          std::memcpy(&hairBlendIndices[vertexIndex],
-                      pBlendIndices + static_cast<size_t>(attachmentVertex) * blendIndicesStride,
-                      sizeof(uint32_t));
-        }
-
         hairIndices[vertexIndex] = vertexIndex;
       }
 
@@ -1576,22 +1469,14 @@ namespace dxvk {
       geometry.indexCount = clusterVertexCount;
       geometry.indexBuffer = RasterBuffer { indexSlice, 0, sizeof(uint32_t), VK_INDEX_TYPE_UINT32 };
 
-      if (!hairBlendWeights.empty()) {
-        Rc<DxvkBuffer> weightBuffer = allocBuffer(hairBlendWeights.size(), "Surface Hair Blend Weights");
-        DxvkBufferSlice weightSlice { weightBuffer };
-        std::memcpy(weightSlice.mapPtr(0), hairBlendWeights.data(), hairBlendWeights.size());
-        geometry.blendWeightBuffer = RasterBuffer { weightSlice, 0, hairWeightStride, VK_FORMAT_R32_SFLOAT };
-        geometry.numBonesPerVertex = source.numBonesPerVertex;
-      }
-      if (!hairBlendIndices.empty()) {
-        Rc<DxvkBuffer> blendIndexBuffer = allocBuffer(hairBlendIndices.size() * sizeof(uint32_t), "Surface Hair Blend Indices");
-        DxvkBufferSlice blendIndexSlice { blendIndexBuffer };
-        std::memcpy(blendIndexSlice.mapPtr(0), hairBlendIndices.data(), hairBlendIndices.size() * sizeof(uint32_t));
-        geometry.blendIndicesBuffer = RasterBuffer { blendIndexSlice, 0, sizeof(uint32_t), source.blendIndicesBuffer.vertexFormat() };
-      }
+      // Clusters carry no blend streams: the whole cluster shares one weight
+      // signature, so its skinning is a per-frame instance transform rather
+      // than per-vertex data. This is what keeps the geometry static - a
+      // cluster with blend data would take Remix's kUpdateBVH path every
+      // animation frame and re-interleave, re-skin and refit every vertex.
 
-      // Stable hashes derived from the source mesh + strand parameters (and
-      // the cluster's bone in rigid mode): each piece of hair reads as one
+      // Stable hashes derived from the source mesh + strand parameters + the
+      // cluster's weight signature: each piece of hair reads as one
       // persistent mesh across frames, and regrows (new BLAS) only when the
       // source mesh or parameters change.
       const auto deriveHash = [&](uint64_t salt) {
@@ -1611,59 +1496,229 @@ namespace dxvk {
       return geometry;
     };
 
-    if (attachmentMode == 1) {
-      // Skinned mode: one geometry over all strands, carrying blend data.
-      std::vector<uint32_t> allStrands(totalStrands);
+    // Partition the strands by their root's quantized weight signature. Each
+    // partition becomes one static cluster whose per-frame transform is that
+    // signature's blend of bone matrices, which is exactly the skinning matrix
+    // every vertex in it would receive - so the coat tracks the skin across
+    // joints instead of tearing away from it, at no per-frame geometry cost.
+    //
+    // Quantization is the whole trade: finer signatures track the skin more
+    // closely but split into more clusters, and every cluster is an instance
+    // and a BLAS. Weights round to `buckets` steps, and if a mesh still
+    // produces too many signatures the quantization coarsens and regroups.
+    struct ClusterSignature {
+      uint32_t bones[kMaxClusterBones] = { kNoBone, kNoBone, kNoBone, kNoBone };
+      float weights[kMaxClusterBones] = { 0.0f, 0.0f, 0.0f, 0.0f };
+      uint32_t boneCount = 0;
+
+      bool operator==(const ClusterSignature& other) const {
+        if (boneCount != other.boneCount) {
+          return false;
+        }
+        for (uint32_t i = 0; i < boneCount; ++i) {
+          if (bones[i] != other.bones[i] || weights[i] != other.weights[i]) {
+            return false;
+          }
+        }
+        return true;
+      }
+    };
+
+    struct SignatureHash {
+      size_t operator()(const ClusterSignature& signature) const {
+        return static_cast<size_t>(XXH64(&signature, sizeof(signature), 0x48434C55u));
+      }
+    };
+
+    // Rounds a binding's weights to `buckets` steps and canonicalizes the
+    // result, so two roots skinned almost identically land in one cluster.
+    const auto quantizeBinding = [](const SkinBinding& binding, uint32_t buckets) -> ClusterSignature {
+      ClusterSignature signature;
+      if (binding.boneCount == 0) {
+        return signature;
+      }
+
+      // One bucket means "dominant bone only" - keep the largest influence
+      // whole rather than rounding every weight to 0 or 1 independently,
+      // which could zero every slot or keep several at full strength.
+      if (buckets <= 1) {
+        uint32_t best = 0;
+        for (uint32_t i = 1; i < binding.boneCount; ++i) {
+          if (binding.weights[i] > binding.weights[best]) {
+            best = i;
+          }
+        }
+        signature.bones[0] = binding.bones[best];
+        signature.weights[0] = 1.0f;
+        signature.boneCount = 1;
+        return signature;
+      }
+
+      const float step = 1.0f / static_cast<float>(buckets);
+
+      struct Influence {
+        uint32_t bone;
+        float weight;
+      };
+      Influence influences[kMaxClusterBones];
+      uint32_t count = 0;
+      float total = 0.0f;
+
+      for (uint32_t i = 0; i < binding.boneCount; ++i) {
+        const float quantized = std::round(binding.weights[i] / step) * step;
+        if (quantized > 0.0f) {
+          influences[count++] = { binding.bones[i], quantized };
+          total += quantized;
+        }
+      }
+
+      // Every influence rounded away (all below half a step): fall back to the
+      // dominant bone so the strand still follows the body.
+      if (count == 0) {
+        uint32_t best = 0;
+        for (uint32_t i = 1; i < binding.boneCount; ++i) {
+          if (binding.weights[i] > binding.weights[best]) {
+            best = i;
+          }
+        }
+        signature.bones[0] = binding.bones[best];
+        signature.weights[0] = 1.0f;
+        signature.boneCount = 1;
+        return signature;
+      }
+
+      // Sort by bone index so the same influence set always produces the same
+      // key regardless of the order the streams happened to store it in.
+      for (uint32_t i = 1; i < count; ++i) {
+        const Influence key = influences[i];
+        int32_t j = static_cast<int32_t>(i) - 1;
+        while (j >= 0 && influences[j].bone > key.bone) {
+          influences[j + 1] = influences[j];
+          --j;
+        }
+        influences[j + 1] = key;
+      }
+
+      const float renormalize = 1.0f / total;
+      for (uint32_t i = 0; i < count; ++i) {
+        signature.bones[i] = influences[i].bone;
+        // Re-round after renormalizing so the stored weight is exactly a
+        // bucket multiple; float equality decides signature identity.
+        signature.weights[i] = std::round(influences[i].weight * renormalize / step) * step;
+      }
+      signature.boneCount = count;
+      return signature;
+    };
+
+    std::unordered_map<ClusterSignature, std::vector<uint32_t>, SignatureHash> strandsBySignature;
+    uint32_t buckets = static_cast<uint32_t>(std::clamp(clusterWeightBuckets(), 1, 16));
+
+    while (true) {
+      strandsBySignature.clear();
       for (uint32_t strandIndex = 0; strandIndex < totalStrands; ++strandIndex) {
-        allStrands[strandIndex] = strandIndex;
+        const SkinBinding binding = decodeSkinBinding(rootAttachments[strandIndex].nearestVertex);
+        strandsBySignature[quantizeBinding(binding, buckets)].push_back(strandIndex);
       }
 
-      entry.geometry = assembleGeometry(allStrands, true, 0);
-      entry.rigidClusters = false;
-      entry.strandCount = totalStrands;
-
-      Logger::info(str::format("[Hair Test] Grew ", totalStrands, " skinned strands on a tagged mesh",
-                               hasBlendWeights ? " with skinning" : " without skinning"));
-    } else {
-      // Rigid (and the rigid half of hybrid): partition the primary strands
-      // by their root's dominant bone; each partition becomes one static
-      // cluster carried by that bone's transform.
-      std::unordered_map<uint32_t, std::vector<uint32_t>> strandsByBone;
-      for (uint32_t strandIndex = 0; strandIndex < strands; ++strandIndex) {
-        strandsByBone[decodeDominantBone(rootAttachments[strandIndex].nearestVertex)].push_back(strandIndex);
+      if (strandsBySignature.size() <= kMaxClustersPerMesh || buckets <= 1) {
+        break;
       }
 
-      entry.clusters.reserve(strandsByBone.size());
-      for (const auto& [boneIndex, strandList] : strandsByBone) {
-        SurfaceHairCluster cluster;
-        cluster.boneIndex = boneIndex;
-        cluster.strandCount = static_cast<uint32_t>(strandList.size());
-        cluster.geometry = assembleGeometry(strandList, false, 0x1000ull + boneIndex);
-        entry.clusters.push_back(std::move(cluster));
+      const uint32_t coarser = std::max(buckets / 2, 1u);
+      Logger::info(str::format("[Hair Test] ", strandsBySignature.size(), " weight signatures exceeds the ",
+                               kMaxClustersPerMesh, " cluster cap; coarsening the quantization from ",
+                               buckets, " to ", coarser, " buckets."));
+      buckets = coarser;
+    }
+
+    // Fold clusters too small to be worth an instance and a BLAS into their
+    // dominant bone's pure signature. Those strands revert to dominant-bone
+    // behaviour, which is what every strand did before signatures existed.
+    if (strandsBySignature.size() > 1) {
+      std::vector<ClusterSignature> tinySignatures;
+      for (const auto& [signature, strandList] : strandsBySignature) {
+        if (strandList.size() < kMinStrandsPerCluster && signature.boneCount > 1) {
+          tinySignatures.push_back(signature);
+        }
       }
 
-      // Hybrid: the seam strands appended after the primary set become one
-      // skinned geometry with its own BLAS, covering the areas outside the
-      // clusters' core regions.
-      if (attachmentMode == 2 && seamStrands > 0) {
-        std::vector<uint32_t> seamList(seamStrands);
-        for (uint32_t seamIndex = 0; seamIndex < seamStrands; ++seamIndex) {
-          seamList[seamIndex] = strands + seamIndex;
+      for (const ClusterSignature& signature : tinySignatures) {
+        uint32_t best = 0;
+        for (uint32_t i = 1; i < signature.boneCount; ++i) {
+          if (signature.weights[i] > signature.weights[best]) {
+            best = i;
+          }
         }
 
-        entry.geometry = assembleGeometry(seamList, true, 0x2000ull);
-        entry.hasSeamSet = true;
-        entry.seamStrandCount = seamStrands;
+        ClusterSignature dominant;
+        dominant.bones[0] = signature.bones[best];
+        dominant.weights[0] = 1.0f;
+        dominant.boneCount = 1;
+
+        // Lift the strands out before touching the map again: inserting the
+        // dominant signature can rehash, which would invalidate a reference
+        // held into the entry being merged from.
+        std::vector<uint32_t> moved = std::move(strandsBySignature[signature]);
+        strandsBySignature.erase(signature);
+
+        std::vector<uint32_t>& target = strandsBySignature[dominant];
+        target.insert(target.end(), moved.begin(), moved.end());
       }
-
-      entry.rigidClusters = true;
-      entry.strandCount = totalStrands;
-
-      Logger::info(str::format("[Hair Test] Grew ", strands, " strands in ", entry.clusters.size(),
-                               " rigid bone clusters", entry.hasSeamSet ? str::format(" + ", seamStrands, " skinned seam strands") : "",
-                               mask != nullptr ? " (mask scatter)" : "", " on a tagged mesh",
-                               hasBlendWeights ? "" : " (source has no skinning; single rigid cluster)"));
     }
+
+    // Stable cluster order: the map's iteration order is unspecified, and the
+    // disk cache stores clusters in sequence, so an unordered walk would give
+    // a different file for identical input on every run.
+    std::vector<const ClusterSignature*> orderedSignatures;
+    orderedSignatures.reserve(strandsBySignature.size());
+    for (const auto& [signature, strandList] : strandsBySignature) {
+      orderedSignatures.push_back(&signature);
+    }
+    std::sort(orderedSignatures.begin(), orderedSignatures.end(),
+              [](const ClusterSignature* a, const ClusterSignature* b) {
+                if (a->boneCount != b->boneCount) {
+                  return a->boneCount < b->boneCount;
+                }
+                for (uint32_t i = 0; i < a->boneCount; ++i) {
+                  if (a->bones[i] != b->bones[i]) {
+                    return a->bones[i] < b->bones[i];
+                  }
+                  if (a->weights[i] != b->weights[i]) {
+                    return a->weights[i] < b->weights[i];
+                  }
+                }
+                return false;
+              });
+
+    entry.clusters.reserve(orderedSignatures.size());
+    uint64_t clusterSalt = 0x1000ull;
+    for (const ClusterSignature* signature : orderedSignatures) {
+      const std::vector<uint32_t>& strandList = strandsBySignature.at(*signature);
+
+      SurfaceHairCluster cluster;
+      cluster.boneCount = signature->boneCount;
+      for (uint32_t i = 0; i < signature->boneCount; ++i) {
+        cluster.boneIndices[i] = signature->bones[i];
+        cluster.boneWeights[i] = signature->weights[i];
+      }
+      cluster.strandCount = static_cast<uint32_t>(strandList.size());
+      cluster.geometry = assembleGeometry(strandList, clusterSalt++);
+      entry.clusters.push_back(std::move(cluster));
+    }
+
+    entry.strandCount = totalStrands;
+
+    uint32_t blendedClusters = 0;
+    for (const SurfaceHairCluster& cluster : entry.clusters) {
+      if (cluster.boneCount > 1) {
+        ++blendedClusters;
+      }
+    }
+
+    Logger::info(str::format("[Hair Test] Grew ", totalStrands, " strands in ", entry.clusters.size(),
+                             " clusters (", blendedClusters, " spanning multiple bones) at ", buckets,
+                             " weight buckets", mask != nullptr ? " (mask scatter)" : "", " on a tagged mesh",
+                             hasBlendWeights ? "" : " (source has no skinning; single cluster)"));
 
     return true;
   }
@@ -1691,11 +1746,17 @@ namespace dxvk {
         "(a character is typically dozens of submeshes), and large batches grow over a few frames.");
 
       uint32_t totalClusters = 0;
+      uint32_t blendedClusters = 0;
       for (const auto& [meshHash, meshEntry] : m_surfaceHair) {
         totalClusters += static_cast<uint32_t>(meshEntry.clusters.size());
+        for (const SurfaceHairCluster& cluster : meshEntry.clusters) {
+          if (cluster.boneCount > 1) {
+            ++blendedClusters;
+          }
+        }
       }
-      ImGui::Text("Hair-grown meshes: %u (%u bone clusters), strands: %u / %d budget",
-                  static_cast<uint32_t>(m_surfaceHair.size()), totalClusters,
+      ImGui::Text("Hair-grown meshes: %u (%u clusters, %u blended), strands: %u / %d budget",
+                  static_cast<uint32_t>(m_surfaceHair.size()), totalClusters, blendedClusters,
                   m_surfaceStrandsLive, surfaceStrandCount());
 
       RemixGui::DragInt("Total Strand Budget", &surfaceStrandCountObject(), 100.0f, 1, 2000000, "%d", ImGuiSliderFlags_AlwaysClamp);
@@ -1707,24 +1768,13 @@ namespace dxvk {
           "instantly across runs; any change regrows and writes a new file.";
       ImGui::TextWrapped("%s", cacheNote.c_str());
 
-      RemixGui::Combo("Attachment", &surfaceAttachmentModeObject(), "Rigid Per-Bone Clusters\0Skinned (Exact Deformation)\0Hybrid (Rigid + Skinned Seams)\0");
-      if (surfaceAttachmentMode() == 0) {
-        ImGui::TextWrapped(
-          "Each strand is parented to the bone with the highest skinning weight at its root and the "
-          "cluster moves rigidly with that bone - no per-frame rebuild cost. Exact for single-influence "
-          "meshes (this game's characters).");
-      } else if (surfaceAttachmentMode() == 1) {
-        ImGui::TextWrapped(
-          "Strand roots inherit the mesh's blend weights and are skinned exactly like the surface. "
-          "The hair BLAS rebuilds every frame the pose changes, which costs GPU time at high strand counts.");
-      } else {
-        ImGui::TextWrapped(
-          "Rigid clusters cover each bone's core region (scaled by its influence radius); a separate "
-          "skinned seam set with its own BLAS covers everything outside the cores. On single-influence "
-          "meshes this renders identically to Rigid - its value is for blended, multi-influence content.");
-        RemixGui::DragFloat("Cluster Core Radius Scale", &hybridClusterRadiusScaleObject(), 0.01f, 0.05f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-        RemixGui::DragInt("Seam Strand Count", &hybridSeamStrandCountObject(), 100.0f, 0, 200000, "%d", ImGuiSliderFlags_AlwaysClamp);
-      }
+      RemixGui::DragInt("Skinning Weight Buckets", &clusterWeightBucketsObject(), 0.1f, 1, 16, "%d", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::TextWrapped(
+        "Strands are grouped into clusters by their root's skinning weights, and each cluster moves by "
+        "the blend of its bones - the same blend the skin itself uses, so the coat stays attached across "
+        "joints with no per-frame rebuild cost. This is how finely weights are bucketed: higher tracks "
+        "bending joints more closely and costs more clusters (each is one instance). 1 groups by dominant "
+        "bone only, which leaves bald gaps wherever the body bends. Changing it regrows the strands.");
 
       ImGui::Unindent();
     }

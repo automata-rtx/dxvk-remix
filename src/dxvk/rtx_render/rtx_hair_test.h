@@ -85,28 +85,20 @@ namespace dxvk {
     // Surface hair: strands grown across meshes whose color texture is tagged
     // with the rtx.hairStrandTextures category (Game Setup tab). The strands
     // are generated once in bind pose, textured by the source's diffuse at
-    // each strand's root UV, and follow the model's animation through the
-    // attachment mode below (rigid per-bone clusters or exact skinning).
-    RTX_OPTION_ARGS("rtx.hairTest", int, surfaceAttachmentMode, 0,
-                    "How surface hair follows its mesh.\n"
-                    "0: Rigid per-bone clusters (default) - strands are grouped by their root's dominant bone and each group is a "
-                    "static mesh carried by that bone's transform. Costs nothing per frame after creation (no BLAS rebuilds, no "
-                    "skinning). Exact for single-influence meshes.\n"
-                    "1: Skinned - strands carry the source mesh's blend weights and deform exactly with it, at per-frame skinning "
-                    "and BLAS update cost.\n"
-                    "2: Hybrid - rigid clusters cover each bone's core region; strands falling outside every core go into a "
-                    "separate skinned seam set with its own BLAS. See hybridClusterRadiusScale / hybridSeamStrandCount.",
-                    args.minValue = 0, args.maxValue = 2);
-    RTX_OPTION_ARGS("rtx.hairTest", float, hybridClusterRadiusScale, 0.75f,
-                    "Hybrid attachment: a strand joins its bone's rigid cluster only when its root lies within this fraction of "
-                    "the bone's influence-region radius (the RMS distance of the bone's vertices from their centroid), so the "
-                    "cutoff scales per bone. Roots outside every core region go to the skinned seam set.",
-                    args.minValue = 0.05f, args.maxValue = 4.0f);
-    RTX_OPTION_ARGS("rtx.hairTest", int, hybridSeamStrandCount, 15000,
-                    "Hybrid attachment: number of additional strands generated for the skinned seam set covering the areas "
-                    "outside the rigid clusters' core regions. These are on top of the total strand budget and live in their "
-                    "own BLAS, updated per frame by GPU skinning.",
-                    args.minValue = 0, args.maxValue = 200000);
+    // each strand's root UV, and follow the model's animation as weight-
+    // signature clusters (see clusterWeightBuckets).
+    RTX_OPTION_ARGS("rtx.hairTest", int, clusterWeightBuckets, 8,
+                    "How finely strands are grouped by their root's skinning weights.\n"
+                    "Strands are grouped into static clusters, and each cluster's per-frame transform is the blend of its "
+                    "bones' matrices by those weights - the same linear blend the skinning shader applies per vertex, "
+                    "evaluated once per cluster instead. Because every strand in a cluster shares one weight signature, "
+                    "this is exact skinning at zero per-frame geometry cost: no BLAS rebuilds and no skinning dispatch.\n"
+                    "This value is the number of steps weights are quantized to. Higher tracks the skin more closely "
+                    "across joints (where fur otherwise separates from the body and opens bald gaps) at the cost of more "
+                    "clusters, since each distinct signature becomes its own instance. 1 groups by dominant bone only, "
+                    "which is exact on single-influence meshes and visibly wrong at every joint on enveloped ones. "
+                    "If a mesh's signatures exceed the cluster cap the quantization is automatically coarsened.",
+                    args.minValue = 1, args.maxValue = 16);
     RTX_OPTION("rtx.hairTest", bool, evenScatter, true,
                "Best-candidate (Mitchell's) scattering for surface hair: each strand root is chosen from several candidates, "
                "keeping the one farthest from already-placed roots, for an even coat without clumps. One-time cost at growth.");
@@ -240,31 +232,42 @@ namespace dxvk {
     // cached per source mesh and re-submitted each frame with the source
     // draw's material and transforms.
     //
-    // Rigid mode partitions the strands by their root's dominant bone; each
-    // cluster is a static mesh whose per-frame transform is the source draw's
-    // transform composed with that bone's current palette matrix, so the fur
-    // follows the animation without any per-frame BLAS or skinning work.
+    // Strands are partitioned by their root's quantized skinning weights, and
+    // each cluster is a static mesh whose per-frame transform is the source
+    // draw's transform composed with the blend of its bones' palette matrices
+    // by those weights. Every strand in a cluster shares one weight signature,
+    // so that single blended matrix is precisely the skinning matrix each of
+    // its vertices would get - linear blend skinning evaluated per cluster
+    // rather than per vertex, with no per-frame BLAS or skinning work.
+    //
+    // Grouping by dominant bone alone (clusterWeightBuckets = 1) is what opens
+    // bald gaps at joints: an enveloped root moves to a blend of two bones
+    // while its cluster rigidly follows one, so the fur peels off the skin
+    // exactly where the body bends.
     static constexpr uint32_t kNoBone = 0xFFFFFFFFu;
+    static constexpr uint32_t kMaxClusterBones = 4;
+    // Each cluster is a separate instance and BLAS, so signature count is
+    // capped; exceeding it coarsens the weight quantization and regroups.
+    static constexpr uint32_t kMaxClustersPerMesh = 1024;
+    // Clusters below this fold into their dominant bone's pure signature - an
+    // instance and a BLAS per handful of strands is not worth the fidelity,
+    // and the strands that lose it are a rounding error of the coat.
+    static constexpr uint32_t kMinStrandsPerCluster = 32;
 
     struct SurfaceHairCluster {
       RasterGeometry geometry;
-      // Raw palette index into the source draw's bone matrices, or kNoBone to
-      // follow the draw transform alone (unskinned sources).
-      uint32_t boneIndex = kNoBone;
+      // Raw palette indices into the source draw's bone matrices, with the
+      // weights to blend them by. boneCount 0 follows the draw transform alone
+      // (unskinned sources).
+      uint32_t boneIndices[kMaxClusterBones] = { kNoBone, kNoBone, kNoBone, kNoBone };
+      float boneWeights[kMaxClusterBones] = { 0.0f, 0.0f, 0.0f, 0.0f };
+      uint32_t boneCount = 0;
       uint32_t strandCount = 0;
     };
 
     struct SurfaceHairEntry {
-      // Skinned mode: one geometry carrying the source's blend data.
-      RasterGeometry geometry;
       uint32_t strandCount = 0;
-      // Rigid mode: static per-bone clusters.
       std::vector<SurfaceHairCluster> clusters;
-      bool rigidClusters = false;
-      // Hybrid mode: the skinned seam set (stored in `geometry`) exists
-      // alongside the rigid clusters.
-      bool hasSeamSet = false;
-      uint32_t seamStrandCount = 0;
       // Set when the source mesh could not be read (unmappable buffers or an
       // unsupported layout); the entry is kept to avoid retrying every frame.
       bool buildFailed = false;

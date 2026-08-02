@@ -123,8 +123,9 @@ changes, or eviction after ~300 unseen frames):
 2. **Binding**: every root binds to a live-mesh vertex — the nearest vertex
    (grid lookup) for mask scatter, the barycentric-dominant corner
    otherwise. The bound vertex supplies the root UV (strand color), the
-   dominant bone (decoded with the skinning shader's exact conventions:
-   `numBones-1` stored weights + implicit last, raw index bytes), and the
+   full set of influencing bones and weights (decoded with the skinning
+   shader's exact conventions: `numBones-1` stored weights + implicit last,
+   raw index bytes) which decides the strand's cluster (§7), and the
    fallback normal.
 3. **Growth**: strands extend along the interpolated surface normal (the
    mask's own smooth-shaded normals when it has them — author them smooth in
@@ -270,30 +271,64 @@ Implementation: `rtx/concept/surface_material/hair_bcsdf.slangh` (frame,
 evaluation, sampling) and the hair branches in
 `opaque_surface_material_interaction.slangh`.
 
-## 7. Attachment modes (`surfaceAttachmentMode`)
+## 7. Attachment: weight-signature clusters (`clusterWeightBuckets`)
 
-- **0 — Rigid per-bone clusters** (default): strands grouped by their root's
-  dominant bone; each group is a static mesh whose per-frame transform is
-  `draw.objectToWorld × pBoneMatrices[bone]`. No per-frame BLAS or skinning
-  cost; motion vectors come free from the moving instance. The submitted
-  cluster draws **clear the skinning state**
-  (`DrawCallState::clearSkinningState`) — geometry caching keys on the bone
-  hash, and a stale animated hash forces a full re-process + BLAS rebuild
-  every frame.
-- **1 — Skinned**: one geometry carrying the source's blend data, deformed
-  by Remix's GPU skinning; per-frame BLAS update cost.
-- **2 — Hybrid**: rigid clusters cover each bone's *core region* (roots
-  within `hybridClusterRadiusScale ×` the bone's influence radius — the RMS
-  distance of its vertices from their centroid, so the cutoff scales per
-  bone); `hybridSeamStrandCount` additional strands scatter into the areas
-  outside every core and form a **separate skinned seam set with its own
-  BLAS**. Only the small seam set pays per-frame skinning.
+Strands are partitioned by their root's **quantized skinning weights**. Each
+partition is a static mesh whose per-frame transform is
 
-Reality check for this game: aurora's characters are single-influence
-(weight 1.0 per vertex; GX blends *inside* the palette matrices), so rigid
-clusters are already mathematically exact and mode 2 renders identically to
-mode 0. Hybrid exists for multi-influence content (`J3DSkinDeform` actors,
-future GXSetSkinning models with up to 4 weights).
+```
+draw.objectToWorld × ( Σ wᵢ · pBoneMatrices[bᵢ] )   normalized by Σ wᵢ
+```
+
+Because every strand in a cluster shares one weight signature, that single
+blended matrix is *exactly* the skinning matrix linear blend skinning would
+hand each of its vertices. So this is exact skinning at rigid-cluster cost:
+no per-frame BLAS work, no skinning dispatch, and motion vectors free from
+the moving instance.
+
+The submitted cluster draws **clear the skinning state**
+(`DrawCallState::clearSkinningState`) and carry **no blend streams**. Both
+matter: `processGeometryInfo` compares `getSkinningState().boneHash` against
+`lastBoneHash`, so a hair draw that kept either would take `kUpdateBVH` every
+animation frame and re-interleave, re-skin and refit every hair vertex.
+
+`clusterWeightBuckets` (default 8) is the number of steps weights round to.
+It is the whole trade:
+
+- Position error scales with the weight error, so **each doubling of the
+  bucket count halves the error** (measured; see §8).
+- Every distinct signature is one instance and one BLAS, so cluster count
+  scales with it too — roughly 300 clusters for 200k strands over a 40-bone
+  skeleton at 8 buckets.
+- Signatures per mesh are capped at `kMaxClustersPerMesh` (1024); exceeding
+  it halves the bucket count and regroups. Clusters under
+  `kMinStrandsPerCluster` (32) fold into their dominant bone.
+- **1 means dominant-bone grouping** — one bone per cluster, which is what
+  this system did before signatures existed.
+
+### Why dominant-bone grouping tore the coat
+
+Grouping by dominant bone is exact only where a vertex has a single
+influence. On an enveloped vertex the skin moves to a *blend* of two bones
+while a dominant-bone cluster rigidly follows one of them, so the fur peels
+away from the body exactly where it bends — neck, shoulder, jaw, haunch —
+and the bare skin shows through as a bald patch. Measured against exact LBS
+on 2-bone envelopes, dominant-bone grouping is **16× worse** than 16
+buckets; the residual is a large fraction of a strand length, which is
+precisely the size of the visible gap.
+
+This game reaches that case through `J3DSkinDeform`: `dusk::gpu_skin`
+inverts the per-joint skin lists into a per-position influence table (up to
+`GX_AURORA_MAX_SKIN_INFLUENCES` = 4) and emits `GXSetSkinning`, so aurora
+writes real multi-bone weights into the D3D9 stream. Rigid J3D shapes take
+the pn-matrix path instead, which writes weight 1.0 and a single index —
+those are genuinely single-influence, decode to a one-bone signature, and
+are unaffected by the bucket count.
+
+> The overlay's cluster readout distinguishes the two: it reports total
+> clusters **and how many span multiple bones**. A mesh reporting 0 blended
+> clusters is single-influence, and its coat cannot be gapping for this
+> reason.
 
 ## 8. Validation harness
 
@@ -304,15 +339,23 @@ Development happens in a Linux container; nothing here requires a GPU:
   nearest-neighbor against brute force, and alignment recovery of known
   transforms to ~0 residual.
 - `scratchpad/tu/surface_check.cpp`: compiles the **verbatim body** of
-  `buildSurfaceHairGeometry` against stubs and a synthetic two-bone mesh;
-  validates skinned/rigid/unskinned builds, raw blend-data copies,
-  mask-confined scatter (all strands land on the masked half and bind to
-  its bone), and the hybrid partition (cluster counts, seam set size, seam
-  blend data, distinct hashes).
+  `buildSurfaceHairGeometry` against stubs and a synthetic multi-bone mesh
+  (`extract_bodies.py` lifts the bodies out of the source, so the harness
+  cannot drift from what ships); validates signature grouping (correct bone
+  pairs and weights, no blend streams on a cluster, distinct hashes, every
+  strand accounted for), dominant-bone collapse at 1 bucket, the unskinned
+  single-cluster case, and mask-confined scatter.
 - The surface harness also validates the shading bake (root vertices
   strictly darker than tips) and round-trips the strand disk cache
-  bit-identically for skinned entries (blend buffers included) and rigid
-  cluster entries, plus rejection of corrupt cache files.
+  bit-identically including each cluster's weight signature, plus rejection
+  of corrupt files and of the superseded v1 cache layout.
+- `scratchpad/tu/cluster_check.cpp`: compiles the **verbatim**
+  `quantizeBinding` lambda and drives it against a reference LBS
+  implementation over random skeletons. Confirms the properties the fix
+  rests on: signatures are canonical under influence reordering, weights
+  stay bucket multiples, single-influence roots are bit-exact at every
+  bucket count, error halves per bucket doubling (mean 12.26 → 0.77 from 1
+  to 16 buckets), and signature counts stay under the cluster cap.
 - MSVC builds run in CI on every push of `claude/**`.
 
 ## 9. Notes toward an upstream PR
@@ -362,9 +405,7 @@ If this gets re-implemented for upstream Remix:
 | `fiberDiffuseWeight` / `fiberDiffuseTint` | 0.0 / white | artificial fill lobe for dense fur |
 | `fiberDenoiserRoughness` | 0.4 | perceptual roughness hair reports for denoising/demodulation |
 | `scatterSeed` | 1337 | scatter/variation seed |
-| `surfaceAttachmentMode` | 0 | 0 rigid clusters, 1 skinned, 2 hybrid |
-| `hybridClusterRadiusScale` | 0.75 | rigid-core cutoff as a fraction of each bone's influence radius |
-| `hybridSeamStrandCount` | 15000 | extra strands for the hybrid's skinned seam set |
+| `clusterWeightBuckets` | 8 | steps skinning weights quantize to when grouping strands into clusters; higher tracks joints more closely at more clusters, 1 is dominant-bone grouping (regrows) |
 | `evenScatter` | true | best-candidate scattering |
 | `maskDirectory` | `hair_masks` | scatter mask directory, relative to the game exe |
 | `maskMirrorMode` | 0 | mask handedness: 0 auto-detect, 1 as authored, 2 force mirrored |
