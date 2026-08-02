@@ -122,11 +122,11 @@ changes, or eviction after ~300 unseen frames):
    cost.
 2. **Binding**: every root binds to a live-mesh vertex — the nearest vertex
    (grid lookup) for mask scatter, the barycentric-dominant corner
-   otherwise. The bound vertex supplies the root UV (strand color), the
-   full set of influencing bones and weights (decoded with the skinning
-   shader's exact conventions: `numBones-1` stored weights + implicit last,
-   raw index bytes) which decides the strand's cluster (§7), and the
-   fallback normal.
+   otherwise — which supplies the root UV (strand color) and the fallback
+   normal. Separately, the root's **skinning** is resolved as the
+   barycentric blend of its triangle's three corner bindings (§7); binding
+   it to the single bound vertex instead is what used to tear the coat open
+   at joints.
 3. **Growth**: strands extend along the interpolated surface normal (the
    mask's own smooth-shaded normals when it has them — author them smooth in
    Blender for low-poly meshes) with jitter/frizz/curl/droop.
@@ -306,29 +306,46 @@ It is the whole trade:
 - **1 means dominant-bone grouping** — one bone per cluster, which is what
   this system did before signatures existed.
 
-### Why dominant-bone grouping tore the coat
+### Where a root's weights come from — and why this tore the coat
 
-Grouping by dominant bone is exact only where a vertex has a single
-influence. On an enveloped vertex the skin moves to a *blend* of two bones
-while a dominant-bone cluster rigidly follows one of them, so the fur peels
-away from the body exactly where it bends — neck, shoulder, jaw, haunch —
-and the bare skin shows through as a bald patch. Measured against exact LBS
-on 2-bone envelopes, dominant-bone grouping is **16× worse** than 16
-buckets; the residual is a large fraction of a strand length, which is
-precisely the size of the visible gap.
+A root's signature is the **barycentric blend of its triangle's three corner
+bindings**, not the binding of one bound vertex. That distinction is the
+whole fix, and it is easy to get wrong twice:
 
-This game reaches that case through `J3DSkinDeform`: `dusk::gpu_skin`
-inverts the per-joint skin lists into a per-position influence table (up to
+> **Single-influence per *vertex* is not rigid per *triangle*.** This game's
+> matrix-palette characters really do carry one bone per vertex (aurora's
+> pn-matrix path writes weight 1.0 and a single index). But a triangle whose
+> corners sit on *different* bones is interpolated across its face — the skin
+> stretches smoothly over the joint, which is exactly why the body looks
+> continuous there. A strand bound to one corner's bone is rigidly attached
+> to one end of a surface that is stretching, so it walks off the body.
+> Blending by barycentric weight is precisely what the surface itself does.
+
+Bald patches therefore appeared in bands along bone boundaries — neck,
+shoulder, jaw, haunch — while the skin beneath stayed whole. Measured
+against exact LBS, snapping to one bone is **16× worse** than 16 buckets;
+the residual is a large fraction of a strand length, which is the size of
+the visible gap.
+
+Mask scatter needs one extra step, because a root then sits on a *mask*
+triangle that carries no skinning at all. The build makes a vertex →
+incident-triangle table for the live mesh and takes the incident triangle
+whose surface passes closest to the root (Ericson's closest-point test),
+then uses that point's barycentrics. Both paths end in the same place: up to
+four influences, strongest kept, normalized.
+
+Models that *are* genuinely enveloped reach the same machinery from the
+other direction: `dusk::gpu_skin` inverts `J3DSkinDeform`'s per-joint skin
+lists into a per-position influence table (up to
 `GX_AURORA_MAX_SKIN_INFLUENCES` = 4) and emits `GXSetSkinning`, so aurora
-writes real multi-bone weights into the D3D9 stream. Rigid J3D shapes take
-the pn-matrix path instead, which writes weight 1.0 and a single index —
-those are genuinely single-influence, decode to a one-bone signature, and
-are unaffected by the bucket count.
+writes real multi-bone weights per vertex. Those blend into the corner
+bindings before the barycentric step.
 
-> The overlay's cluster readout distinguishes the two: it reports total
-> clusters **and how many span multiple bones**. A mesh reporting 0 blended
-> clusters is single-influence, and its coat cannot be gapping for this
-> reason.
+> The overlay reports total clusters **and how many span multiple bones**. On
+> a skinned character that second number must be non-zero: it counts the
+> clusters straddling a joint, which are the ones that used to tear. A mesh
+> reporting 0 blended clusters is either unskinned or has no triangle
+> crossing a bone boundary.
 
 ## 8. Validation harness
 
@@ -349,6 +366,11 @@ Development happens in a Linux container; nothing here requires a GPU:
   strictly darker than tips) and round-trips the strand disk cache
   bit-identically including each cluster's weight signature, plus rejection
   of corrupt files and of the superseded v1 cache layout.
+- The surface harness's decisive case is a mesh whose vertices are all
+  **single-influence** (weight 1.0, as aurora's pn-matrix path writes) but
+  whose triangles straddle bones: it must produce blended clusters. Before
+  the barycentric fix it produced none, and that is exactly the shape of the
+  bug that reached the screen.
 - `scratchpad/tu/cluster_check.cpp`: compiles the **verbatim**
   `quantizeBinding` lambda and drives it against a reference LBS
   implementation over random skeletons. Confirms the properties the fix

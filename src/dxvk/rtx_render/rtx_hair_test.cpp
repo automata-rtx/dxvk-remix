@@ -35,6 +35,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 // RTX Character Rendering SDK Geometry Library (vendored): curve segment ->
 // LSS / DOTS conversion.
@@ -78,9 +79,73 @@ namespace dxvk {
     // the geometry assembly, or the meaning of any growth parameter changes,
     // so stale files fail the header check instead of decoding wrongly.
     constexpr uint32_t kHairCacheMagic = 0x31434844u; // 'DHC1'
+    // 3: cluster signatures come from the root's barycentric weights over its
+    //    triangle's corner bones, not from a single bound vertex.
     // 2: clusters carry a blend-weight signature rather than one bone index,
     //    and the skinned/hybrid main geometry slot is gone.
-    constexpr uint32_t kHairCacheVersion = 2;
+    constexpr uint32_t kHairCacheVersion = 3;
+
+    // Closest point on a triangle to p, returned as barycentric weights.
+    // Ericson's region test (Real-Time Collision Detection 5.1.5): a root
+    // scattered on an artist mask has no live triangle of its own, so the
+    // nearest live surface point supplies the weights that decide how the
+    // strand is carried.
+    void closestPointBarycentric(const rtxcr::geometry::math::float3& p,
+                                 const rtxcr::geometry::math::float3& a,
+                                 const rtxcr::geometry::math::float3& b,
+                                 const rtxcr::geometry::math::float3& c,
+                                 float& outU, float& outV, float& outW) {
+      using namespace rtxcr::geometry;
+
+      const math::float3 ab = b - a;
+      const math::float3 ac = c - a;
+      const math::float3 ap = p - a;
+
+      const float d1 = math::dot(ab, ap);
+      const float d2 = math::dot(ac, ap);
+      if (d1 <= 0.0f && d2 <= 0.0f) { outU = 1.0f; outV = 0.0f; outW = 0.0f; return; }
+
+      const math::float3 bp = p - b;
+      const float d3 = math::dot(ab, bp);
+      const float d4 = math::dot(ac, bp);
+      if (d3 >= 0.0f && d4 <= d3) { outU = 0.0f; outV = 1.0f; outW = 0.0f; return; }
+
+      const float vc = d1 * d4 - d3 * d2;
+      if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        const float denom = d1 - d3;
+        const float v = std::fabs(denom) > 1e-20f ? d1 / denom : 0.0f;
+        outU = 1.0f - v; outV = v; outW = 0.0f;
+        return;
+      }
+
+      const math::float3 cp = p - c;
+      const float d5 = math::dot(ab, cp);
+      const float d6 = math::dot(ac, cp);
+      if (d6 >= 0.0f && d5 <= d6) { outU = 0.0f; outV = 0.0f; outW = 1.0f; return; }
+
+      const float vb = d5 * d2 - d1 * d6;
+      if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        const float denom = d2 - d6;
+        const float w = std::fabs(denom) > 1e-20f ? d2 / denom : 0.0f;
+        outU = 1.0f - w; outV = 0.0f; outW = w;
+        return;
+      }
+
+      const float va = d3 * d6 - d5 * d4;
+      if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
+        const float denom = (d4 - d3) + (d5 - d6);
+        const float w = std::fabs(denom) > 1e-20f ? (d4 - d3) / denom : 0.0f;
+        outU = 0.0f; outV = 1.0f - w; outW = w;
+        return;
+      }
+
+      const float denom = va + vb + vc;
+      if (!(std::fabs(denom) > 1e-20f)) { outU = 1.0f; outV = 0.0f; outW = 0.0f; return; }
+      const float inv = 1.0f / denom;
+      outV = vb * inv;
+      outW = vc * inv;
+      outU = 1.0f - outV - outW;
+    }
 
     Rc<DxvkBuffer> allocHairGeometryBuffer(DxvkDevice* device, size_t sizeInBytes, const char* name) {
       // Identical to the growth path's allocBuffer (buildSurfaceHairGeometry):
@@ -1124,6 +1189,9 @@ namespace dxvk {
       // normal, so fur shades with the pelt's curvature instead of the raw
       // normal of whichever vertex happened to be nearest.
       float normal[3];
+      // How the root is carried: the barycentric blend of its triangle's
+      // corner bindings, which is what decides the strand's cluster.
+      SkinBinding binding;
     };
     std::vector<RootAttachment> rootAttachments;
     rootAttachments.reserve(totalStrands);
@@ -1206,6 +1274,145 @@ namespace dxvk {
       return nearestVertex;
     };
 
+    // Live vertex -> incident triangles, in CSR form. Mask scatter needs it:
+    // a root sits on a mask triangle, which carries no skinning, so the live
+    // triangle nearest the root supplies the weights.
+    std::vector<uint32_t> incidentStart;
+    std::vector<uint32_t> incidentTris;
+    if (sourceHasBlend && mask != nullptr) {
+      incidentStart.assign(static_cast<size_t>(source.vertexCount) + 1, 0u);
+      for (const SourceTriangle& tri : triangles) {
+        for (uint32_t c = 0; c < 3; ++c) {
+          if (tri.indices[c] < source.vertexCount) {
+            ++incidentStart[tri.indices[c] + 1];
+          }
+        }
+      }
+      for (size_t v = 1; v < incidentStart.size(); ++v) {
+        incidentStart[v] += incidentStart[v - 1];
+      }
+      incidentTris.resize(incidentStart.back());
+      std::vector<uint32_t> cursor(incidentStart.begin(), incidentStart.end() - 1);
+      for (size_t t = 0; t < triangles.size(); ++t) {
+        for (uint32_t c = 0; c < 3; ++c) {
+          const uint32_t vertexIndex = triangles[t].indices[c];
+          if (vertexIndex < source.vertexCount) {
+            incidentTris[cursor[vertexIndex]++] = static_cast<uint32_t>(t);
+          }
+        }
+      }
+    }
+
+    // A root's effective skinning: the barycentric blend of its triangle's
+    // three corner bindings.
+    //
+    // This is the difference between fur that stays on the body and fur that
+    // tears open at every joint. A vertex may well have a single influence -
+    // this game's matrix-palette characters all do - but a TRIANGLE whose
+    // corners sit on different bones is interpolated across its face, so the
+    // skin stretches smoothly over the joint. Binding a root to one corner's
+    // bone rigidly attaches it to one end of a surface that is stretching,
+    // and the strand walks off the body. Blending by barycentric weight is
+    // exactly what the surface itself does.
+    const auto resolveRootBinding = [&](const RootSample& s, uint32_t attachVertex) -> SkinBinding {
+      SkinBinding blended;
+      if (!sourceHasBlend) {
+        return blended;
+      }
+
+      uint32_t corners[3] = { attachVertex, attachVertex, attachVertex };
+      float bary[3] = { 1.0f, 0.0f, 0.0f };
+
+      if (mask == nullptr) {
+        // The scatter triangle is a live triangle; its own barycentrics apply.
+        const ScatterTri& tri = scatterTris[s.tri];
+        corners[0] = tri.indices[0]; corners[1] = tri.indices[1]; corners[2] = tri.indices[2];
+        bary[0] = s.baryU; bary[1] = s.baryV; bary[2] = s.baryW;
+      } else if (attachVertex + 1 < incidentStart.size()) {
+        // Mask scatter: take the incident triangle whose surface passes
+        // closest to the root, and that point's barycentrics.
+        float bestDistanceSq = std::numeric_limits<float>::max();
+        for (uint32_t i = incidentStart[attachVertex]; i < incidentStart[attachVertex + 1]; ++i) {
+          const SourceTriangle& tri = triangles[incidentTris[i]];
+          const math::float3 a = readPosition(tri.indices[0]);
+          const math::float3 b = readPosition(tri.indices[1]);
+          const math::float3 c = readPosition(tri.indices[2]);
+
+          float u, v, w;
+          closestPointBarycentric(s.root, a, b, c, u, v, w);
+          const math::float3 closest = a * u + b * v + c * w;
+          const math::float3 delta = closest - s.root;
+          const float distanceSq = math::dot(delta, delta);
+          if (distanceSq < bestDistanceSq) {
+            bestDistanceSq = distanceSq;
+            corners[0] = tri.indices[0]; corners[1] = tri.indices[1]; corners[2] = tri.indices[2];
+            bary[0] = u; bary[1] = v; bary[2] = w;
+          }
+        }
+      }
+
+      // Accumulate corner influences, scaled by their barycentric weight.
+      struct Accum { uint32_t bone; float weight; };
+      Accum accum[3 * kMaxClusterBones];
+      uint32_t accumCount = 0;
+
+      for (uint32_t c = 0; c < 3; ++c) {
+        if (!(bary[c] > 1e-5f)) {
+          continue;
+        }
+        const SkinBinding corner = decodeSkinBinding(corners[c]);
+        for (uint32_t i = 0; i < corner.boneCount; ++i) {
+          const float weight = bary[c] * corner.weights[i];
+          if (!(weight > 0.0f)) {
+            continue;
+          }
+          bool merged = false;
+          for (uint32_t a = 0; a < accumCount; ++a) {
+            if (accum[a].bone == corner.bones[i]) {
+              accum[a].weight += weight;
+              merged = true;
+              break;
+            }
+          }
+          if (!merged && accumCount < 3 * kMaxClusterBones) {
+            accum[accumCount++] = { corner.bones[i], weight };
+          }
+        }
+      }
+
+      if (accumCount == 0) {
+        return decodeSkinBinding(attachVertex);
+      }
+
+      // Keep the strongest kMaxClusterBones influences (selection sort - the
+      // list is at most 12 long) and normalize what survives.
+      const uint32_t keep = std::min(accumCount, kMaxClusterBones);
+      for (uint32_t i = 0; i < keep; ++i) {
+        uint32_t best = i;
+        for (uint32_t j = i + 1; j < accumCount; ++j) {
+          if (accum[j].weight > accum[best].weight) {
+            best = j;
+          }
+        }
+        std::swap(accum[i], accum[best]);
+      }
+
+      float total = 0.0f;
+      for (uint32_t i = 0; i < keep; ++i) {
+        total += accum[i].weight;
+      }
+      if (!(total > 0.0f)) {
+        return decodeSkinBinding(attachVertex);
+      }
+
+      for (uint32_t i = 0; i < keep; ++i) {
+        blended.bones[i] = accum[i].bone;
+        blended.weights[i] = accum[i].weight / total;
+      }
+      blended.boneCount = keep;
+      return blended;
+    };
+
     for (uint32_t strandIndex = 0; strandIndex < totalStrands; ++strandIndex) {
       const RootSample sample = drawSpacedSample();
       const uint32_t attachVertex = bindRoot(sample);
@@ -1274,7 +1481,9 @@ namespace dxvk {
         }
       }
 
-      rootAttachments.push_back({ attachVertex, { surfaceNormal.x, surfaceNormal.y, surfaceNormal.z } });
+      rootAttachments.push_back({ attachVertex,
+                                  { surfaceNormal.x, surfaceNormal.y, surfaceNormal.z },
+                                  resolveRootBinding(sample, attachVertex) });
 
       // Grow the strand along the jittered surface normal.
       const float jitterX = rng.next() * 2.0f - 1.0f;
@@ -1616,8 +1825,7 @@ namespace dxvk {
     while (true) {
       strandsBySignature.clear();
       for (uint32_t strandIndex = 0; strandIndex < totalStrands; ++strandIndex) {
-        const SkinBinding binding = decodeSkinBinding(rootAttachments[strandIndex].nearestVertex);
-        strandsBySignature[quantizeBinding(binding, buckets)].push_back(strandIndex);
+        strandsBySignature[quantizeBinding(rootAttachments[strandIndex].binding, buckets)].push_back(strandIndex);
       }
 
       if (strandsBySignature.size() <= kMaxClustersPerMesh || buckets <= 1) {
