@@ -1,10 +1,16 @@
 # Dusklight hair — strand fur for Remix scenes
 
-Status: working feature on `Fixed-Function-dev` lineage. This documents the
-whole fur system: surface hair on hair-tagged meshes, the data-lifetime
-rules that were expensive to learn, the strand disk cache, artist scatter
-masks, shading, and the attachment modes. It is written so the system could
-later be re-implemented as an upstream Remix PR (§9) — the modules are
+Status: **built and shipping, with one part not good enough — skeletal
+attachment.** Growth, masking, caching and shading all work and have been run
+in game. How the coat *follows the animating body* has not satisfied the
+owner across two rounds of fixes (verdict 2026-08-03), and its cause is not
+established. **Read §7.1 before doing any more work on attachment** — it
+records what those two rounds ruled out, so a third does not repeat them.
+
+This documents the whole fur system: surface hair on hair-tagged meshes, the
+data-lifetime rules that were expensive to learn, the strand disk cache,
+artist scatter masks, shading, and attachment. It is written so the system
+could later be re-implemented as an upstream Remix PR (§9) — the modules are
 deliberately layered for that.
 
 (The hair-covered test sphere this system was bootstrapped on — its own
@@ -346,6 +352,62 @@ bindings before the barycentric step.
 > clusters straddling a joint, which are the ones that used to tear. A mesh
 > reporting 0 blended clusters is either unskinned or has no triangle
 > crossing a bone boundary.
+
+### 7.1 Attachment is still not good enough — read before touching it
+
+**Owner's verdict, 2026-08-03, after two rounds: the coat still does not
+follow the skeleton acceptably.** The cause is not established. Nothing below
+is a fix; it is the ground already covered, so a third attempt starts
+further along than the first two did.
+
+**What these characters actually are.** Twilight Princess characters are
+**matrix-palette (PNGP)**: J3D pre-blends the weighted envelope on the CPU
+into a ≤10-entry palette per draw packet
+(`J3DMtxBuffer::calcWeightEnvelopeMtx`), and each vertex carries one
+`GX_VA_PNMTXIDX`. Aurora's D3D9 path therefore writes **blend weight 1.0 and
+a single index per vertex**. The blend is not lost — it lives inside the
+palette matrix, which is rebuilt every frame from the animation. Only two
+actors in the whole game (`d_a_door_boss`, `d_a_demo00`) use the
+`J3DSkinDeform` path that produces real per-vertex weights. This is written
+up in dusklight `docs/gpu_skinning_and_platform_direction.md` §6, which
+predates the fur work and would have prevented both wrong turns.
+
+**Round 1 — group by the root vertex's own blend weights.** No effect. The
+overlay reported **204 clusters, 0 blended**, because there are no
+multi-bone vertex weights on these characters to group by.
+
+**Round 2 — group by the root's barycentric blend over its triangle's corner
+slots.** The reasoning is sound and is what §7 now implements: single
+influence per *vertex* does not mean rigid per *triangle*, since a triangle
+spanning slots is interpolated across its face. It demonstrably produces
+blended clusters — the harness's synthetic single-influence mesh whose
+triangles straddle bones goes from 0 to 7 of 9 blended. In game it still did
+not satisfy.
+
+**So two things are ruled out**, offline and in game: the weights being
+single-influence, and the blend math being wrong.
+
+**Get ground truth before changing code.** The overlay's cluster and blended
+counts for the character, and a capture showing where strands sit versus
+where the pelt sits. Candidates, most explanatory first:
+
+1. **Palette identity across frames.** Hair records palette indices **once**,
+   at growth time, and reuses them every frame thereafter. Aurora's batcher
+   allocates palette entries per (slot, load-generation) into a virtual
+   256-entry world palette. The "deterministic bytes" guarantee covers a
+   steady state; it has never been verified across an **LOD change, an actor
+   reload, or an animation that reaches a different set of packets**. If the
+   numbering shifts, recorded indices silently address the wrong matrices and
+   the fur follows the wrong bones. Cheap test: log the slot→joint mapping at
+   growth and again later, and diff. **This is the first thing to check.**
+2. **Mask-bound roots crossing body parts.** With a scatter mask a root binds
+   to the nearest *live* vertex; where the mask surface stands off the body,
+   the nearest live vertex can belong to a different part than the root
+   visually sits on, so the strand inherits that part's motion.
+3. **Direction, not position.** A cluster carries one blended matrix for its
+   whole strand length. Roots may be landing correctly while tufts splay
+   wrongly under rotation — which would read as a coat that "moves oddly"
+   rather than one with holes.
 
 ## 8. Validation harness
 

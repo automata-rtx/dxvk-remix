@@ -28,6 +28,13 @@ unless it says so.
 carry the design, the measurements, and a §14 "Facts that were expensive to
 learn" that exists because several of them were wrong in an earlier draft.
 
+**`documentation/DusklightHair.md` is the third one** — strand fur
+(`rtx.hairTest.*`): growth, scatter masks, the disk cache, the RTXCR hair
+BCSDF, and cluster attachment. Growth/masking/caching/shading work and are
+tested; **skeletal attachment is not good enough and its cause is unknown**
+(§7.1, which lists what two rounds of fixes already ruled out — read it
+before attempting a third).
+
 | Repo | Role | Its docs |
 | :-- | :-- | :-- |
 | `automata-rtx/dxvk-remix` | **this repo** — the Remix fork | `documentation/Dusklight*.md` |
@@ -92,6 +99,9 @@ anything else.
 | `src/dxvk/rtx_render/rtx_dusklight_env.h` | `rtx.dusklight.env.*` — readouts the game **writes** via `remixapi_SetConfigVariable`. All `NoSave`. |
 | `src/dxvk/rtx_render/rtx_dusklight_atmosphere.{h,cpp}` | one medium driving fog, sky and sky-light; Hillaire physical sky |
 | `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` | the ambient grade stage |
+| `src/dxvk/rtx_render/rtx_hair_test.{h,cpp}` | `rtx.hairTest.*` — strand fur: growth, disk cache, cluster attachment, overlay UI |
+| `src/dxvk/rtx_render/rtx_hair_mask.{h,cpp}` | artist scatter masks: OBJ load, similarity-ICP alignment. **Std-only, no dxvk types** — unit-testable standalone |
+| `src/dxvk/shaders/rtx/concept/surface_material/hair_bcsdf.slangh` | the RTXCR hair BCSDF (R/TT/TRT), ridden by the opaque material behind a flag |
 | `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
 
 **Transport rules that are easy to get wrong** (full versions in
