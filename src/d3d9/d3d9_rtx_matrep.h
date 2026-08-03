@@ -106,10 +106,40 @@ namespace dxvk {
       return expr;
     }
 
-    // True the first time this material is seen. Callers key this on
-    // LegacyMaterialData::computeIdentityHash(), which covers the ops, arg
-    // sources, tFactor and blend state - so one texture used in several
-    // contexts reports once per context rather than once overall.
+    // Identity of a material's *reconstruction shape*: which texture, which ops
+    // and which argument sources. Deliberately excludes tFactor's value, which
+    // varies per draw with the game's fog and time of day and would otherwise
+    // report the same material hundreds of times.
+    //
+    // Still distinguishes one texture used in several contexts, because the ops
+    // and arg sources differ there - which is the case the report exists for.
+    inline XXH64_hash_t shapeKey(const LegacyMaterialData& m) {
+      // Zero-initialised and explicitly padded: hashing a struct with
+      // indeterminate padding bytes would key on uninitialised memory.
+      struct Shape {
+        XXH64_hash_t tex0;
+        XXH64_hash_t tex1;
+        uint8_t colorOp, colorArg1, colorArg2;
+        uint8_t alphaOp, alphaArg1, alphaArg2;
+        uint8_t tfBlend, vcBaked;
+        uint8_t pad[6];
+      };
+      static_assert(sizeof(Shape) == 24, "Shape must have no implicit padding");
+      Shape shape {};
+      shape.tex0 = m.getColorTexture().getImageHash();
+      shape.tex1 = m.getColorTexture2().getImageHash();
+      shape.colorOp = static_cast<uint8_t>(m.textureColorOperation);
+      shape.colorArg1 = static_cast<uint8_t>(m.textureColorArg1Source);
+      shape.colorArg2 = static_cast<uint8_t>(m.textureColorArg2Source);
+      shape.alphaOp = static_cast<uint8_t>(m.textureAlphaOperation);
+      shape.alphaArg1 = static_cast<uint8_t>(m.textureAlphaArg1Source);
+      shape.alphaArg2 = static_cast<uint8_t>(m.textureAlphaArg2Source);
+      shape.tfBlend = m.isTextureFactorBlend ? 1u : 0u;
+      shape.vcBaked = m.isVertexColorBakedLighting ? 1u : 0u;
+      return XXH3_64bits(&shape, sizeof(shape));
+    }
+
+    // True the first time this shape is seen.
     inline bool shouldEmit(XXH64_hash_t key) {
       static std::unordered_set<XXH64_hash_t> s_seen;
       static bool s_truncated = false;

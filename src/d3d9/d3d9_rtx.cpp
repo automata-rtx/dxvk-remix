@@ -1150,11 +1150,13 @@ namespace dxvk {
     // surface. See aurora-ao/docs/dx9/material-report.md.
     if (DusklightMatrep::matrep()) {
       const LegacyMaterialData& mat = m_activeDrawCallState.materialData;
-      // Keyed on the identity hash, not getHash(): getHash() is only the
-      // texture's image hash, so one texture reused in several contexts would
-      // report once and hide exactly the case this report exists to expose.
-      // The identity hash covers the ops, arg sources, tFactor and blend state.
-      const XXH64_hash_t identity = mat.computeIdentityHash();
+      // Keyed on the reconstruction *shape* -- texture, ops and arg sources --
+      // deliberately excluding tFactor's value. computeIdentityHash() includes
+      // it, and because the game's tints track fog and time of day, the
+      // 2026-08-03 session produced 828 distinct tFactor values and burned the
+      // whole 1024 cap on a few dozen materials inside 14 seconds. The value is
+      // still printed; it just does not multiply the number of reports.
+      const XXH64_hash_t identity = matrep::shapeKey(mat);
       if (matrep::shouldEmit(identity)) {
         Logger::info(str::format(
           "matrep.rmx id=", std::hex, identity, std::dec,
