@@ -11,8 +11,12 @@ Companion docs:
   this while the game runs. Read that one for anything about *controlling* the
   system rather than what it computes.
 - `dusklight-ao/docs/kankyo-fog.md` — what the game computes and what it pushes.
-- `dusklight-ao/docs/kankyo-remix.md` — the wider environment bridge and its
-  verification log.
+- `dusklight-ao/docs/kankyo-remix.md` — the wider environment design; its live
+  issue list is `remix-open-issues.md` alongside it.
+- `aurora-ao/docs/dx9/remix-material-interface.md` — **how a captured D3D9 draw
+  becomes a material in this runtime.** Nothing to do with atmosphere, but it is
+  the system most often reasoned about incorrectly here, and material colour
+  defects are diagnosed from there rather than from this document.
 
 Everything below is grounded in code as of 2026-07-28. File references are
 repo-relative; `dusklight-ao/` and `aurora-ao/` prefixes point at the other two
@@ -591,7 +595,7 @@ success."* Range, shape and per-area fog scaling all validated; see §13's
 **The 2026-07-29 session cleared this list.** `hideSkyBillboards`, warp, the
 time-of-day slider and Freeze Time all work; local point lights work (they need
 `localLightIntensity` 19 and `localLightRadius` 10 — see
-`dusklight-ao/docs/kankyo-remix.md` open issue 3); and `hideSkyBillboards`
+`dusklight-ao/docs/remix-open-issues.md` open issue 3); and `hideSkyBillboards`
 **fixed the night shadow wandering**, confirming the moon-quad cause rather than
 merely masking it.
 
@@ -636,10 +640,14 @@ is a dome light sampled on ray miss, so nothing here can be categorised and the
 exemption still has to happen in the composite. What was wrong was the reason
 recorded for ruling tagging out **everywhere else**.
 
-**FIXED 2026-07-29 — and deliberately fixed twice,
+**Fix BUILT 2026-07-29, UNTESTED — and deliberately built twice,
 `rtx.dusklight.atmosphere.skyFogMode`.** Both candidate treatments are built and
 mutually exclusive, so the choice can be made by looking rather than by
 argument. One of them is meant to be **deleted** once it has been.
+
+*(This heading said "FIXED" until 2026-08-03. It was never run in game. Built,
+CI-green and fixed are three different claims and this project has been bitten
+by conflating them — see `CLAUDE.md` §"How this project works" rule 5.)*
 
 | Mode | What it does | What it costs |
 | :-- | :-- | :-- |
@@ -668,7 +676,7 @@ elevation, so a Phase C A/B needs the sun held in one place — otherwise part o
 the difference between the two shots is the clock. Freeze at **180 (noon)**,
 where the sun is well above the 28° full-strength threshold, and A/B
 `physicalMaxWeight` 0 ↔ 1. The step-by-step version, including the failure
-table, is in `dusklight-ao/docs/kankyo-remix.md` §"Test session playbook".
+table, is in `dusklight-ao/docs/remix-test-playbook.md`.
 
 ### What landed
 

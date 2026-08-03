@@ -3,7 +3,9 @@
 *Companion to `DusklightAtmosphere.md`, which covers the rendering. This one
 covers how any of it gets driven while the game runs.*
 
-Last updated 2026-07-28.
+*For material and colour questions, neither of these is the right document —
+see `aurora-ao/docs/dx9/remix-material-interface.md` and, for reading a log,
+`aurora-ao/docs/dx9/material-report.md`.*
 
 ---
 
@@ -395,7 +397,7 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
   Two settings came out of the visit and **neither is the default** —
   `localLightIntensity` **19** and `localLightRadius` **10**. The 19 is the
   derived reading of the game's attenuation curve, not a taste value. See
-  `dusklight-ao/docs/kankyo-remix.md` open issue 3.
+  `dusklight-ao/docs/remix-open-issues.md` open issue 3.
 
   Loose end: `found 5` but `drawn 4`. One light is being rejected on the way
   through, and "harmless" is currently an assumption.
@@ -426,10 +428,10 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
   letterbox bars — an ortho, z-write-off draw — at `:2717`. Since the bars come
   *after* both, they cannot be the trigger that rescues them; something else
   correlated with letterbox must inject earlier. Full analysis, ruled-out
-  candidates and the three settling experiments are in `kankyo-remix.md`
-  open issue 6.
+  candidates and the three settling experiments are in
+  `dusklight-ao/docs/remix-open-issues.md` open issue 6.
 - Controls tab landed but untested in game.
 
 The full step-by-step for all of the above, with baseline `rtx.conf` and
-failure tables, is in `dusklight-ao/docs/kankyo-remix.md` §"Test session
-playbook". It is kept there rather than here because it spans all three repos.
+failure tables, is in `dusklight-ao/docs/remix-test-playbook.md`. It is kept
+there rather than here because it spans all three repos.

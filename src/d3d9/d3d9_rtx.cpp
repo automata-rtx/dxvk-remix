@@ -12,6 +12,7 @@
 #include "../util/util_fastops.h"
 #include "../util/util_math.h"
 #include "d3d9_rtx_utils.h"
+#include "d3d9_rtx_matrep.h"
 #include "d3d9_texture.h"
 #include "../dxvk/rtx_render/rtx_terrain_baker.h"
 
@@ -1141,6 +1142,34 @@ namespace dxvk {
       if (!m_forceGeometryCopy && RtxOptions::alwaysCopyDecalGeometries()) {
         // Only poke decal hashes when option is enabled.
         m_forceGeometryCopy |= m_activeDrawCallState.testCategoryFlags(CATEGORIES_REQUIRE_GEOMETRY_COPY);
+      }
+    }
+
+    // Dusklight material translation report. One guarded call; the whole
+    // implementation is in d3d9_rtx_matrep.h so this stays a one-line rebase
+    // surface. See aurora-ao/docs/dx9/material-report.md.
+    if (DusklightMatrep::matrep()) {
+      const LegacyMaterialData& mat = m_activeDrawCallState.materialData;
+      // Keyed on the identity hash, not getHash(): getHash() is only the
+      // texture's image hash, so one texture reused in several contexts would
+      // report once and hide exactly the case this report exists to expose.
+      // The identity hash covers the ops, arg sources, tFactor and blend state.
+      const XXH64_hash_t identity = mat.computeIdentityHash();
+      if (matrep::shouldEmit(identity)) {
+        Logger::info(str::format(
+          "matrep.rmx id=", std::hex, identity, std::dec,
+          " first=", firstStage,
+          " tex0ptr=", d3d9State().textures[firstStage],
+          " tex0hash=", std::hex, mat.getColorTexture().getImageHash(), std::dec,
+          " cop=", matrep::opName(mat.textureColorOperation),
+          " a1=", matrep::argName(mat.textureColorArg1Source),
+          " a2=", matrep::argName(mat.textureColorArg2Source),
+          " tFactor=", std::hex, mat.tFactor, std::dec,
+          " tfBlend=", mat.isTextureFactorBlend,
+          " stageTf=", useStageTextureFactorBlending,
+          " multiTf=", useMultipleStageTextureFactorBlending,
+          " vcBaked=", mat.isVertexColorBakedLighting,
+          " albedo=\"", matrep::albedoExpression(mat), "\""));
       }
     }
 
