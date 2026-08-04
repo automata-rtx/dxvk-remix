@@ -1171,6 +1171,11 @@ namespace dxvk {
           " stageTf=", useStageTextureFactorBlending,
           " multiTf=", useMultipleStageTextureFactorBlending,
           " vcBaked=", mat.isVertexColorBakedLighting,
+          // The two-colour ramp aurora ships in the unused half of
+          // D3DMATERIAL9; when this is 1 the albedo expression below is not
+          // what the shader evaluates. See rtx_dusklight_emissive.h.
+          " ramp=", mat.getLegacyMaterial().Diffuse.a >= 0.5f ? 1 : 0,
+          " rampTfHigh=", mat.getLegacyMaterial().Ambient.r >= 0.5f ? 1 : 0,
           " albedo=\"", matrep::albedoExpression(mat), "\""));
       }
     }

@@ -2979,6 +2979,13 @@ namespace dxvk {
         "the Goron Mines lava has GX lighting switched on, like an ordinary wall. So the game "
         "backend scores the evidence it does have per draw, and Evidence Needed decides where to "
         "cut. Lower it when something that clearly glows in the original does not glow here.");
+      RemixGui::Checkbox("Reproduce Two-Colour Ramps", &DusklightRamp::rampMaterialsObject());
+      ImGui::TextWrapped(
+        "Most of this game's materials slide a texture between two authored colours - that is how one rupee "
+        "texture yields seven rupee colours. No stock D3D9 texture op can express it, so with this off they are "
+        "approximated and the Goron Mines lava reads red-and-white instead of red-to-orange. Turn it off to see "
+        "the approximation it replaces.");
+      RemixGui::Separator();
       RemixGui::Checkbox("Emissive Surfaces Enabled", &DusklightEmissive::enableObject());
       RemixGui::DragFloat("Evidence Needed", &DusklightEmissive::thresholdObject(), 0.01f, 0.f, 1.f);
       RemixGui::DragFloat("Emissive Intensity", &DusklightEmissive::intensityObject(), 0.05f, 0.f, 200.f);

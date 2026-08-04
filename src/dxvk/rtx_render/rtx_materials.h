@@ -275,7 +275,9 @@ struct RtSurface {
     textureFlags |= ((static_cast<uint32_t>(textureAlphaOperation)  & 0x7) << 11);
 
     textureFlags |= eyeParams ? (1 << 14) : 0;
-    // textureFlags bits 15-16 unused
+    // Dusklight two-colour ramp, see rampOtherColor.
+    textureFlags |= isRampMaterial ? (1 << 15) : 0;
+    textureFlags |= rampTFactorIsHigh ? (1 << 16) : 0;
 
     static_assert(static_cast<uint32_t>(TexGenMode::Count) <= 4);
     textureFlags |= ((static_cast<uint32_t>(texgenMode) & 0x3) << 17);
@@ -298,7 +300,10 @@ struct RtSurface {
       writeGPUHelper(data, offset, uint32_t{});
       writeGPUHelper(data, offset, uint32_t{});
     }
-    writeGPUHelper(data, offset, uint32_t{});
+    // data15.w: was permanent padding, now the Dusklight ramp's second
+    // endpoint. Taken here rather than by growing Surface, which is sized to
+    // exactly two 128-byte cachelines.
+    writeGPUHelper(data, offset, rampOtherColor);
 
     assert(offset - oldOffset == kSurfaceGPUSize);
   }
@@ -348,6 +353,13 @@ struct RtSurface {
   RtTextureArgSource textureAlphaArg2Source = RtTextureArgSource::None;
   DxvkRtTextureOperation textureAlphaOperation = DxvkRtTextureOperation::SelectArg1;
   uint32_t tFactor = 0xffffffff;   // Value for D3DRS_TEXTUREFACTOR, default value of is opaque white
+  // Dusklight two-colour ramp. The dominant GameCube material shape is
+  // lerp(colourA, colourB, texture), which no stock texture op expresses -
+  // see aurora-ao/docs/dx9/remix-material-interface.md §10. One endpoint rides
+  // tFactor; this is the other, 0x00RRGGBB.
+  uint32_t rampOtherColor = 0;
+  bool isRampMaterial = false;
+  bool rampTFactorIsHigh = false;  // tFactor holds the texture-white endpoint
   TexGenMode texgenMode = TexGenMode::None;
   std::optional<RtEyeParams> eyeParams = {};
 

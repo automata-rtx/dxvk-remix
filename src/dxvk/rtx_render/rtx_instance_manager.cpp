@@ -1062,6 +1062,11 @@ namespace dxvk {
         currentInstance.surface.isAnimatedWater = currentInstance.testCategoryFlags(InstanceCategories::AnimatedWater);
         currentInstance.surface.associatedGeometryHash = drawCall.getHash(RtxOptions::geometryAssetHashRule());
         currentInstance.surface.isTextureFactorBlend = drawCall.getMaterialData().isTextureFactorBlend;
+        // Dusklight two-colour ramp; see rtx_dusklight_emissive.h and
+        // aurora-ao/docs/dx9/remix-material-interface.md §10.
+        currentInstance.surface.isRampMaterial = dusklightRamp::isRamp(drawCall.getMaterialData());
+        currentInstance.surface.rampTFactorIsHigh = dusklightRamp::tFactorIsHigh(drawCall.getMaterialData());
+        currentInstance.surface.rampOtherColor = dusklightRamp::otherColor(drawCall.getMaterialData());
         currentInstance.surface.isVertexColorBakedLighting = drawCall.getMaterialData().isVertexColorBakedLighting;
         currentInstance.surface.isMotionBlurMaskOut = currentInstance.testCategoryFlags(InstanceCategories::IgnoreMotionBlur);
         currentInstance.surface.ignoreTransparencyLayer = currentInstance.testCategoryFlags(InstanceCategories::IgnoreTransparencyLayer);

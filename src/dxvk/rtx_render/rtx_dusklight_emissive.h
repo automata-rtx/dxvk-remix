@@ -87,6 +87,43 @@ namespace dxvk {
     static constexpr size_t kMaxLogged = 96;
   };
 
+  // The two-colour ramp. Separate from emission but sharing the transport, so
+  // it lives here rather than earning a third Dusklight header.
+  struct DusklightRamp {
+    RTX_OPTION("rtx.dusklight", bool, rampMaterials, true,
+               "Reproduce the GameCube colour combiner directly for two-colour ramp materials.\n"
+               "Most of this game's materials are lerp(colourA, colourB, texture) - one texture driving a slide "
+               "between two authored colours, which is how one rupee texture yields seven rupee colours. No stock "
+               "D3D9 texture op expresses that, so with this off they are approximated: a multiply renders black "
+               "where the texture is dark, an add drives the bright end to white (Goron Mines lava reads "
+               "red-and-white instead of red-to-orange). Turn it off to compare against that approximation.");
+  };
+
+  namespace dusklightRamp {
+
+    // Aurora ships the ramp in the otherwise unused half of D3DMATERIAL9:
+    // Diffuse.rgb is the endpoint tFactor does not carry, Diffuse.a marks the
+    // material as a ramp, Ambient.r says which endpoint tFactor holds.
+    inline bool isRamp(const LegacyMaterialData& mat) {
+      return DusklightRamp::rampMaterials() && mat.getLegacyMaterial().Diffuse.a >= 0.5f;
+    }
+
+    inline bool tFactorIsHigh(const LegacyMaterialData& mat) {
+      return mat.getLegacyMaterial().Ambient.r >= 0.5f;
+    }
+
+    // Packed 0x00RRGGBB, matching tFactor's byte order so the shader unpacks
+    // both the same way.
+    inline uint32_t otherColor(const LegacyMaterialData& mat) {
+      const D3DCOLORVALUE& d = mat.getLegacyMaterial().Diffuse;
+      auto quantize = [](float v) -> uint32_t {
+        return uint32_t(std::min(255.0f, std::max(0.0f, v * 255.0f + 0.5f)));
+      };
+      return (quantize(d.r) << 16) | (quantize(d.g) << 8) | quantize(d.b);
+    }
+
+  } // namespace dusklightRamp
+
   namespace dusklightEmissive {
 
     // Aurora's evidence score rides D3DMATERIAL9::Emissive.a. Nothing else in
