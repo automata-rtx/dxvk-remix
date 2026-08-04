@@ -169,6 +169,23 @@ thresholds are options rather than constants.
 - `dxvk_imgui.cpp` does **not** include `<cmath>`. Do not rely on a transitive
   one across three compilers.
 
+## Two tripwires that only fire in CI
+
+Both are deliberate guards, not bugs, and both have cost a CI round. Neither
+shows up in a Linux container — the first is release/debugoptimized-only, the
+second needs the exact MSVC layout.
+
+- **`CheckRtInstanceSize`** (`rtx_instance_manager.cpp`). Any field added to
+  `RtSurface` grows `RtInstance` and trips it. The fix it asks for is: confirm
+  `copyInstanceDataFrom` carries the new members (it assigns `surface`
+  wholesale, so normally yes), then update the constant to the size named in the
+  error — the compiler prints it as `CheckRtInstanceSize<newSize>`.
+- **`hashStructByMemory`** (`rtx_materials.cpp`, `d3d9_rtx_matrep.h`). Requires
+  the listed members to sum to `sizeof(T)` exactly. Adding a field usually needs
+  the trailing `padding[N]` adjusted. **This one is checkable locally** — copy
+  the struct into a standalone file and compile it with a matching
+  `static_assert` before pushing.
+
 ## CI
 
 `.github/workflows/build.yml`, three Windows configs. `claude/**` is in the
