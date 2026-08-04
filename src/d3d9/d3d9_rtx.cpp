@@ -1145,9 +1145,9 @@ namespace dxvk {
       }
     }
 
-    // Dusklight material translation report. One guarded call; the whole
-    // implementation is in d3d9_rtx_matrep.h so this stays a one-line rebase
-    // surface. See aurora-ao/docs/dx9/material-report.md.
+    // Dusklight material translation report. One guarded block; the helpers
+    // live in d3d9_rtx_matrep.h to keep the rebase surface here small.
+    // See aurora-ao/docs/dx9/material-report.md.
     if (DusklightMatrep::matrep()) {
       const LegacyMaterialData& mat = m_activeDrawCallState.materialData;
       // Keyed on the reconstruction *shape* -- texture, ops and arg sources --

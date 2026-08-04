@@ -122,8 +122,9 @@ namespace dxvk {
 
     tint = white + (tint - white) * amount;
 
-    // A tint this close to white is not worth a full screen pass, and skipping it is what
-    // makes "bridge off" bit for bit identical to a build without this pass.
+    // A tint this close to white is not worth a full screen pass. Reached whenever the game
+    // reports a neutral ambient or strength is 0; the bridge-off case never gets this far, it
+    // returns above.
     constexpr float kNeutralEpsilon = 1e-4f;
     const bool neutral = std::fabs(tint.x - 1.0f) < kNeutralEpsilon &&
                          std::fabs(tint.y - 1.0f) < kNeutralEpsilon &&

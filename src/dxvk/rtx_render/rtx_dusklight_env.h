@@ -99,8 +99,12 @@ namespace dxvk {
 
     // Sky. Fed to the dome light, which replaces both Remix's auto detected sky probe and the
     // game's own sky dome. The game paints its dome by handing the hardware these few colours per
-    // frame rather than by drawing a texture, which is why the dome cannot be tagged: there is no
-    // texture content to hash. Generating the sky from the same colours sidesteps that entirely.
+    // frame rather than by drawing a texture, so generating the sky from the same colours is the
+    // direct translation of it.
+    //
+    // Not because the dome is untaggable - that claim was checked and is false. Texture hashing is
+    // only one of three category routes; rtx.skyBoxGeometries tags by geometry hash and needs no
+    // texture. documentation/DusklightAtmosphere.md §14.9.
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, skyHidden, false, RtxOptionFlags::NoSave,
                     "True when the game's current area has no sky at all - interiors and most dungeons. Written by the game's kankyo bridge.\n"
                     "The game decides this itself by checking whether its sky colours sum to zero, so this is its own answer rather than a guess, "
@@ -127,8 +131,9 @@ namespace dxvk {
                     "model the sky and reproduce the palette instead.");
     RTX_OPTION_FLAG("rtx.dusklight.env", int, moyaMode, 0, RtxOptionFlags::NoSave,
                     "Which of the game's haze particle modes is running, 0 for none. Written by the game's kankyo bridge.\n"
-                    "These are billboard particles rather than fog, so under a path tracer they arrive as geometry. Keeping them alongside a "
-                    "dense medium counts the same haze twice.");
+                    "These are billboard particles rather than fog, but they are already never drawn on the D3D9 backend "
+                    "(dKankyo_cloud_Packet::draw returns early), so there is nothing to double count against the medium. Pushed as a signal of how "
+                    "much haze an area wants folded into the medium; only displayed so far, not consumed by the atmosphere.");
     RTX_OPTION_FLAG("rtx.dusklight.env", float, moyaCount, 0.0f, RtxOptionFlags::NoSave,
                     "How strongly the game's haze particles are running, in its native 0..50 range. Written by the game's kankyo bridge.");
 

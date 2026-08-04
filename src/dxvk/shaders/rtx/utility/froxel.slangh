@@ -240,7 +240,7 @@ VolumeLookup froxelCoordinateToPrev(VolumeArgs volumeArgs, uint froxelDepthSlice
   // cannot move without the history being thrown away anyway.
   // Max distance is the exception: it is sized from the game's fog range where that is driven per area, so it does move while history is
   // live, and using the current frame's value here would misplace every reprojected sample for the whole transition. The previous frame's
-  // value is carried explicitly for that reason.
+  // value is carried explicitly for that reason. DusklightAtmosphere.md §6.2.
   const vec3 previousFroxelUVW = translatedWorldPositionToFroxelUVW(
     previousCamera.prevTranslatedWorldToView, previousCamera.prevTranslatedWorldToProjection, packedFlagGet(previousCamera.flags, rightHandedFlag),
     froxelDepthSlices, volumeArgs.froxelDepthSliceDistributionExponent, volumeArgs.previousFroxelMaxDistance, previousCamera.nearPlane,

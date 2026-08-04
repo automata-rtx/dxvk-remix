@@ -439,12 +439,12 @@ void applyVolumetricLighting(
       cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, primaryMiss, cameraGetWorldPosition(cb.camera), viewDistance, primaryRayDirections.worldDirection,
       volumetricPreintegratedRadiance, volumeAttenuation);
 
-    // Keep the medium off the sky (dusklight_composite_args.h, skyFogMode).
+    // Keep the medium off the sky (dusklight_composite_args.h, skyFogMode;
+    // DusklightAtmosphere.md §14.8).
     //
     // Done here rather than at applySkyContribution because the sky is fogged by two quantities,
-    // not one: the transmittance the dome is multiplied by, and the in-scatter that is added on
-    // top of it. Treating only the first leaves the sky the right brightness and still the wrong
-    // colour. Both are settled here, before either is used, so they cannot disagree.
+    // not one: the transmittance the dome is multiplied by, and the in-scatter added on top.
+    // Treating only the first leaves the sky the right brightness and still the wrong colour.
     //
     // Safe to touch volumeAttenuation on a miss: the only other consumer is
     // remodulatedTotalPrimaryRadiance, which is what the primary ray hit, and on a miss it hit
@@ -632,7 +632,7 @@ void applyFog(
   {
     // Volumetric fog is applied in volume integration - but only as far as the froxel grid reaches, because the froxel
     // lookup saturates past its last slice and stops accumulating there. Dusklight's fog regularly runs far beyond that,
-    // so the game's own ramp carries the rest of the distance.
+    // so the game's own ramp carries the rest of the distance. DusklightAtmosphere.md §5.2.
     if (cb.dusklightArgs.enable == 0)
     {
       return;
@@ -670,14 +670,11 @@ void applyFog(
 
     float t = saturate((fogAtDistance - fogAtHandover) / remaining);
 
-    // Scaled by how much light the near volume still lets past. The far fog sits behind that volume, so it can only
-    // affect what survives it: with a dense medium up close this correctly falls to nothing, and with a thin one it runs
-    // at full strength.
-    //
-    // This is also standing in for a separation we cannot make here. By this point radianceOutput holds the surface
-    // radiance and the near in-scatter added together, and only the former is behind the far fog - blending both towards
-    // the fog colour would erase in-scatter that is actually in front of it. Weighting by the near transmittance keeps
-    // that error where the in-scatter is small, which is the same place the far fog is strong.
+    // Scaled by how much light the near volume still lets past, since the far fog sits behind that volume and can only
+    // affect what survives it. It also stands in for a separation we cannot make here: radianceOutput already holds the
+    // surface radiance and the near in-scatter summed, and only the former is behind the far fog, so blending both would
+    // erase in-scatter that is in front of it. Weighting by the near transmittance keeps that error where the in-scatter
+    // is small, which is the same place the far fog is strong.
     t *= saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
 
     vec3 farFogRadiance = cb.dusklightArgs.fogColor;

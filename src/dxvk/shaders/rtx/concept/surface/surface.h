@@ -501,10 +501,10 @@ struct Surface
     get { return asfloat(data15.xyz); }
   }
 
-  // Dusklight two-colour ramp. The GameCube colour combiner evaluates
-  // a*(1-c) + b*c per channel with c the texture sample; no stock D3D9 texture
-  // op expresses that, so the two endpoints are carried explicitly - one in
-  // tFactor, one here. See aurora-ao/docs/dx9/remix-material-interface.md §10.
+  // Dusklight two-colour ramp: the GX combiner a*(1-c) + b*c, c the texture
+  // sample. chooseTextureOperationColor has no lerp op and D3D9 carries one
+  // TFACTOR, so the second endpoint rides here in what was data15.w padding.
+  // aurora-ao/docs/dx9/remix-material-interface.md §10.
   property bool isRampMaterial
   {
     get { return packedFlagGet(data13.z, 1 << 15); }

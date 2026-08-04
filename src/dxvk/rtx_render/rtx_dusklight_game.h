@@ -149,34 +149,32 @@ namespace dxvk {
                     "the sun directly overhead at noon and drops shadows straight down.\n"
                     "The default reproduces the game's arc exactly. This moves the visible sun and moon as well as the light, so the two never disagree, and it "
                     "changes nothing about time of day - dawn, dusk, night and the palette schedule all run off the clock and never look at the orbit. Sunrise "
-                    "and sunset elevations barely move either, so those transitions look the same.",
+                    "and sunset elevations barely move either, so those transitions look the same.\n"
+                    "Testing settled on 80, stopping short of 90 because the azimuth flips instantaneously at exactly 90. The recommended configuration is in "
+                    "dusklight-ao/docs/dx9-fixed-function.md.",
                     args.minValue = 1.0f,
                     args.maxValue = 90.0f);
     RTX_OPTION("rtx.dusklight.game", bool, hideSkyBillboards, false,
                "Stops the game drawing its sun, moon and star billboards.\n"
-               "Those are placed at a fixed offset from the camera, so they travel with the player. Any of them that Remix captures as ordinary world geometry "
-               "becomes an occluder that follows you around - a candidate for shadowed areas appearing to wander as the camera moves, and one that would only "
-               "show at night, since stars and the moon are the only sky billboards drawn then.\n"
-               "This is the fix as well as the test, and it removes the visible stars and moon along with the occluder. These do carry textures, unlike the "
-               "sky dome, so tagging them as Sky rather than hiding them is possible and would keep them visible - worth doing only if you want them back.");
+               "Those are placed at a fixed offset from the camera, so they travel with the player, and any that Remix captures as ordinary world geometry "
+               "become an occluder that follows you around. Tested 2026-07-29: that was the cause of shadowed areas appearing to wander at night, and this "
+               "fixes it rather than masking it.\n"
+               "It removes the visible stars and moon along with the occluder. rtx.dusklight.atmosphere.skyMoonEnable paints the moon back into the generated "
+               "sky; these billboards also carry textures, so categorising them as Sky instead would keep all of them visible.");
     RTX_OPTION("rtx.dusklight.game", bool, perBladeGrass, false,
                "Draws each blade of grass as its own instance instead of batching a whole room into one.\n"
-               "The game merges every blade in a room into a single dynamic vertex stream, already transformed into world "
-               "space. That is right for a rasterizer and wrong here: Remix identifies geometry by hashing vertex positions "
-               "among other things, so a batch whose positions change the moment any blade sways, is cut or regrows has no "
-               "stable identity at all. Such an instance cannot be tagged in the texture categorization screen, cannot be "
-               "replaced with authored geometry, and carries no denoiser or ReSTIR history - which is why grass lighting "
-               "lags behind the rest of the scene and can settle on the wrong answer.\n"
-               "Per blade, each one is static display list geometry plus its own transform, so its hash holds still. The "
-               "cost is exactly what the batching was saving: one draw call per blade rather than a few per room, paid on "
-               "the CPU in dense grass. Off by default for that reason.");
+               "The batch is a dynamic world space vertex stream, so its asset hash churns the moment any blade sways, is cut or regrows, and Remix cannot "
+               "identify it from frame to frame: no tagging, no replacement, and no denoiser or ReSTIR history, which is why grass lighting lags the scene. "
+               "Per blade it is static display list geometry plus a transform, so the hash holds still.\n"
+               "Off by default because it costs exactly what the batching saves - one draw call per blade in dense grass. Built 2026-07-29, untested in game; "
+               "dusklight-ao/docs/remix-open-issues.md is where its state is tracked.");
     RTX_OPTION("rtx.dusklight.game", bool, hideVrbox, false,
                "Stops the game drawing its own sky dome.\n"
-               "The dome is painted by handing the hardware a handful of colours rather than by drawing a texture, so Remix has nothing "
-               "distinctive to hash and the dome can never be tagged as sky - which is why rtx.dusklight.atmosphere.skyEnable generates a "
-               "sky from those same colours instead. Turn this on together with that, or the generated sky and the game's own dome will "
-               "both be visible; leave it off and the atmosphere still lights the scene but you will be looking at the game's dome.\n"
-               "Also set rtx.skyAutoDetect to None, otherwise the auto detected dome keeps feeding a second, dimmer sky into the same pixels.");
+               "Turn this on together with rtx.dusklight.atmosphere.skyEnable, which generates a sky from the same colours the dome is painted "
+               "with, or both will be visible; leave it off and the atmosphere still lights the scene but you will be looking at the game's dome.\n"
+               "Also set rtx.skyAutoDetect to None, otherwise the auto detected dome keeps feeding a second, dimmer sky into the same pixels.\n"
+               "Note the dome is not untaggable, which this option's rationale used to claim: it carries no texture, but rtx.skyBoxGeometries "
+               "categorises by geometry hash instead. documentation/DusklightAtmosphere.md section 14.9.");
     // Clock control. Both NoSave: a frozen clock or a pinned time that survived a restart would
     // be a silent, invisible reason for the world to behave oddly, and this pair exists to make
     // comparisons repeatable rather than to configure anything.

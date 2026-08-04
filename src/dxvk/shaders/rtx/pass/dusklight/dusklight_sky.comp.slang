@@ -29,9 +29,12 @@
 //
 // The game does not draw its sky from a texture. It hands the hardware a handful of colours each
 // frame - one for the zenith, two for the horizon haze, three more for clouds - and lets the
-// vertices of a dome model smear them into gradients. That is why the sky cannot be tagged: there
-// is no texture content to fingerprint. Rebuilding it here from the same colours gets around that
-// permanently, and puts the sky in high dynamic range, which the game's own dome never was.
+// vertices of a dome model smear them into gradients. Rebuilding it here from the same colours
+// puts the sky in high dynamic range, which the game's own dome never was.
+//
+// The reason this comment used to give - "no texture, so the sky can never be tagged" - was wrong.
+// Geometry-hash tagging and the API's SKY category both work without a texture. See
+// DusklightAtmosphere.md §14.9 before repeating it.
 //
 // The two halves are blended as radiance, before anything downstream sees either. That matters:
 // this one image is the visible sky, the light the sky casts, and the colour distant geometry
@@ -213,6 +216,10 @@ void main(uint2 ipos : SV_DispatchThreadID)
   // The moon, after the sky's intensity so its radiance is absolute rather than a multiple of
   // however bright the palette happens to be, and after the ground attenuation so a moon below the
   // horizon is not dimmed into a smear - it simply is not drawn, because the host sends 0.
+  //
+  // Reusing sunAzimuth/sunElevation is deliberate, not a copy-paste: the game pushes one celestial
+  // direction, whichever body is driving the light, so at night that pair *is* the moon's.
+  // DusklightAtmosphere.md §13.1.
   if (cb.moonRadiance > 0.0f)
   {
     const float cosMoonElevation = cos(cb.sunElevationRadians);

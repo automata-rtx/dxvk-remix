@@ -221,6 +221,7 @@ dxvk_src = files([
   'rtx_render/rtx_draw_call_tracker.h',
   'rtx_render/rtx_dusklight_atmosphere.cpp',
   'rtx_render/rtx_dusklight_atmosphere.h',
+  'rtx_render/rtx_dusklight_emissive.h',
   'rtx_render/rtx_dusklight_env.h',
   'rtx_render/rtx_dusklight_game.h',
   'rtx_render/rtx_dusklight_grade.cpp',

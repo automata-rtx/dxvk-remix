@@ -2971,7 +2971,8 @@ namespace dxvk {
 
     // Material translation. Remix's side of it, so it sits above the game-owned
     // controls below and works whether or not the game is connected.
-    // Background: aurora-ao/docs/dx9/remix-material-interface.md.
+    // Background: aurora-ao/docs/dx9/remix-material-interface.md - section 9
+    // emissive, section 10 the two-colour ramp.
     if (RemixGui::CollapsingHeader("Materials", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
       ImGui::TextWrapped(
@@ -3028,7 +3029,7 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Connected, but the game build is older than this build of Remix: it does not read these "
         "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 4 or newer.");
+        "accurate. Update the game to a build that reports protocol 6 or newer.");
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "

@@ -88,9 +88,8 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(DusklightMultiScatterShader);
 
     // Small on purpose. The dome is a smooth gradient with no detail to lose, and every ray that
-    // misses geometry samples it, so a compact image stays resident in cache. It is also the
-    // shape a physically based sky-view lookup wants later, which keeps that phase a change of
-    // contents rather than a change of plumbing.
+    // misses geometry samples it, so a compact image stays resident in cache. It doubles as the
+    // physical sky's sky-view lookup - that is why there is no fourth Hillaire table here.
     constexpr uint32_t kSkyWidth = 256;
     constexpr uint32_t kSkyHeight = 128;
 
@@ -102,6 +101,7 @@ namespace dxvk {
     // generator can work entirely in light space and treat +Z as up. Columns are the images of the
     // world basis vectors, so world +Y lands on light +Z and the U axis' phi = atan2(x, y) ends up
     // measuring the same angle about the up axis that the game reports its sun azimuth in.
+    // If the sky ever appears rotated 90 degrees about the horizon, this is the first place to look.
     const Matrix4 kWorldToDomeLight {
       1.0f, 0.0f, 0.0f, 0.0f,
       0.0f, 0.0f, 1.0f, 0.0f,
@@ -193,9 +193,9 @@ namespace dxvk {
       return out;
     }
 
-    // Match the game's ramp where it is half opaque. That point is the whole derivation: it is
-    // scale free, so the same expression covers a scripted whiteout closing in over two metres and
-    // an open field hazing out over two hundred, with no per area handling anywhere.
+    // Match the game's ramp where it is half opaque. Scale free, so one expression covers a scripted
+    // whiteout closing in over two metres and an open field hazing out over two hundred, with no per
+    // area handling anywhere. DusklightAtmosphere.md §5.1.
     //
     // Scripted fog banks deliberately put the ramp's start behind the camera, which drags the half
     // opaque point behind it too; the clamp is what stops the density running away there.
@@ -335,9 +335,8 @@ namespace dxvk {
 
     const Derived& d = m_derived;
 
-    // Scalar extinction, deliberately. The game's fog dims every channel by the same fraction
-    // because it was a lerp driven by one scalar ramp; a per channel extinction pulled out of the
-    // fog colour would make the fog's strength channel dependent, which the original never does.
+    // Scalar extinction, deliberately - see Derived::sigma in the header for why the fog colour
+    // must not become a per channel extinction.
     attenuationCoefficient = Vector3(d.sigma, d.sigma, d.sigma);
 
     const Vector3 albedo = sanitizeColor(singleScatteringAlbedo());
@@ -392,9 +391,8 @@ namespace dxvk {
 
     Rc<DxvkContext> baseCtx = ctx;
 
-    // Created once and kept for the life of the device, not rebuilt per frame: the dome light
-    // holds a bindless index into this image, and losing it for even a single frame drops the sky
-    // back to Remix's own probe, which is a different and much dimmer picture.
+    // Created once and kept for the life of the device: the dome light holds a bindless index into
+    // this image, and losing it for even a single frame drops the sky back to Remix's own probe.
     if (m_skyTexture.image == nullptr) {
       m_skyTexture = Resources::createImageResource(
         baseCtx, "dusklight sky", VkExtent3D { kSkyWidth, kSkyHeight, 1 },
@@ -443,14 +441,12 @@ namespace dxvk {
     pushArgs.mieAnisotropy = std::clamp(mieAnisotropy(), 0.0f, 0.95f);
     pushArgs.multiScatterScale = std::max(multiScatterScale(), 0.0f);
 
-    // The moon. The game pushes one celestial direction - whichever body is currently driving the
-    // light - so sunAzimuth/sunElevation *is* the moon's direction while sunIsDay is false, and
-    // the shader can reuse them rather than needing a second pair.
-    //
-    // Faded by the game's own handover weight rather than by a threshold on elevation: sunFade
-    // already falls to zero across dawn and dusk, which is exactly where the pushed direction jumps
-    // from one body to the other. Keying off it means the moon fades out as the direction becomes
-    // meaningless instead of snapping while it is still visible.
+    // The moon. The game pushes one celestial direction - whichever body drives the light - so
+    // sunAzimuth/sunElevation *is* the moon's direction while sunIsDay is false; no second pair.
+    // Faded by sunFade rather than by an elevation threshold, because sunFade already falls to zero
+    // exactly where the pushed direction jumps from one body to the other, so the moon fades as its
+    // direction stops meaning anything instead of snapping out while still on screen.
+    // DusklightAtmosphere.md §13.1.
     const bool moonVisible = skyMoonEnable() && !DusklightEnv::sunIsDay() && DusklightEnv::sunActive();
     const float moonFade = moonVisible ? std::clamp(DusklightEnv::sunFade(), 0.0f, 1.0f) : 0.0f;
 
@@ -466,9 +462,10 @@ namespace dxvk {
     Rc<DxvkSampler> linearSampler = ctx->getResourceManager().getSampler(
       VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
-    // Both tables are functions of the medium alone - not of the sun, not of the view - so they are
-    // rebuilt only when the medium moves, which in this game means when the palette does. Rebuilding
-    // them per frame would be most of the cost of the whole feature for no change in the result.
+    // Only the two tables are staleness-gated - they are functions of the medium alone, so rebuilding
+    // them per frame would be most of the cost of the feature for no change in the result. The sky
+    // image below is dispatched every frame regardless, which is what lets the sun move and the moon
+    // fade at all; do not add a cache there without solving that.
     const bool needsLutRebuild =
       pushArgs.physicalWeight > 0.0f && mediumChangedSince(skyColorLinear, clampedPaletteInfluence);
 

@@ -354,9 +354,10 @@ struct RtSurface {
   DxvkRtTextureOperation textureAlphaOperation = DxvkRtTextureOperation::SelectArg1;
   uint32_t tFactor = 0xffffffff;   // Value for D3DRS_TEXTUREFACTOR, default value of is opaque white
   // Dusklight two-colour ramp. The dominant GameCube material shape is
-  // lerp(colourA, colourB, texture), which no stock texture op expresses -
-  // see aurora-ao/docs/dx9/remix-material-interface.md §10. One endpoint rides
-  // tFactor; this is the other, 0x00RRGGBB.
+  // lerp(colourA, colourB, texture); no single D3D9 texture op carries it, so
+  // this fork evaluates the GX combiner in the shader from both endpoints.
+  // One endpoint rides tFactor; this is the other, 0x00RRGGBB.
+  // See aurora-ao/docs/dx9/remix-material-interface.md §10.
   uint32_t rampOtherColor = 0;
   bool isRampMaterial = false;
   bool rampTFactorIsHigh = false;  // tFactor holds the texture-white endpoint

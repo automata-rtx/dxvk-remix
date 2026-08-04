@@ -717,14 +717,12 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
 
     if (surface.isRampMaterial)
     {
-      // Dusklight: reproduce the GameCube colour combiner directly rather than
-      // approximating it with one D3D9 texture op. GX evaluates
-      // a*(1-c) + b*c per channel with c the texture sample, which is exactly a
-      // per-channel mix - and it is the shape most of this game's materials
-      // use. The single-op approximations both fail on it: a multiply renders
-      // black wherever the texture is dark, and an add drives the bright end to
-      // white. See aurora-ao/docs/dx9/remix-material-interface.md §10.
-      // Same byte order as tFactor above: the value is packed 0x00RRGGBB.
+      // Dusklight: evaluate the GX combiner a*(1-c)+b*c exactly - it is a
+      // per-channel mix, and the shape most of this game's materials use. Both
+      // single-op approximations fail it: multiply goes black where the texture
+      // is dark, add drives the bright end to white. .bgr for the same reason as
+      // tFactor above - the value is packed 0x00RRGGBB.
+      // aurora-ao/docs/dx9/remix-material-interface.md §10.
       const vec3 rampOther = unorm4x8ToFloat4x32(surface.rampOtherColor).bgr;
       const vec3 rampLo = surface.rampTFactorIsHigh ? rampOther : tFactor.rgb;
       const vec3 rampHi = surface.rampTFactorIsHigh ? tFactor.rgb : rampOther;

@@ -49,10 +49,11 @@ namespace dxvk {
 
   struct DusklightEmissive {
     RTX_OPTION("rtx.dusklight.emissive", bool, enable, true,
-               "Make surfaces that GameCube GX marked as taking no light actually emit light.\n"
-               "Aurora reports the GX evidence per draw; the thresholds below decide which of those surfaces "
-               "are treated as emitters. Turn this off to compare against the unlit rendering - the "
-               "dusklight.emis log lines are still written either way, so a test session is not wasted.");
+               "Let surfaces the GameCube material evidence marks as self-illuminated actually emit light.\n"
+               "No single GX fact identifies an emitter - the Goron Mines lava has GX lighting on - so aurora "
+               "scores the evidence per draw and the thresholds below decide the cut. Turn this off to compare "
+               "against the non-emissive rendering - the dusklight.emis log lines are still written either way, "
+               "so a test session is not wasted.");
     RTX_OPTION("rtx.dusklight.emissive", float, intensity, 2.0f,
                "Radiance multiplier applied to an emissive surface's own colour.\n"
                "The colour already carries the game's idea of how bright the surface looks, so this is a flat "
@@ -67,10 +68,11 @@ namespace dxvk {
                "here. The dusklight.emis log prints every surface's score, so this can be aimed rather than guessed.");
     RTX_OPTION("rtx.dusklight.emissive", float, minLuma, 0.25f,
                "Reject an emissive candidate whose presented colour is darker than this (0..1).\n"
-               "Keeps unlit-but-dark interior geometry from glowing. Lower it if something that should glow does not.");
+               "Keeps dark interior geometry that scored above the threshold from glowing. Lower it if something "
+               "that should glow does not.");
     RTX_OPTION("rtx.dusklight.emissive", float, minChroma, 0.20f,
                "Reject an emissive candidate whose presented colour is less saturated than this (0..1).\n"
-               "White and grey unlit surfaces are overwhelmingly UI, screen copies and plain geometry, not emitters. "
+               "White and grey candidates are overwhelmingly UI, screen copies and plain geometry, not emitters. "
                "Raise it to be stricter; set it to 0 to accept white emitters.");
     RTX_OPTION("rtx.dusklight.emissive", bool, useTextureColor, false,
                "Take the emitted colour from the albedo texture instead of the colour aurora evaluated.\n"
@@ -93,8 +95,8 @@ namespace dxvk {
     RTX_OPTION("rtx.dusklight", bool, rampMaterials, true,
                "Reproduce the GameCube colour combiner directly for two-colour ramp materials.\n"
                "Most of this game's materials are lerp(colourA, colourB, texture) - one texture driving a slide "
-               "between two authored colours, which is how one rupee texture yields seven rupee colours. No stock "
-               "D3D9 texture op expresses that, so with this off they are approximated: a multiply renders black "
+               "between two authored colours, which is how one rupee texture yields seven rupee colours. No single "
+               "D3D9 texture op carries that, so with this off they are approximated: a multiply renders black "
                "where the texture is dark, an add drives the bright end to white (Goron Mines lava reads "
                "red-and-white instead of red-to-orange). Turn it off to compare against that approximation.");
   };

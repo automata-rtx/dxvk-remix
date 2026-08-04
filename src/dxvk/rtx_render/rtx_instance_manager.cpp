@@ -1118,10 +1118,11 @@ namespace dxvk {
             tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(RtxOptions::emissiveBlendOverrideEmissiveIntensity());
             tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
           } else if (dusklightEmissive::isCandidate(drawCall.getMaterialData())) {
-            // Dusklight: aurora scored what GX says about this surface and
-            // handed over the colour it presents. Where to cut is a judgement,
-            // so it lives in rtx_dusklight_emissive.h - one place, dialable
-            // live from the F1 overlay.
+            // Dusklight: GX has no emissive term and no single GX fact
+            // identifies an emitter (the Goron Mines lava is lit=1), so aurora
+            // ships an evidence score and this cuts at a live overlay
+            // threshold. rtx_dusklight_emissive.h holds the cut;
+            // aurora-ao/docs/dx9/remix-material-interface.md §9 holds the why.
             const LegacyMaterialData& legacy = drawCall.getMaterialData();
             const Vector3 emissiveColor = dusklightEmissive::candidateColor(legacy);
             const bool accepted = dusklightEmissive::accepts(legacy, emissiveColor);
@@ -1146,10 +1147,11 @@ namespace dxvk {
                 // albedo's texture op to whatever is set here. See preimage().
                 tmpMaterialData.getOpaqueMaterialData().setEmissiveColorConstant(constant);
               }
-              // Gates NEECacheUtils.shouldSampleObject, so the emitter is sampled
-              // as a light rather than found by chance. It also excludes the
-              // surface from motion blur unless rtx.postfx.enableMotionBlurEmissive
-              // is set - which is how emitters are treated elsewhere in Remix.
+              // Gates NEECacheUtils.shouldSampleObject (nee_cache_light.slangh),
+              // so the emitter is sampled as a light rather than found by chance.
+              // That and one debug view are its only readers - post-FX's own
+              // motion-blur "isEmissive" flag is computed from radiance
+              // (geometry_resolver.slangh) and is not this one.
               currentInstance.surface.isEmissive = true;
             }
           }

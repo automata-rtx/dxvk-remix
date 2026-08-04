@@ -163,12 +163,13 @@ anything else.
 | `src/dxvk/rtx_render/rtx_dusklight_env.h` | `rtx.dusklight.env.*` — readouts the game **writes** via `remixapi_SetConfigVariable`. All `NoSave`. |
 | `src/dxvk/rtx_render/rtx_dusklight_atmosphere.{h,cpp}` | one medium driving fog, sky and sky-light; Hillaire physical sky |
 | `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` | the ambient grade stage |
-| `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. Aurora ships a GX **evidence score** in `D3DMATERIAL9::Emissive`; this holds the cut, the pre-image correction, and one bounded candidate log. Applied at one site in `rtx_instance_manager.cpp`. **Note the trap it works around: the shader re-applies the albedo's texture op to the emissive colour**, so the constant set here is a pre-image, not the colour |
+| `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. Aurora ships a GX **evidence score** in `D3DMATERIAL9::Emissive`; this holds the cut, the pre-image correction, and one bounded candidate log. Applied at one site in `rtx_instance_manager.cpp`. **Note the trap it works around: the shader re-applies the albedo's texture op to the emissive colour**, so the constant set here is a pre-image, not the colour. Also holds `rtx.dusklight.rampMaterials`, the two-colour ramp, which shares the same `D3DMATERIAL9` transport: the fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints rather than squeezing it into one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork can |
 | `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
 | `src/d3d9/d3d9_rtx_matrep.h` | the material translation report (`rtx.dusklight.matrep`), one guarded call at the tail of `D3D9Rtx::processTextures` |
 
 **API-submitted assets are capturable and replaceable** as of 2026-08-04, which
-upstream they are not. Two changes made it so: API mesh hashes are derived from
+upstream they are not — **CI-green, not yet exercised by an actual capture in
+game.** Two changes made it so: API mesh hashes are derived from
 the submitted vertex/index data instead of a creation-order counter
 (`rtx_remix_api.cpp` — upstream's `hack_getNextGeomHash`), and
 `submitExternalDraw` consults `getReplacementMaterial` before using the supplied
@@ -183,7 +184,7 @@ because the encoding side is aurora's. It is the system most often reasoned
 about incorrectly on this project; read it before changing anything in
 `d3d9_rtx.cpp`, `d3d9_rtx_utils.cpp`, or the emissive patch in
 `rtx_instance_manager.cpp`. §9 covers self-illumination, including why the
-thresholds are options rather than constants.
+thresholds are options rather than constants; §10 covers the two-colour ramp.
 
 **Transport rules that are easy to get wrong** (full versions in
 `documentation/DusklightOverlay.md` §1.1):

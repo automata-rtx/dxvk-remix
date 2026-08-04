@@ -16,7 +16,10 @@ Companion docs:
 - `aurora-ao/docs/dx9/remix-material-interface.md` — **how a captured D3D9 draw
   becomes a material in this runtime.** Nothing to do with atmosphere, but it is
   the system most often reasoned about incorrectly here, and material colour
-  defects are diagnosed from there rather than from this document.
+  defects are diagnosed from there rather than from this document. Its **§0**
+  also carries the standing statement of what the D3D9 stream is for — Remix's
+  renderer is the product, D3D9 is the feed — which is the frame every decision
+  below is made in.
 
 Everything below is grounded in code as of 2026-07-28. File references are
 repo-relative; `dusklight-ao/` and `aurora-ao/` prefixes point at the other two
@@ -156,9 +159,14 @@ and its own description says it *"should generally be enabled if volumetrics
 are used in outdoor settings as without a finite atmosphere infinite light
 sources such as the skybox and distant lights will not function properly."*
 
-The current `rtx.conf` guidance in `dusklight-ao/docs/dx9-fixed-function.md`
-picks the depth path (`rtx.volumetrics.enable = False`) for exactly these
-reasons. That remains correct until Phase A lands.
+The `rtx.conf` guidance in `dusklight-ao/docs/dx9-fixed-function.md` picked the
+depth path (`rtx.volumetrics.enable = False`) for exactly these reasons.
+
+**Superseded 2026-07-28 — all five causes are addressed and Phase A tested
+good (§12).** With the atmosphere on, volumetrics is the path to run. §2 is
+kept as the measurement it was, not as current advice; in particular 2.1's
+"structurally cannot" is a statement about the **default** 20 m grid, and A4
+drives that extent from the game's fog range every frame.
 
 ---
 
@@ -263,10 +271,12 @@ Scale-free, no magic endpoints, and correct across every regime the game uses:
 | Goron Mines | near | near | dense, hot |
 | Lake Hylia, kytag01 at full | `-2000`, `200` | clamped to `zHalfMin` | near-whiteout |
 
-Note the Lake Hylia case: the tag passes `start > end` deliberately
-(`dusklight-ao/src/d/actor/d_a_kytag01.cpp:94`), which in the vanilla ramp
-means "already ~90% fogged at z=0". The clamp turns that into a very dense
-medium, which is the right answer. `zHalfMin` is the one tuning knob and it
+Note the Lake Hylia case: the tag passes a **negative start** with
+`start < end` (`dusklight-ao/src/d/actor/d_a_kytag01.cpp:94`), which in the
+vanilla ramp means "already ~90% fogged at z=0". The clamp turns that into a
+very dense medium, which is the right answer. (An earlier revision of this
+section said `start > end`; that was a recon claim nobody verified, and §14.7
+records why it mattered.) `zHalfMin` is the one tuning knob and it
 exists to stop σ diverging.
 
 **This replaces `rtx.volumetrics.enableFogRemap` entirely for us.** We do not
@@ -285,8 +295,8 @@ in the original. Fix it by giving each system the range it is good at:
 - **`(froxelMaxDistance, ∞)` — the vanilla ramp, analytically.** Closes to
   exactly 100% at `end`, matching the original.
 
-Today `src/dxvk/shaders/rtx/pass/composite/composite.comp.slang:608` forbids
-this:
+Upstream, `src/dxvk/shaders/rtx/pass/composite/composite.comp.slang` forbids
+this (landed as A3 — the guarded version is §12's "What landed"):
 
 ```hlsl
 if (cb.volumeArgs.enable)
@@ -429,10 +439,17 @@ pin exposure during scripted fog events. Needs calibration, not architecture.
 ### 8.5 Sky brightness and the LDR probe
 
 Covered in the sky work: the auto-detected sky probe is clamped to 1.0 because
-it is rasterized in the game's own 8-bit target format
-(`rtx_sky.h:153-158`). The dome light replaces it entirely
-(`integrator_indirect.slangh:372-379` is an if/else), which is what unlocks
-real HDR sky radiance. The dome light is **not** in the sampleable light list —
+it inherits the format of the game's own render target, which here is 8-bit
+(`rtx_sky.h:152-158`). The dome light replaces it entirely
+(`integrator_indirect.slangh:372-379` is an if/else).
+
+**Corrected 2026-07-29 — this section originally added "which is what unlocks
+real HDR sky radiance", and that was wrong twice over.** The clamp is inherited
+rather than intrinsic (`rtx.skyForceHDR` overrides the format outright), and the
+probe feeds GI by ray miss exactly as the dome does. §14.10 has the reading;
+what actually argues for the dome light is listed there too.
+
+The dome light is **not** in the sampleable light list —
 `light_types.h` has Sphere/Rect/Distant only — so it contributes by ray-miss
 alone. Two consequences carried into this design: **never bake the sun disc
 into the dome texture** (keep it analytic and NEE-sampled), and keep the
@@ -522,7 +539,8 @@ Each phase is independently shippable and states its predicted look up front.
   for free (§7).
 - *Predicted:* §9's fidelity table.
 
-**Phase D — clouds, moya, polish.** C3/C5 from the ledger.
+**Phase D — clouds, moya, polish.** C3 from the ledger. (C5 was withdrawn: the
+haze billboards are never drawn on this backend, so there is nothing to fold in.)
 
 **Phase 0, before A: the free calibration pass.** Raising
 `froxelMaxDistanceMeters` costs nothing at runtime, so a config-only experiment
@@ -547,32 +565,89 @@ range split fixes it. Either way Phase A starts from a measurement.
 Maintaining this against upstream dxvk-remix is a stated requirement. The
 design keeps the upstream diff to a checklist.
 
-**New files (zero upstream churn):**
-- `src/dxvk/rtx_render/rtx_dusklight_atmosphere.{h,cpp}` — all derivation.
-- `src/dxvk/shaders/rtx/pass/dusklight/*.slang` — auto-discovered by
-  `compile_shaders.py`'s `os.walk`; no build-file edits (already proven by the
-  grade pass).
-- `src/dxvk/rtx_render/rtx_dusklight_{env,game}.h` — existing.
+> **Scope, corrected 2026-08-04.** `CLAUDE.md` routes every rebase here, so this
+> section covers **the whole fork**, not just the atmosphere. It used to list the
+> fog/sky hooks only, which meant the materials work, the emissive/ramp transport,
+> the API capture change, the grade pass and the Dusklight bloom were all absent
+> from the one list a rebase reads.
+>
+> **How this list was produced, and what that is worth:** every file below either
+> names `Dusklight`/`dusklight` in the working tree or was identified from the
+> change that owns it. It was *not* produced by diffing against an upstream tag,
+> so treat it as "everywhere our changes are visible by name", not as a proof
+> that nothing else moved. A rebase should still read the conflict list. Line
+> numbers are deliberately omitted — the previous revision cited
+> `rtx_scene_manager.cpp:609` for a hook that now lives near line 2070.
 
-**Upstream files touched, and how (each a single guarded hook):**
+**New files (zero upstream churn):**
+- `src/dxvk/rtx_render/rtx_dusklight_atmosphere.{h,cpp}` — all fog/sky derivation.
+- `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` — the ambient grade stage.
+- `src/dxvk/rtx_render/rtx_dusklight_emissive.h` — self-illumination cut and the
+  two-colour ramp, which shares the same `D3DMATERIAL9` transport.
+- `src/dxvk/rtx_render/rtx_dusklight_{env,game}.h` — the two option surfaces.
+- `src/d3d9/d3d9_rtx_matrep.h` — the material translation report.
+- `src/dxvk/shaders/rtx/pass/dusklight/*` and
+  `src/dxvk/shaders/rtx/pass/bloom/bloom_dusklight_*.comp.slang` — shaders are
+  auto-discovered by `compile_shaders.py`'s `os.walk`; no build-file edits.
+- `.cpp`/`.h` files do need a line in `src/dxvk/meson.build` (`src/d3d9/meson.build`
+  for the d3d9 half). `rtx_dusklight_emissive.h` and `d3d9_rtx_matrep.h` are not
+  listed there today — header-only, so the build does not care, but it is a
+  divergence from the convention in `AGENTS.md` and a rebase will not flag it.
+
+**Upstream files touched, and how.** Each is a single guarded hook unless the
+row says otherwise.
+
+*Atmosphere — fog, sky, sky-light:*
 
 | File | Change | Guard |
 | :-- | :-- | :-- |
-| `rtx_scene_manager.cpp:609` | fog state selection | `DusklightAtmosphere::active()` |
+| `rtx_scene_manager.cpp` | fog state selection + `prepareSceneData` | `DusklightAtmosphere::active()` |
 | `rtx_global_volumetrics.cpp` `getVolumeArgs` | one early branch to the Dusklight derivation | same |
+| `rtx_composite.cpp` | fills `DusklightCompositeArgs` for the far half of the fog | same |
 | `composite.comp.slang` `applyFog` | range split | `cb.dusklightArgs.enable` |
-| `raytrace_args.h` / `composite_args.h` | one args struct added | additive only |
+| `composite_args.h` | one args struct added (`DusklightCompositeArgs`) | additive only |
 | `froxel.slangh` + `VolumeArgs` | `previousFroxelMaxDistance` | additive; also a genuine upstream fix |
-| `rtx_light_manager.cpp` | none if B1 supplies a real texture | — |
-| `dxvk_imgui.cpp` | Dusklight tab rows | existing tab |
+| `rtx_light_manager.cpp` | none — B1 supplies a real texture | — |
 
-Rule for every hook: **one branch, no reformatting of surrounding code, and the
-guarded path calls into our module rather than inlining logic.** A conflict
-then resolves by re-applying a single `if`, not by re-deriving intent.
+*Materials — the 2026-08-04 work (see `aurora-ao/docs/dx9/remix-material-interface.md` §9–§10):*
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_instance_manager.cpp` | the emissive patch, one site; plus `CheckRtInstanceSize` needs its constant updated whenever `RtSurface` grows | `rtx.dusklight.emissive.enable` |
+| `rtx_materials.h` | ramp endpoints on `RtSurface` (`data15.w`, `textureFlags` bits 15–16 — both were spare) | additive; struct size is guarded |
+| `rtx_materials.cpp` | the ramp/emissive members added to `hashStructByMemory` | must sum to `sizeof(T)` exactly |
+| `surface.h` (shader) | the same two fields on the GPU `Surface` | additive; no growth |
+| `opaque_surface_material_interaction.slangh` | `albedo = mix(rampLo, rampHi, albedo)` | `rtx.dusklight.rampMaterials` |
+| `d3d9_rtx_utils.cpp` | `isVertexColorBakedLighting` taken per draw from `D3DMATERIAL9::Specular.r` instead of the global option | falls back to the option |
+| `d3d9_rtx.cpp` | one guarded call to the matrep at the tail of `processTextures` | `rtx.dusklight.matrep` |
+
+*API assets, made capturable and replaceable (2026-08-04):*
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_remix_api.cpp` | API mesh hashes derived from the submitted vertex/index data; upstream's `hack_getNextGeomHash` removed | unconditional — a behaviour change against upstream, not a guarded hook |
+| `rtx_scene_manager.cpp` `submitExternalDraw` | consults `getReplacementMaterial` before using the supplied material | unconditional, same |
+
+*Overlay, bloom and plumbing:*
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `dxvk_imgui.{cpp,h}` | the F1 Dusklight overlay and its three tabs — full surface in `DusklightOverlay.md` §5 | own functions, called from one place each |
+| `rtx_bloom.{h,cpp}` + `bloom.h` | the Dusklight bloom mode and its settings | `rtx.bloom.dusklight` |
+| `rtx_context.{h,cpp}` | `dispatchDusklightGrade`, and the bloom stage ordering | `DusklightGrade` enable |
+| `dxvk_objects.h`, `dxvk_device.cpp` | the two modules constructed and exposed as `metaDusklight*` | additive members |
+
+Rule for every guarded hook: **one branch, no reformatting of surrounding code,
+and the guarded path calls into our module rather than inlining logic.** A
+conflict then resolves by re-applying a single `if`, not by re-deriving intent.
+The two API rows are the exception — they change upstream behaviour rather than
+adding a branch, so a rebase has to re-apply intent there, and they are the two
+worth checking first.
 
 **Game side** (`dusklight-ao`): everything in `src/dusk/remix_*.{cpp,hpp}`.
 Churn in `d_kankyo.cpp` is limited to one capture call, matching the existing
-`dKy_celestial_orbit_z_ratio` pattern.
+`dKy_celestial_orbit_z_ratio` pattern. Aurora's half of the material transport
+is in `extern/aurora/lib/dx9/` and rebases against aurora, not against Remix.
 
 ---
 
@@ -594,14 +669,18 @@ success."* Range, shape and per-area fog scaling all validated; see §13's
 
 **The 2026-07-29 session cleared this list.** `hideSkyBillboards`, warp, the
 time-of-day slider and Freeze Time all work; local point lights work (they need
-`localLightIntensity` 19 and `localLightRadius` 10 — see
+`localLightIntensity` 19 and `localLightRadius` 10, both now the defaults — see
 `dusklight-ao/docs/remix-open-issues.md` open issue 3); and `hideSkyBillboards`
 **fixed the night shadow wandering**, confirming the moon-quad cause rather than
 merely masking it.
 
-**Still untested:** the ambient grade only — and it should stay untested until
-the defect below is fixed, because grading on top of a wrongly-lit sky is tuning
-against a moving target.
+**Still untested, as of 2026-08-04:** the ambient grade — which should stay
+untested until the defect below is fixed, because grading on a wrongly-lit sky
+is tuning against a moving target — and everything built since 2026-07-29 and
+never run: the `skyFogMode` treatments below and the painted moon (§13.1). The
+2026-08-04 material work (two-colour ramps, per-draw vertex colour, the emissive
+evidence score) is likewise CI-green and unrun; it is tracked in
+`aurora-ao/docs/dx9/remix-material-interface.md` §9–§10, not here.
 
 `disableFrustumCulling` **is** tested: it works and it visibly helps with
 light leakage.
@@ -692,8 +771,9 @@ table, is in `dusklight-ao/docs/remix-test-playbook.md`.
 Bridge protocol went **1 → 2** for this work. A game build older than the
 fork's `kRequiredProtocol` shows the "game build is older than this Remix
 build" notice in the Dusklight tab rather than silently doing nothing.
-**Protocol has since advanced to 5** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass), so
-that number is the historical one for phases A/B, not the current requirement.
+**Protocol has since advanced to 6** (3 = overlay + warp, 4 = the clock,
+5 = per-blade grass, 6 = the Controls tab), so that number is the historical one
+for phases A/B, not the current requirement.
 
 ### To turn it on
 

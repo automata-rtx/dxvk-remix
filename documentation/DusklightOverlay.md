@@ -161,6 +161,7 @@ this runtime's half of the wire and does not go through the bridge.
 
 | Control | Option | What it decides |
 | :-- | :-- | :-- |
+| Reproduce Two-Colour Ramps | `rtx.dusklight.rampMaterials` | whether `lerp(colourA, colourB, texture)` — this game's dominant material shape — is evaluated exactly (default) or approximated by one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints |
 | Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether scored surfaces actually emit |
 | Evidence Needed | `…emissive.threshold` | how much GX evidence a surface needs. 0.70 conservative, 0.20 wide |
 | Emissive Intensity | `…emissive.intensity` | radiance multiplier on the surface's own colour |
@@ -171,12 +172,15 @@ this runtime's half of the wire and does not go through the bridge.
 
 These are here rather than hardcoded for one reason: **the cut is the part
 nobody can derive.** No single GX fact identifies an emitter — "takes no light"
-is true of 59% of one measured scene and *false* for the Goron Mines lava. So
-the game side scores three weak signals and this tab decides where to cut, and
-a judgement that needed a rebuild to change would cost a test window each time.
+is true of 59% of one measured scene and *false* for the Goron Mines lava, which
+was measured at `lit=1`. So the game side scores three weak signals (lighting
+disabled 0.50, register-sourced colour 0.25, a TEV stage scaled past displayable
+0.25) and this tab decides where to cut, and a judgement that needed a rebuild to
+change would cost a test window each time.
 
 Full design, and the measurement the defaults came from:
-`aurora-ao/docs/dx9/remix-material-interface.md` §9.
+`aurora-ao/docs/dx9/remix-material-interface.md` §9 for the emissive score, §10
+for the ramp.
 
 Then the game's own settings, in collapsible sections: Bridge, Sun / Moon
 Light, Local Point Lights, Geometry, Game, Bloom, Ambient Grade, Atmosphere.
@@ -368,7 +372,7 @@ conversion, not a warning to be silenced.
 | Time of day (called from the Warp tab, and from its early-return path too, so the clock survives the destination list lagging) | `showDusklightTimeOfDay` in the same file |
 | Game-owned settings, hosted in Remix | `src/dxvk/rtx_render/rtx_dusklight_game.h` |
 | Game-pushed readouts | `src/dxvk/rtx_render/rtx_dusklight_env.h` |
-| Self-illumination: options, thresholds, candidate log | `src/dxvk/rtx_render/rtx_dusklight_emissive.h`, applied at one site in `rtx_instance_manager.cpp` |
+| Self-illumination: options, thresholds, candidate log — and the two-colour ramp, which shares the same `D3DMATERIAL9` transport | `src/dxvk/rtx_render/rtx_dusklight_emissive.h`, applied at one site in `rtx_instance_manager.cpp` |
 | Material translation report, Remix half | `src/d3d9/d3d9_rtx_matrep.h` |
 | Bloom's Dusklight-mode settings, split out for reuse | `src/dxvk/rtx_render/rtx_bloom.{h,cpp}` (`showDusklightImguiSettings`) |
 | Game side of the whole wire | `dusklight-ao/src/dusk/remix_bridge.cpp` |
@@ -393,7 +397,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
-| Materials section (self-illumination + matrep) | landed 2026-08-04, **run in game the same day**. The controls worked; nothing on screen was emissive for them to change, which is a fault in the rule rather than the tab. Evidence Needed added in response. No protocol change: nothing in it is read by the game |
+| Materials section (self-illumination + matrep) | landed 2026-08-04, **run in game the same day**. The controls worked; nothing on screen was emissive for them to change, which is a fault in the rule rather than the tab — the rule required GX lighting to be **off**, and the Goron Mines lava has it **on** (`lit=1`). Evidence Needed, the score behind it, and Reproduce Two-Colour Ramps were added in response and are **CI-green, not run in game**. No protocol change: nothing in it is read by the game |
 
 Both of the two designs this document argues for at length are now confirmed in
 practice: the **commit counter** (a preset pressed twice works the second time)
@@ -420,10 +424,10 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
   because of the NaN guards landed alongside. Recorded as unresolved rather than
   dressed up: if they regress, re-check both arrays first.
 
-  Two settings came out of the visit and **neither is the default** —
-  `localLightIntensity` **19** and `localLightRadius` **10**. The 19 is the
-  derived reading of the game's attenuation curve, not a taste value. See
-  `dusklight-ao/docs/remix-open-issues.md` open issue 3.
+  Two settings came out of the visit — `localLightIntensity` **19** and
+  `localLightRadius` **10**. Neither was the default at the time; **both are the
+  defaults now.** The 19 is the derived reading of the game's attenuation curve,
+  not a taste value. See `dusklight-ao/docs/remix-open-issues.md` open issue 3.
 
   Loose end: `found 5` but `drawn 4`. One light is being rejected on the way
   through, and "harmless" is currently an assumption.
@@ -444,10 +448,15 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
   for every remaining draw in the frame (`:576-591`), so those draws never enter
   the raytraced scene and **never reach texture categorization**.
 
-  That is the "not in the categorization screen" symptom, and it makes the
-  natural fix unavailable: `rtx.uiTextures` is consulted *inside*
+  That is the "not in the categorization screen" symptom, and it puts the
+  *configuration* fix out of reach: `rtx.uiTextures` is consulted *inside*
   `isRenderingUI()`, which only runs before injection — so a draw cannot be
-  tagged UI precisely when it needs to be. Same shape of trap as the vrbox sky.
+  tagged UI precisely when it needs to be. Not the same trap as the vrbox sky,
+  which turned out to be taggable after all by geometry hash
+  (`DusklightAtmosphere.md` §14.9); here the draw never reaches categorization
+  at all. And it is a limit of the code as written, not a ceiling: the injection
+  boundary is in **this** repo, so moving it is on the table alongside any
+  game-side change.
 
   The game draws the targeting cursor (a real perspective-projected J3D model,
   not UI) at `m_Do_graphic.cpp:2689`, the 2D game particles at `:2714`, and the

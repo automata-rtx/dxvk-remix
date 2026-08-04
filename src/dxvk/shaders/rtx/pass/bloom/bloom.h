@@ -59,7 +59,8 @@ struct BloomDusklightDownsampleArgs {
   // Ring blur radius in normalized screen UV. The horizontal component is scaled so the ring
   // keeps the shape it had on the game's original framebuffer regardless of the display aspect.
   float2 ringRadius;
-  // Threshold subtracted from every channel on the first step. Negative disables thresholding.
+  // Subtracted from the luminance key (0.25R + 0.25G + 0.5B), which then masks the original
+  // colour - not a per channel subtraction. Only read when isInitial is set.
   float  threshold;
   // Brightness multiplier applied by this step.
   float  gain;
