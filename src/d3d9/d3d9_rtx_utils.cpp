@@ -220,7 +220,12 @@ namespace dxvk {
     materialData.d3dMaterial = d3d9State.material;
 
     // Allow the users to configure vertex color as baked lighting for legacy draw calls.
-    materialData.isVertexColorBakedLighting = RtxOptions::vertexColorIsBakedLighting();
+    // Dusklight overrides this per draw: the game backend knows from GX whether
+    // a vertex colour stream is authored material colour or baked lighting, and
+    // says so in Specular.r. A global answer is wrong for one of the two.
+    // See aurora-ao/docs/dx9/remix-material-interface.md §7c.
+    materialData.isVertexColorBakedLighting =
+      d3d9State.material.Specular.r >= 0.5f ? false : RtxOptions::vertexColorIsBakedLighting();
   }
 
 

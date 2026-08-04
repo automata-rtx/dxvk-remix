@@ -51,7 +51,8 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     // endpoint, Ambient.r which endpoint tFactor holds. See
     // rtx_dusklight_emissive.h. Two draws differing only in these are different
     // materials; without this they collapse onto whichever the cache saw first.
-    // Specular and Power are deliberately not hashed - nothing reads them.
+    // Specular.r says whether the vertex colour stream is material colour.
+    // Power and the other Specular channels are not hashed - nothing reads them.
     float legacyEmissiveR;
     float legacyEmissiveG;
     float legacyEmissiveB;
@@ -61,6 +62,7 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     float legacyDiffuseB;
     float legacyDiffuseA;
     float legacyAmbientR;
+    float legacySpecularR;
     uint8_t alphaTestReferenceValue;
     uint8_t textureColorArg1Source;
     uint8_t textureColorArg2Source;
@@ -70,7 +72,7 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     uint8_t textureAlphaOperation;
     uint8_t isTextureFactorBlend;
     uint8_t isVertexColorBakedLighting;
-    uint8_t padding[11];
+    uint8_t padding[7];
   };
 
   LegacyMaterialIdentityHashData data{};
@@ -97,6 +99,7 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
   data.legacyDiffuseB = d3dMaterial.Diffuse.b;
   data.legacyDiffuseA = d3dMaterial.Diffuse.a;
   data.legacyAmbientR = d3dMaterial.Ambient.r;
+  data.legacySpecularR = d3dMaterial.Specular.r;
   data.alphaTestReferenceValue = alphaTestReferenceValue;
   data.textureColorArg1Source = static_cast<uint8_t>(textureColorArg1Source);
   data.textureColorArg2Source = static_cast<uint8_t>(textureColorArg2Source);
@@ -131,6 +134,7 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
       &LegacyMaterialIdentityHashData::legacyDiffuseB,
       &LegacyMaterialIdentityHashData::legacyDiffuseA,
       &LegacyMaterialIdentityHashData::legacyAmbientR,
+      &LegacyMaterialIdentityHashData::legacySpecularR,
       &LegacyMaterialIdentityHashData::alphaTestReferenceValue,
       &LegacyMaterialIdentityHashData::textureColorArg1Source,
       &LegacyMaterialIdentityHashData::textureColorArg2Source,

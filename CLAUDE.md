@@ -61,6 +61,30 @@ If a session branch is about to be deleted and its work is not yet merged,
 > A non-zero count is the **normal** state between milestones, so this is not a
 > formality; it is the only thing between a routine cleanup and lost work.
 
+## What the D3D9 renderer is for — read this before proposing a fix
+
+**The raw fixed-function D3D9 image is never shown to a player.** It exists so
+Remix's DX9→Vulkan translation picks the scene up automatically — geometry,
+transforms, textures, most of a frame, for free. **Remix's renderer is the
+product; D3D9 is the feed.**
+
+So:
+
+- **Fixed-function limits are not the ceiling.** Where the D3D9 stream cannot
+  carry something faithfully enough to reach Remix, implement it **in Remix** —
+  Remix API or a fork change — rather than contorting D3D9 to approximate it.
+  All three repos are ours.
+- **"Raw D3D9 stays correct" is not a design goal.** It is occasionally a handy
+  safety property, never a reason to reject an approach. Documents written
+  before 2026-08-04 sometimes treat it as a requirement; they are wrong and are
+  being corrected as they are touched.
+
+**Two exceptions still have to rasterize correctly:** the **HUD** (Remix
+rasterizes UI draws rather than path-tracing them) and **alpha** (Remix reads
+the stage's alpha to build opacity and the alpha test).
+
+Full statement: `aurora-ao/docs/dx9/remix-material-interface.md` §0.
+
 ## How this project works — read before proposing a fix
 
 Five rules. They exist because each was learned the expensive way, and following
@@ -142,6 +166,15 @@ anything else.
 | `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. Aurora ships a GX **evidence score** in `D3DMATERIAL9::Emissive`; this holds the cut, the pre-image correction, and one bounded candidate log. Applied at one site in `rtx_instance_manager.cpp`. **Note the trap it works around: the shader re-applies the albedo's texture op to the emissive colour**, so the constant set here is a pre-image, not the colour |
 | `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
 | `src/d3d9/d3d9_rtx_matrep.h` | the material translation report (`rtx.dusklight.matrep`), one guarded call at the tail of `D3D9Rtx::processTextures` |
+
+**API-submitted assets are capturable and replaceable** as of 2026-08-04, which
+upstream they are not. Two changes made it so: API mesh hashes are derived from
+the submitted vertex/index data instead of a creation-order counter
+(`rtx_remix_api.cpp` — upstream's `hack_getNextGeomHash`), and
+`submitExternalDraw` consults `getReplacementMaterial` before using the supplied
+material. Without the first, a capture wrote a hash that changed next launch;
+without the second, external draws bypassed the replacer entirely because they
+supply their material directly and so never reach `determineMaterialData`.
 
 **Materials are not documented here.** How a captured D3D9 draw becomes a
 material in this runtime — what survives the capture path and what silently

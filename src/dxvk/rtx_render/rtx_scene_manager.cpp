@@ -2439,7 +2439,17 @@ namespace dxvk {
       static MaterialData defaultMaterialData(LegacyMaterialData::createDefault());
       auto& materialData = material != nullptr ? *material : defaultMaterialData;
 
-      RtInstance* instance = processDrawCallState(ctx, state.drawCall, materialData, *replacementInstance, existingInstance, pParticles);
+      // An API-submitted asset is replaceable like any other. The legacy path
+      // gets this from determineMaterialData, which external draws bypass
+      // because they supply their material directly - so without this an
+      // API asset could be captured and then never replaced. Now that API mesh
+      // hashes are content-derived rather than a creation counter, the hash a
+      // capture writes is the hash a replacement is keyed on.
+      const MaterialData* pReplacement =
+        m_pReplacer->getReplacementMaterial(state.drawCall.getMaterialData().getHash());
+      const MaterialData& renderMaterialData = pReplacement != nullptr ? *pReplacement : materialData;
+
+      RtInstance* instance = processDrawCallState(ctx, state.drawCall, renderMaterialData, *replacementInstance, existingInstance, pParticles);
 
       if (instance != nullptr) {
         if (replacementInstance->root.getUntyped() == nullptr) {
