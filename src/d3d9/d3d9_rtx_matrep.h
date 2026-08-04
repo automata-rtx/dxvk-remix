@@ -114,17 +114,21 @@ namespace dxvk {
     // Still distinguishes one texture used in several contexts, because the ops
     // and arg sources differ there - which is the case the report exists for.
     inline XXH64_hash_t shapeKey(const LegacyMaterialData& m) {
-      // Zero-initialised and explicitly padded: hashing a struct with
-      // indeterminate padding bytes would key on uninitialised memory.
+      // Zero-initialised, and laid out so there is no padding at all: hashing a
+      // struct with indeterminate padding bytes would key on uninitialised
+      // memory. Two 8-byte hashes plus eight 1-byte fields fill exactly 24,
+      // which is already a multiple of the 8-byte alignment - an explicit tail
+      // pad here would push it to 32 and reintroduce the problem, which is what
+      // the first version of this did and what the assert caught.
       struct Shape {
         XXH64_hash_t tex0;
         XXH64_hash_t tex1;
         uint8_t colorOp, colorArg1, colorArg2;
         uint8_t alphaOp, alphaArg1, alphaArg2;
         uint8_t tfBlend, vcBaked;
-        uint8_t pad[6];
       };
-      static_assert(sizeof(Shape) == 24, "Shape must have no implicit padding");
+      static_assert(sizeof(Shape) == 2 * sizeof(XXH64_hash_t) + 8,
+                    "Shape must have no implicit padding: it is hashed byte-wise");
       Shape shape {};
       shape.tex0 = m.getColorTexture().getImageHash();
       shape.tex1 = m.getColorTexture2().getImageHash();
