@@ -33,6 +33,7 @@
 #include "rtx_materials.h"
 #include "rtx_ray_portal_manager.h"
 #include "rtx_terrain_baker.h"
+#include "rtx_dusklight_emissive.h"
 
 #include "../d3d9/d3d9_state.h"
 #include "rtx_matrix_helpers.h"
@@ -1108,6 +1109,35 @@ namespace dxvk {
             tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
             tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(RtxOptions::emissiveBlendOverrideEmissiveIntensity());
             tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
+          } else if (dusklightEmissive::isCandidate(drawCall.getMaterialData())) {
+            // Dusklight: aurora reported that GX marked this surface as taking
+            // no light, and handed over the colour it presents. Whether that
+            // makes it an emitter is a judgement call, and it lives in
+            // rtx_dusklight_emissive.h so it is one place and dialable live.
+            const Vector3 emissiveColor = dusklightEmissive::candidateColor(drawCall.getMaterialData());
+            const bool accepted = dusklightEmissive::accepts(emissiveColor);
+            dusklightEmissive::logOnce(currentInstance.m_materialDataHash, emissiveColor, accepted,
+                                       drawCall.getMaterialData().getColorTexture().getImageHash());
+
+            if (accepted && DusklightEmissive::enable()) {
+              tmpMaterialData = *materialData;
+              materialData = &tmpMaterialData;
+              tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
+              tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(DusklightEmissive::intensity());
+              if (DusklightEmissive::useTextureColor()) {
+                tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
+              } else {
+                // The colour this game means lives in a GX constant, not in the
+                // texture, which is usually an intensity mask - so a textured
+                // glow would come out white. The cost is a flat glow.
+                tmpMaterialData.getOpaqueMaterialData().setEmissiveColorConstant(emissiveColor);
+              }
+              // Gates NEECacheUtils.shouldSampleObject, so the emitter is sampled
+              // as a light rather than found by chance. It also excludes the
+              // surface from motion blur unless rtx.postfx.enableMotionBlurEmissive
+              // is set - which is how emitters are treated elsewhere in Remix.
+              currentInstance.surface.isEmissive = true;
+            }
           }
 
           currentInstance.m_isSubsurface = materialData->getOpaqueMaterialData().getSubsurfaceDiffusionProfile();

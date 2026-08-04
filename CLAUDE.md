@@ -139,6 +139,7 @@ anything else.
 | `src/dxvk/rtx_render/rtx_dusklight_env.h` | `rtx.dusklight.env.*` — readouts the game **writes** via `remixapi_SetConfigVariable`. All `NoSave`. |
 | `src/dxvk/rtx_render/rtx_dusklight_atmosphere.{h,cpp}` | one medium driving fog, sky and sky-light; Hillaire physical sky |
 | `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` | the ambient grade stage |
+| `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. Aurora ships the GX evidence in `D3DMATERIAL9::Emissive`; this holds the thresholds that judge it, and one bounded candidate log. Applied at one site in `rtx_instance_manager.cpp` |
 | `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
 | `src/d3d9/d3d9_rtx_matrep.h` | the material translation report (`rtx.dusklight.matrep`), one guarded call at the tail of `D3D9Rtx::processTextures` |
 
@@ -147,7 +148,9 @@ material in this runtime — what survives the capture path and what silently
 resolves to white — lives in `aurora-ao/docs/dx9/remix-material-interface.md`,
 because the encoding side is aurora's. It is the system most often reasoned
 about incorrectly on this project; read it before changing anything in
-`d3d9_rtx.cpp` or `d3d9_rtx_utils.cpp`.
+`d3d9_rtx.cpp`, `d3d9_rtx_utils.cpp`, or the emissive patch in
+`rtx_instance_manager.cpp`. §9 covers self-illumination, including why the
+thresholds are options rather than constants.
 
 **Transport rules that are easy to get wrong** (full versions in
 `documentation/DusklightOverlay.md` §1.1):

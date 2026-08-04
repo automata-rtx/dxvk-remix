@@ -48,6 +48,8 @@
 #include "rtx_render/rtx_options.h"
 #include "rtx_render/rtx_dusklight_env.h"
 #include "rtx_render/rtx_dusklight_game.h"
+#include "rtx_render/rtx_dusklight_emissive.h"
+#include "../../d3d9/d3d9_rtx_matrep.h"
 #include "rtx_render/rtx_global_volumetrics.h"
 #include "rtx_render/rtx_bloom.h"
 #include <functional>
@@ -2964,6 +2966,35 @@ namespace dxvk {
         "And while the generated sky is on, rtx.skyBrightness stops mattering: it scales the probe "
         "the dome light replaces. rtx.fogColorScale and rtx.maxFogDistance belong to the legacy "
         "depth fog, which is skipped whenever volumetrics are running.");
+      ImGui::Unindent();
+    }
+
+    // Material translation. Remix's side of it, so it sits above the game-owned
+    // controls below and works whether or not the game is connected.
+    // Background: aurora-ao/docs/dx9/remix-material-interface.md.
+    if (RemixGui::CollapsingHeader("Materials", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "GameCube GX has no emissive term. What it has is a colour channel that can be told to take "
+        "no light, with its colour authored in a register - lava, fires, glowing crystals. The game "
+        "backend reports that per draw; these decide which of those surfaces actually emit. More "
+        "than half the materials in a scene are unlit, so the thresholds are what separate lava from "
+        "an ordinary interior wall.");
+      RemixGui::Checkbox("Emissive Surfaces Enabled", &DusklightEmissive::enableObject());
+      RemixGui::DragFloat("Emissive Intensity", &DusklightEmissive::intensityObject(), 0.05f, 0.f, 200.f);
+      RemixGui::DragFloat("Minimum Brightness", &DusklightEmissive::minLumaObject(), 0.01f, 0.f, 1.f);
+      RemixGui::DragFloat("Minimum Saturation", &DusklightEmissive::minChromaObject(), 0.01f, 0.f, 1.f);
+      RemixGui::Checkbox("Emit The Texture, Not The Material Colour", &DusklightEmissive::useTextureColorObject());
+      RemixGui::Checkbox("Log Emissive Candidates", &DusklightEmissive::logObject());
+      ImGui::TextWrapped(
+        "Lowering the two minimums widens the rule; every candidate it considers is written to the "
+        "log as a dusklight.emis line with the numbers that decided it, accepted or not, so a "
+        "session that shows nothing glowing still says why.");
+      RemixGui::Separator();
+      RemixGui::Checkbox("Log Material Translation Report", &DusklightMatrep::matrepObject());
+      ImGui::TextWrapped(
+        "Writes one matrep.rmx line per distinct reconstructed material. Pair it with the game's own "
+        "matrep lines - see aurora-ao/docs/dx9/material-report.md.");
       ImGui::Unindent();
     }
 

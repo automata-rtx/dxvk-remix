@@ -155,6 +155,28 @@ here.
 - `rtx.skyBrightness` — scales the probe the generated dome replaces
 - `rtx.fogColorScale` / `rtx.maxFogDistance` — legacy depth fog, skipped whenever volumetrics run
 
+**Materials.** A third Remix-owned section, above the game's settings and
+working whether or not the game is connected, because material translation is
+this runtime's half of the wire and does not go through the bridge.
+
+| Control | Option | What it decides |
+| :-- | :-- | :-- |
+| Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether GX's "takes no light" surfaces actually emit |
+| Emissive Intensity | `…emissive.intensity` | radiance multiplier on the surface's own colour |
+| Minimum Brightness / Saturation | `…emissive.minLuma` / `minChroma` | the thresholds that separate lava from an unlit interior wall |
+| Emit The Texture, Not The Material Colour | `…emissive.useTextureColor` | flat authored glow (default) vs the albedo texture |
+| Log Emissive Candidates | `…emissive.log` | one bounded line per candidate, accepted **or** rejected |
+| Log Material Translation Report | `rtx.dusklight.matrep` | one line per distinct reconstructed material |
+
+These are here rather than hardcoded for one reason: **the thresholds are the
+part nobody can derive.** More than half the materials in a scene have GX
+lighting disabled, so what separates an emitter from ordinary geometry is a
+judgement, and a judgement that needs a rebuild to change costs a test window
+each time. The game side ships the evidence; this tab decides.
+
+Full design, and the measurement the defaults came from:
+`aurora-ao/docs/dx9/remix-material-interface.md` §9.
+
 Then the game's own settings, in collapsible sections: Bridge, Sun / Moon
 Light, Local Point Lights, Geometry, Game, Bloom, Ambient Grade, Atmosphere.
 
@@ -345,6 +367,8 @@ conversion, not a warning to be silenced.
 | Time of day (called from the Warp tab, and from its early-return path too, so the clock survives the destination list lagging) | `showDusklightTimeOfDay` in the same file |
 | Game-owned settings, hosted in Remix | `src/dxvk/rtx_render/rtx_dusklight_game.h` |
 | Game-pushed readouts | `src/dxvk/rtx_render/rtx_dusklight_env.h` |
+| Self-illumination: options, thresholds, candidate log | `src/dxvk/rtx_render/rtx_dusklight_emissive.h`, applied at one site in `rtx_instance_manager.cpp` |
+| Material translation report, Remix half | `src/d3d9/d3d9_rtx_matrep.h` |
 | Bloom's Dusklight-mode settings, split out for reuse | `src/dxvk/rtx_render/rtx_bloom.{h,cpp}` (`showDusklightImguiSettings`) |
 | Game side of the whole wire | `dusklight-ao/src/dusk/remix_bridge.cpp` |
 | Destination table | `dusklight-ao/src/dusk/map_loader_definitions.h` |
@@ -368,6 +392,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
+| Materials section (self-illumination + matrep) | landed 2026-08-04 — **not yet run in game**. No protocol change: nothing in it is read by the game |
 
 Both of the two designs this document argues for at length are now confirmed in
 practice: the **commit counter** (a preset pressed twice works the second time)

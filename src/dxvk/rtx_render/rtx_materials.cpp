@@ -46,6 +46,15 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     uint32_t blendAlphaDstFactor;
     uint32_t blendAlphaBlendOp;
     uint32_t blendWriteMask;
+    // D3DMATERIAL9::Emissive only. Aurora carries its self-illumination
+    // evidence here (see rtx_dusklight_emissive.h); two draws that differ only
+    // in that evidence are different materials, and without this they would
+    // collapse onto whichever one the cache saw first. The rest of
+    // D3DMATERIAL9 is deliberately not hashed - nothing reads it.
+    float legacyEmissiveR;
+    float legacyEmissiveG;
+    float legacyEmissiveB;
+    float legacyEmissiveA;
     uint8_t alphaTestReferenceValue;
     uint8_t textureColorArg1Source;
     uint8_t textureColorArg2Source;
@@ -73,6 +82,10 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
   data.blendAlphaDstFactor = static_cast<uint32_t>(blendMode.alphaDstFactor);
   data.blendAlphaBlendOp = static_cast<uint32_t>(blendMode.alphaBlendOp);
   data.blendWriteMask = static_cast<uint32_t>(blendMode.writeMask);
+  data.legacyEmissiveR = d3dMaterial.Emissive.r;
+  data.legacyEmissiveG = d3dMaterial.Emissive.g;
+  data.legacyEmissiveB = d3dMaterial.Emissive.b;
+  data.legacyEmissiveA = d3dMaterial.Emissive.a;
   data.alphaTestReferenceValue = alphaTestReferenceValue;
   data.textureColorArg1Source = static_cast<uint8_t>(textureColorArg1Source);
   data.textureColorArg2Source = static_cast<uint8_t>(textureColorArg2Source);
@@ -98,6 +111,10 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
       &LegacyMaterialIdentityHashData::blendAlphaDstFactor,
       &LegacyMaterialIdentityHashData::blendAlphaBlendOp,
       &LegacyMaterialIdentityHashData::blendWriteMask,
+      &LegacyMaterialIdentityHashData::legacyEmissiveR,
+      &LegacyMaterialIdentityHashData::legacyEmissiveG,
+      &LegacyMaterialIdentityHashData::legacyEmissiveB,
+      &LegacyMaterialIdentityHashData::legacyEmissiveA,
       &LegacyMaterialIdentityHashData::alphaTestReferenceValue,
       &LegacyMaterialIdentityHashData::textureColorArg1Source,
       &LegacyMaterialIdentityHashData::textureColorArg2Source,
