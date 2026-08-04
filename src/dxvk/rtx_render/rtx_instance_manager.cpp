@@ -1110,16 +1110,23 @@ namespace dxvk {
             tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(RtxOptions::emissiveBlendOverrideEmissiveIntensity());
             tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
           } else if (dusklightEmissive::isCandidate(drawCall.getMaterialData())) {
-            // Dusklight: aurora reported that GX marked this surface as taking
-            // no light, and handed over the colour it presents. Whether that
-            // makes it an emitter is a judgement call, and it lives in
-            // rtx_dusklight_emissive.h so it is one place and dialable live.
-            const Vector3 emissiveColor = dusklightEmissive::candidateColor(drawCall.getMaterialData());
-            const bool accepted = dusklightEmissive::accepts(emissiveColor);
-            dusklightEmissive::logOnce(currentInstance.m_materialDataHash, emissiveColor, accepted,
-                                       drawCall.getMaterialData().getColorTexture().getImageHash());
+            // Dusklight: aurora scored what GX says about this surface and
+            // handed over the colour it presents. Where to cut is a judgement,
+            // so it lives in rtx_dusklight_emissive.h - one place, dialable
+            // live from the F1 overlay.
+            const LegacyMaterialData& legacy = drawCall.getMaterialData();
+            const Vector3 emissiveColor = dusklightEmissive::candidateColor(legacy);
+            const bool accepted = dusklightEmissive::accepts(legacy, emissiveColor);
 
-            if (accepted && DusklightEmissive::enable()) {
+            Vector3 constant(0.0f);
+            const bool invertible =
+              DusklightEmissive::useTextureColor() || dusklightEmissive::preimage(legacy, emissiveColor, constant);
+
+            dusklightEmissive::logOnce(currentInstance.m_materialDataHash, emissiveColor, accepted,
+                                       legacy.getColorTexture().getImageHash(),
+                                       dusklightEmissive::evidenceScore(legacy), invertible);
+
+            if (accepted && invertible && DusklightEmissive::enable()) {
               tmpMaterialData = *materialData;
               materialData = &tmpMaterialData;
               tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
@@ -1127,10 +1134,9 @@ namespace dxvk {
               if (DusklightEmissive::useTextureColor()) {
                 tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
               } else {
-                // The colour this game means lives in a GX constant, not in the
-                // texture, which is usually an intensity mask - so a textured
-                // glow would come out white. The cost is a flat glow.
-                tmpMaterialData.getOpaqueMaterialData().setEmissiveColorConstant(emissiveColor);
+                // Pre-image, not the colour itself: the shader re-applies the
+                // albedo's texture op to whatever is set here. See preimage().
+                tmpMaterialData.getOpaqueMaterialData().setEmissiveColorConstant(constant);
               }
               // Gates NEECacheUtils.shouldSampleObject, so the emitter is sampled
               // as a light rather than found by chance. It also excludes the

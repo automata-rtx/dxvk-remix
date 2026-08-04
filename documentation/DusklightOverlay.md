@@ -161,18 +161,19 @@ this runtime's half of the wire and does not go through the bridge.
 
 | Control | Option | What it decides |
 | :-- | :-- | :-- |
-| Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether GX's "takes no light" surfaces actually emit |
+| Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether scored surfaces actually emit |
+| Evidence Needed | `…emissive.threshold` | how much GX evidence a surface needs. 0.70 conservative, 0.20 wide |
 | Emissive Intensity | `…emissive.intensity` | radiance multiplier on the surface's own colour |
 | Minimum Brightness / Saturation | `…emissive.minLuma` / `minChroma` | the thresholds that separate lava from an unlit interior wall |
 | Emit The Texture, Not The Material Colour | `…emissive.useTextureColor` | flat authored glow (default) vs the albedo texture |
 | Log Emissive Candidates | `…emissive.log` | one bounded line per candidate, accepted **or** rejected |
 | Log Material Translation Report | `rtx.dusklight.matrep` | one line per distinct reconstructed material |
 
-These are here rather than hardcoded for one reason: **the thresholds are the
-part nobody can derive.** More than half the materials in a scene have GX
-lighting disabled, so what separates an emitter from ordinary geometry is a
-judgement, and a judgement that needs a rebuild to change costs a test window
-each time. The game side ships the evidence; this tab decides.
+These are here rather than hardcoded for one reason: **the cut is the part
+nobody can derive.** No single GX fact identifies an emitter — "takes no light"
+is true of 59% of one measured scene and *false* for the Goron Mines lava. So
+the game side scores three weak signals and this tab decides where to cut, and
+a judgement that needed a rebuild to change would cost a test window each time.
 
 Full design, and the measurement the defaults came from:
 `aurora-ao/docs/dx9/remix-material-interface.md` §9.
@@ -392,7 +393,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
-| Materials section (self-illumination + matrep) | landed 2026-08-04 — **not yet run in game**. No protocol change: nothing in it is read by the game |
+| Materials section (self-illumination + matrep) | landed 2026-08-04, **run in game the same day**. The controls worked; nothing on screen was emissive for them to change, which is a fault in the rule rather than the tab. Evidence Needed added in response. No protocol change: nothing in it is read by the game |
 
 Both of the two designs this document argues for at length are now confirmed in
 practice: the **commit counter** (a preset pressed twice works the second time)

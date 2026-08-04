@@ -2975,21 +2975,23 @@ namespace dxvk {
     if (RemixGui::CollapsingHeader("Materials", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
       ImGui::TextWrapped(
-        "GameCube GX has no emissive term. What it has is a colour channel that can be told to take "
-        "no light, with its colour authored in a register - lava, fires, glowing crystals. The game "
-        "backend reports that per draw; these decide which of those surfaces actually emit. More "
-        "than half the materials in a scene are unlit, so the thresholds are what separate lava from "
-        "an ordinary interior wall.");
+        "GameCube GX has no emissive term, and no single thing it records identifies an emitter - "
+        "the Goron Mines lava has GX lighting switched on, like an ordinary wall. So the game "
+        "backend scores the evidence it does have per draw, and Evidence Needed decides where to "
+        "cut. Lower it when something that clearly glows in the original does not glow here.");
       RemixGui::Checkbox("Emissive Surfaces Enabled", &DusklightEmissive::enableObject());
+      RemixGui::DragFloat("Evidence Needed", &DusklightEmissive::thresholdObject(), 0.01f, 0.f, 1.f);
       RemixGui::DragFloat("Emissive Intensity", &DusklightEmissive::intensityObject(), 0.05f, 0.f, 200.f);
       RemixGui::DragFloat("Minimum Brightness", &DusklightEmissive::minLumaObject(), 0.01f, 0.f, 1.f);
       RemixGui::DragFloat("Minimum Saturation", &DusklightEmissive::minChromaObject(), 0.01f, 0.f, 1.f);
       RemixGui::Checkbox("Emit The Texture, Not The Material Colour", &DusklightEmissive::useTextureColorObject());
       RemixGui::Checkbox("Log Emissive Candidates", &DusklightEmissive::logObject());
       ImGui::TextWrapped(
-        "Lowering the two minimums widens the rule; every candidate it considers is written to the "
-        "log as a dusklight.emis line with the numbers that decided it, accepted or not, so a "
-        "session that shows nothing glowing still says why.");
+        "Evidence is scored 0.50 for GX lighting disabled, 0.25 for a colour authored in a register "
+        "rather than per-vertex, and 0.25 for a stage scaled past what the console could display. "
+        "0.20 admits that last one on its own. Every surface considered is written to the log as a "
+        "dusklight.emis line carrying its score, so this can be aimed rather than guessed - and a "
+        "session where nothing glows still says why.");
       RemixGui::Separator();
       RemixGui::Checkbox("Log Material Translation Report", &DusklightMatrep::matrepObject());
       ImGui::TextWrapped(

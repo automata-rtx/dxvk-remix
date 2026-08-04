@@ -24,15 +24,17 @@
 // Dusklight self-illumination, Remix half.
 //
 // GX has no emissive term, so nothing about this is a direct translation.
-// Aurora ships the strongest statement GX can make - "this colour channel
-// takes no light and its colour is authored in a register" - plus the colour
-// the surface presents, in D3DMATERIAL9::Emissive. That statement alone is far
-// too broad to act on: 69 of the 117 materials in the 2026-08-04 session had
-// lighting disabled. This half applies the part that is a judgement call, and
-// keeps it in options so it moves from the F1 overlay rather than a rebuild.
+// Aurora scores what GX *does* say about a surface and ships that score plus
+// the colour the surface presents in D3DMATERIAL9::Emissive; this half decides
+// where to cut.
 //
-// Design, the measurement behind the thresholds, and what to do when the rule
-// over- or under-fires:
+// No single GX fact identifies an emitter. The 2026-08-04 Goron Mines session
+// proved both halves of that: "unlit" was true of 59% of an earlier scene, and
+// the Goron Mines lava is `lit=1`, so requiring unlit could never have caught
+// the one surface this feature exists for. Hence a score and a threshold rather
+// than a predicate, with the threshold live in the F1 overlay.
+//
+// Design, the measurements, and what to do when the rule over- or under-fires:
 //   aurora-ao/docs/dx9/remix-material-interface.md §9
 
 #include "rtx_option.h"
@@ -56,6 +58,13 @@ namespace dxvk {
                "The colour already carries the game's idea of how bright the surface looks, so this is a flat "
                "scale rather than a per-material value. 2.0 matches what Remix already uses to make a world space "
                "UI surface read as self-lit; raise it if a big emitter glows but does not light the room around it.");
+    RTX_OPTION("rtx.dusklight.emissive", float, threshold, 0.70f,
+               "How much GX evidence a surface needs before it is treated as an emitter (0..1).\n"
+               "The game backend scores three facts: GX lighting disabled (0.50), colour authored in a register "
+               "rather than per-vertex (0.25), and a TEV stage scaled past what the console could display (0.25). "
+               "0.70 admits anything unlit plus one other fact. Drop to 0.20 to admit the over-range materials on "
+               "their own - that is the setting to try when something that clearly glows in the original does not "
+               "here. The dusklight.emis log prints every surface's score, so this can be aimed rather than guessed.");
     RTX_OPTION("rtx.dusklight.emissive", float, minLuma, 0.25f,
                "Reject an emissive candidate whose presented colour is darker than this (0..1).\n"
                "Keeps unlit-but-dark interior geometry from glowing. Lower it if something that should glow does not.");
@@ -80,11 +89,15 @@ namespace dxvk {
 
   namespace dusklightEmissive {
 
-    // Aurora's verdict rides D3DMATERIAL9::Emissive.a. Nothing else in this
-    // chain writes a material - the backend keeps D3DRS_LIGHTING off - so a
-    // non-zero alpha can only have come from aurora.
+    // Aurora's evidence score rides D3DMATERIAL9::Emissive.a. Nothing else in
+    // this chain writes a material - the backend keeps D3DRS_LIGHTING off - so
+    // a non-zero alpha can only have come from aurora.
+    inline float evidenceScore(const LegacyMaterialData& mat) {
+      return mat.getLegacyMaterial().Emissive.a;
+    }
+
     inline bool isCandidate(const LegacyMaterialData& mat) {
-      return mat.getLegacyMaterial().Emissive.a >= 0.5f;
+      return evidenceScore(mat) > 0.0f;
     }
 
     inline Vector3 candidateColor(const LegacyMaterialData& mat) {
@@ -101,16 +114,87 @@ namespace dxvk {
     }
 
     // The judgement call, isolated so there is exactly one place to argue with.
-    inline bool accepts(const Vector3& color) {
-      return lumaOf(color) >= DusklightEmissive::minLuma()
+    inline bool accepts(const LegacyMaterialData& mat, const Vector3& color) {
+      return evidenceScore(mat) >= DusklightEmissive::threshold()
+          && lumaOf(color) >= DusklightEmissive::minLuma()
           && chromaOf(color) >= DusklightEmissive::minChroma();
+    }
+
+    // emissiveColorConstant does NOT reach the shader untouched: the fixed
+    // function block in opaque_surface_material_interaction.slangh runs the
+    // emissive colour through the *albedo's* texture op, substituting it for
+    // the texture sample. So setting the constant to the colour we want yields
+    // op(colour, tFactor) on screen, not colour.
+    //
+    // Rather than fight that, invert it. The ops aurora actually emits are
+    // ADD(TEXTURE, TFACTOR), MODULATE(TEXTURE, TFACTOR) and
+    // SELECTARG1(TEXTURE); anything else is left alone and reported, because a
+    // silently wrong glow colour is exactly the failure this project keeps
+    // paying for. Returns false when the op cannot be inverted.
+    inline bool preimage(const LegacyMaterialData& mat, const Vector3& desired, Vector3& out) {
+      const bool arg1IsTexture = mat.textureColorArg1Source == RtTextureArgSource::Texture;
+      const bool arg2IsTFactor = mat.textureColorArg2Source == RtTextureArgSource::TFactor;
+
+      // tFactor is a D3DCOLOR: 0xAARRGGBB.
+      const Vector3 tFactor(float((mat.tFactor >> 16) & 0xFF) / 255.0f,
+                            float((mat.tFactor >> 8) & 0xFF) / 255.0f,
+                            float(mat.tFactor & 0xFF) / 255.0f);
+
+      // isTextureFactorBlend applies one more multiply by tFactor afterwards.
+      Vector3 target = desired;
+      if (mat.isTextureFactorBlend) {
+        for (uint32_t i = 0; i < 3; ++i) {
+          if (tFactor[i] <= 0.0f) {
+            return false;
+          }
+          target[i] /= tFactor[i];
+        }
+      }
+
+      switch (mat.textureColorOperation) {
+      case DxvkRtTextureOperation::SelectArg1:
+        if (!arg1IsTexture) {
+          return false;
+        }
+        out = target;
+        return true;
+      case DxvkRtTextureOperation::Add:
+        if (!arg1IsTexture || !arg2IsTFactor) {
+          return false;
+        }
+        for (uint32_t i = 0; i < 3; ++i) {
+          out[i] = std::max(0.0f, target[i] - tFactor[i]);
+        }
+        return true;
+      case DxvkRtTextureOperation::Modulate:
+      case DxvkRtTextureOperation::Modulate2x:
+      case DxvkRtTextureOperation::Force_Modulate2x:
+      case DxvkRtTextureOperation::Modulate4x: {
+        if (!arg1IsTexture || !arg2IsTFactor) {
+          return false;
+        }
+        const float scale = mat.textureColorOperation == DxvkRtTextureOperation::Modulate4x ? 4.0f
+                          : mat.textureColorOperation == DxvkRtTextureOperation::Modulate    ? 1.0f
+                                                                                             : 2.0f;
+        for (uint32_t i = 0; i < 3; ++i) {
+          const float d = tFactor[i] * scale;
+          if (d <= 0.0f) {
+            return false;
+          }
+          out[i] = target[i] / d;
+        }
+        return true;
+      }
+      default:
+        return false;
+      }
     }
 
     // Bounded, one line per distinct material hash, accepted or not. Rejections
     // are logged too: an emitter that failed by 0.02 of chroma is a threshold
     // to move, and that is invisible if only acceptances are printed.
     inline void logOnce(XXH64_hash_t materialHash, const Vector3& color, bool accepted,
-                        XXH64_hash_t textureHash) {
+                        XXH64_hash_t textureHash, float score, bool invertible) {
       if (!DusklightEmissive::log()) {
         return;
       }
@@ -134,12 +218,15 @@ namespace dxvk {
         "dusklight.emis mat=", std::hex, materialHash,
         " tex0hash=", textureHash, std::dec,
         " color=", color.x, ",", color.y, ",", color.z,
+        " score=", score,
         " luma=", lumaOf(color),
         " chroma=", chromaOf(color),
+        " threshold=", DusklightEmissive::threshold(),
         " minLuma=", DusklightEmissive::minLuma(),
         " minChroma=", DusklightEmissive::minChroma(),
+        " invertible=", invertible ? 1 : 0,
         " verdict=", accepted ? "emissive" : "rejected",
-        " applied=", (accepted && DusklightEmissive::enable()) ? 1 : 0));
+        " applied=", (accepted && invertible && DusklightEmissive::enable()) ? 1 : 0));
     }
 
   } // namespace dusklightEmissive

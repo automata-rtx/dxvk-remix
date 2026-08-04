@@ -139,7 +139,7 @@ anything else.
 | `src/dxvk/rtx_render/rtx_dusklight_env.h` | `rtx.dusklight.env.*` — readouts the game **writes** via `remixapi_SetConfigVariable`. All `NoSave`. |
 | `src/dxvk/rtx_render/rtx_dusklight_atmosphere.{h,cpp}` | one medium driving fog, sky and sky-light; Hillaire physical sky |
 | `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` | the ambient grade stage |
-| `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. Aurora ships the GX evidence in `D3DMATERIAL9::Emissive`; this holds the thresholds that judge it, and one bounded candidate log. Applied at one site in `rtx_instance_manager.cpp` |
+| `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. Aurora ships a GX **evidence score** in `D3DMATERIAL9::Emissive`; this holds the cut, the pre-image correction, and one bounded candidate log. Applied at one site in `rtx_instance_manager.cpp`. **Note the trap it works around: the shader re-applies the albedo's texture op to the emissive colour**, so the constant set here is a pre-image, not the colour |
 | `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
 | `src/d3d9/d3d9_rtx_matrep.h` | the material translation report (`rtx.dusklight.matrep`), one guarded call at the tail of `D3D9Rtx::processTextures` |
 
