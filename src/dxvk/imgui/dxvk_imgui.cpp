@@ -3153,7 +3153,7 @@ namespace dxvk {
       ImGui::Text("Game: %d selected, %d handed over, %d skipped",
                   DusklightEnv::texrepEntries(), DusklightEnv::texrepCreated(),
                   DusklightEnv::texrepSkipped());
-      ImGui::Text("Remix: %d draws tagged, %d substituted (%d of them HUD), %d still loading, %d unknown",
+      ImGui::Text("Remix: %u draws tagged, %u substituted (%u of them HUD), %u still loading, %u unknown",
                   texRepStats.handlesSeen, texRepStats.applied, texRepStats.appliedRaster,
                   texRepStats.pending, texRepStats.missing);
 

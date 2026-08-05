@@ -66,8 +66,6 @@ namespace dxvk {
   class DxvkContext;
 
   struct DusklightTexRep {
-    friend class ImGUI;
-
     RTX_OPTION("rtx.dusklight.texrep", bool, enable, true,
                "Use the HD texture replacements the game registered through the Remix API.\n"
                "The game pushes one material per replacement and tags each draw with its index; this swaps the loaded\n"
