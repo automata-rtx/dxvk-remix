@@ -33,6 +33,7 @@
 #include "rtx_materials.h"
 #include "rtx_ray_portal_manager.h"
 #include "rtx_terrain_baker.h"
+#include "rtx_dusklight_emissive.h"
 
 #include "../d3d9/d3d9_state.h"
 #include "rtx_matrix_helpers.h"
@@ -152,7 +153,10 @@ namespace dxvk {
   namespace {
     template<int RtInstanceSize> struct CheckRtInstanceSize {
       // The second line of the build error should contain the new size of RtInstance in the template argument, i.e. `dxvk::CheckRtInstanceSize<newSize>`
-      static_assert(RtInstanceSize == 776, "RtInstance size has changed.  Fix the copy constructor above this message, then update the expected size.");
+      // 776 -> 784 on 2026-08-04: RtSurface gained the Dusklight two-colour ramp
+      // fields. copyInstanceDataFrom assigns `surface` wholesale, so they are
+      // already carried; only this constant needed updating.
+      static_assert(RtInstanceSize == 784, "RtInstance size has changed.  Fix the copy constructor above this message, then update the expected size.");
     };
     CheckRtInstanceSize<sizeof(RtInstance)> _rtInstanceSizeTest;
   }
@@ -1048,6 +1052,9 @@ namespace dxvk {
 
         // Surface meta data
         currentInstance.surface.isEmissive = false;
+        // Reset for the same reason isEmissive is: instances are pooled, so a
+        // flag left set by a previous occupant makes an unrelated surface glow.
+        currentInstance.surface.emissiveSource = static_cast<uint8_t>(kEmissiveSourceTextureOp);
         currentInstance.surface.isMatte = false;
         currentInstance.surface.textureColorArg1Source = drawCall.getMaterialData().textureColorArg1Source;
         currentInstance.surface.textureColorArg2Source = drawCall.getMaterialData().textureColorArg2Source;
@@ -1061,6 +1068,11 @@ namespace dxvk {
         currentInstance.surface.isAnimatedWater = currentInstance.testCategoryFlags(InstanceCategories::AnimatedWater);
         currentInstance.surface.associatedGeometryHash = drawCall.getHash(RtxOptions::geometryAssetHashRule());
         currentInstance.surface.isTextureFactorBlend = drawCall.getMaterialData().isTextureFactorBlend;
+        // Dusklight two-colour ramp; see rtx_dusklight_emissive.h and
+        // aurora-ao/docs/dx9/remix-material-interface.md §10.
+        currentInstance.surface.isRampMaterial = dusklightRamp::isRamp(drawCall.getMaterialData());
+        currentInstance.surface.rampTFactorIsHigh = dusklightRamp::tFactorIsHigh(drawCall.getMaterialData());
+        currentInstance.surface.rampOtherColor = dusklightRamp::otherColor(drawCall.getMaterialData());
         currentInstance.surface.isVertexColorBakedLighting = drawCall.getMaterialData().isVertexColorBakedLighting;
         currentInstance.surface.isMotionBlurMaskOut = currentInstance.testCategoryFlags(InstanceCategories::IgnoreMotionBlur);
         currentInstance.surface.ignoreTransparencyLayer = currentInstance.testCategoryFlags(InstanceCategories::IgnoreTransparencyLayer);
@@ -1108,6 +1120,52 @@ namespace dxvk {
             tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
             tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(RtxOptions::emissiveBlendOverrideEmissiveIntensity());
             tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
+          } else if (dusklightEmissive::isCandidate(drawCall.getMaterialData())) {
+            // Dusklight: aurora scored what GX says about this surface. Where to
+            // cut is a judgement, so it lives in rtx_dusklight_emissive.h - one
+            // place, dialable live from the F1 overlay.
+            const LegacyMaterialData& legacy = drawCall.getMaterialData();
+            const Vector3 emissiveColor = dusklightEmissive::candidateColor(legacy);
+            const bool accepted = dusklightEmissive::accepts(legacy, emissiveColor);
+
+            dusklightEmissive::logOnce(currentInstance.m_materialDataHash, emissiveColor, accepted,
+                                       legacy.getColorTexture().getImageHash(),
+                                       dusklightEmissive::evidenceScore(legacy), legacy);
+
+            if (accepted && DusklightEmissive::enable()) {
+              tmpMaterialData = *materialData;
+              materialData = &tmpMaterialData;
+              tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
+              tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(DusklightEmissive::intensity());
+              // GX records nothing about what an emitter should glow, so this is
+              // a reading rather than a translation and the owner picks it live.
+              // rtx_dusklight_emissive.h names the three; §9 says what each cost.
+              switch (DusklightEmissive::colorSource()) {
+              case DusklightEmissiveSource::AlbedoTexture:
+                // Upstream's own path: the shader runs the albedo texture
+                // through this material's texture op, exactly as it does for a
+                // world space UI surface.
+                tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(
+                  tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
+                break;
+              case DusklightEmissiveSource::PresentedColor:
+                // Verbatim - EmissiveSource::Constant tells the shader to leave
+                // it alone. Setting a constant without that flag is the trap
+                // that made a pre-image inversion necessary before 2026-08-05.
+                tmpMaterialData.getOpaqueMaterialData().setEmissiveColorConstant(emissiveColor);
+                currentInstance.surface.emissiveSource = static_cast<uint8_t>(kEmissiveSourceConstant);
+                break;
+              default:
+                currentInstance.surface.emissiveSource = static_cast<uint8_t>(kEmissiveSourceAlbedo);
+                break;
+              }
+              // Gates NEECacheUtils.shouldSampleObject (nee_cache_light.slangh),
+              // so the emitter is sampled as a light rather than found by chance.
+              // That and one debug view are its only readers - post-FX's own
+              // motion-blur "isEmissive" flag is computed from radiance
+              // (geometry_resolver.slangh) and is not this one.
+              currentInstance.surface.isEmissive = true;
+            }
           }
 
           currentInstance.m_isSubsurface = materialData->getOpaqueMaterialData().getSubsurfaceDiffusionProfile();

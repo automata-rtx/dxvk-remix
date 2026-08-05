@@ -275,11 +275,15 @@ struct RtSurface {
     textureFlags |= ((static_cast<uint32_t>(textureAlphaOperation)  & 0x7) << 11);
 
     textureFlags |= eyeParams ? (1 << 14) : 0;
-    // textureFlags bits 15-16 unused
+    // Dusklight two-colour ramp, see rampOtherColor.
+    textureFlags |= isRampMaterial ? (1 << 15) : 0;
+    textureFlags |= rampTFactorIsHigh ? (1 << 16) : 0;
+    // Dusklight self-illumination, see emissiveSource.
+    textureFlags |= ((static_cast<uint32_t>(emissiveSource) & emissiveSourceMask) << 19);
 
     static_assert(static_cast<uint32_t>(TexGenMode::Count) <= 4);
     textureFlags |= ((static_cast<uint32_t>(texgenMode) & 0x3) << 17);
-    // textureFlags bits 19-30 unused
+    // textureFlags bits 21-30 unused
 
     writeGPUHelper(data, offset, textureFlags);
 
@@ -298,7 +302,10 @@ struct RtSurface {
       writeGPUHelper(data, offset, uint32_t{});
       writeGPUHelper(data, offset, uint32_t{});
     }
-    writeGPUHelper(data, offset, uint32_t{});
+    // data15.w: was permanent padding, now the Dusklight ramp's second
+    // endpoint. Taken here rather than by growing Surface, which is sized to
+    // exactly two 128-byte cachelines.
+    writeGPUHelper(data, offset, rampOtherColor);
 
     assert(offset - oldOffset == kSurfaceGPUSize);
   }
@@ -348,6 +355,18 @@ struct RtSurface {
   RtTextureArgSource textureAlphaArg2Source = RtTextureArgSource::None;
   DxvkRtTextureOperation textureAlphaOperation = DxvkRtTextureOperation::SelectArg1;
   uint32_t tFactor = 0xffffffff;   // Value for D3DRS_TEXTUREFACTOR, default value of is opaque white
+  // Dusklight two-colour ramp. The dominant GameCube material shape is
+  // lerp(colourA, colourB, texture); no single D3D9 texture op carries it, so
+  // this fork evaluates the GX combiner in the shader from both endpoints.
+  // One endpoint rides tFactor; this is the other, 0x00RRGGBB.
+  // See aurora-ao/docs/dx9/remix-material-interface.md §10.
+  uint32_t rampOtherColor = 0;
+  bool isRampMaterial = false;
+  bool rampTFactorIsHigh = false;  // tFactor holds the texture-white endpoint
+  // Dusklight self-illumination: which reading of the material the shader
+  // emits. GX records no emissive term, so this is a choice - see
+  // DusklightEmissiveSource in rtx_dusklight_emissive.h and §9.
+  uint8_t emissiveSource = static_cast<uint8_t>(kEmissiveSourceTextureOp);
   TexGenMode texgenMode = TexGenMode::None;
   std::optional<RtEyeParams> eyeParams = {};
 

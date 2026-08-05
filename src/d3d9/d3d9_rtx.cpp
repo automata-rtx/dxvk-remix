@@ -12,6 +12,8 @@
 #include "../util/util_fastops.h"
 #include "../util/util_math.h"
 #include "d3d9_rtx_utils.h"
+#include "d3d9_rtx_matrep.h"
+#include "../dxvk/rtx_render/rtx_dusklight_emissive.h"
 #include "d3d9_texture.h"
 #include "../dxvk/rtx_render/rtx_terrain_baker.h"
 
@@ -1141,6 +1143,47 @@ namespace dxvk {
       if (!m_forceGeometryCopy && RtxOptions::alwaysCopyDecalGeometries()) {
         // Only poke decal hashes when option is enabled.
         m_forceGeometryCopy |= m_activeDrawCallState.testCategoryFlags(CATEGORIES_REQUIRE_GEOMETRY_COPY);
+      }
+    }
+
+    // Dusklight material translation report. One guarded block; the helpers
+    // live in d3d9_rtx_matrep.h to keep the rebase surface here small.
+    // See aurora-ao/docs/dx9/material-report.md.
+    if (DusklightMatrep::matrep()) {
+      const LegacyMaterialData& mat = m_activeDrawCallState.materialData;
+      // Keyed on the reconstruction *shape* -- texture, ops and arg sources --
+      // deliberately excluding tFactor's value. computeIdentityHash() includes
+      // it, and because the game's tints track fog and time of day, the
+      // 2026-08-03 session produced 828 distinct tFactor values and burned the
+      // whole 1024 cap on a few dozen materials inside 14 seconds. The value is
+      // still printed; it just does not multiply the number of reports.
+      const XXH64_hash_t identity = matrep::shapeKey(mat);
+      if (matrep::shouldEmit(identity)) {
+        Logger::info(str::format(
+          "matrep.rmx id=", std::hex, identity, std::dec,
+          " first=", firstStage,
+          " tex0ptr=", d3d9State().textures[firstStage],
+          " tex0hash=", std::hex, mat.getColorTexture().getImageHash(), std::dec,
+          " cop=", matrep::opName(mat.textureColorOperation),
+          " a1=", matrep::argName(mat.textureColorArg1Source),
+          " a2=", matrep::argName(mat.textureColorArg2Source),
+          " tFactor=", std::hex, mat.tFactor, std::dec,
+          " tfBlend=", mat.isTextureFactorBlend,
+          " stageTf=", useStageTextureFactorBlending,
+          " multiTf=", useMultipleStageTextureFactorBlending,
+          " vcBaked=", mat.isVertexColorBakedLighting,
+          // "additive" here means Remix's own emissive-blend override claims
+          // this draw before the Dusklight rule sees it. See blendName().
+          " blend=", matrep::blendName(mat.blendMode),
+          // The two-colour ramp aurora ships in the unused half of
+          // D3DMATERIAL9; when this is 1 the albedo expression below is not
+          // what the shader evaluates. See rtx_dusklight_emissive.h.
+          " ramp=", mat.getLegacyMaterial().Diffuse.a >= 0.5f ? 1 : 0,
+          " rampTfHigh=", mat.getLegacyMaterial().Ambient.r >= 0.5f ? 1 : 0,
+          // The second endpoint, without which "ramp=1" says the lerp happened
+          // but not between what. Same 0x00RRGGBB packing the shader unpacks.
+          " rampOther=", std::hex, dusklightRamp::otherColor(mat), std::dec,
+          " albedo=\"", matrep::albedoExpression(mat), "\""));
       }
     }
 

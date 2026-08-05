@@ -46,6 +46,28 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     uint32_t blendAlphaDstFactor;
     uint32_t blendAlphaBlendOp;
     uint32_t blendWriteMask;
+    // The half of D3DMATERIAL9 aurora uses to carry material intent: Emissive
+    // is the self-illumination evidence, Diffuse the two-colour ramp's second
+    // endpoint, Ambient.r which endpoint tFactor holds. See
+    // rtx_dusklight_emissive.h. Two draws differing only in these are different
+    // materials; without this they collapse onto whichever the cache saw first.
+    // Specular.r says whether the vertex colour stream is material colour,
+    // .g whether aurora evaluated this material at all, .b whether it has a
+    // colour of its own, .a whether it is self-lit. Power is not hashed -
+    // nothing reads it.
+    float legacyEmissiveR;
+    float legacyEmissiveG;
+    float legacyEmissiveB;
+    float legacyEmissiveA;
+    float legacyDiffuseR;
+    float legacyDiffuseG;
+    float legacyDiffuseB;
+    float legacyDiffuseA;
+    float legacyAmbientR;
+    float legacySpecularR;
+    float legacySpecularG;
+    float legacySpecularB;
+    float legacySpecularA;
     uint8_t alphaTestReferenceValue;
     uint8_t textureColorArg1Source;
     uint8_t textureColorArg2Source;
@@ -55,7 +77,7 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     uint8_t textureAlphaOperation;
     uint8_t isTextureFactorBlend;
     uint8_t isVertexColorBakedLighting;
-    uint8_t padding[7];
+    uint8_t padding[3];
   };
 
   LegacyMaterialIdentityHashData data{};
@@ -73,6 +95,19 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
   data.blendAlphaDstFactor = static_cast<uint32_t>(blendMode.alphaDstFactor);
   data.blendAlphaBlendOp = static_cast<uint32_t>(blendMode.alphaBlendOp);
   data.blendWriteMask = static_cast<uint32_t>(blendMode.writeMask);
+  data.legacyEmissiveR = d3dMaterial.Emissive.r;
+  data.legacyEmissiveG = d3dMaterial.Emissive.g;
+  data.legacyEmissiveB = d3dMaterial.Emissive.b;
+  data.legacyEmissiveA = d3dMaterial.Emissive.a;
+  data.legacyDiffuseR = d3dMaterial.Diffuse.r;
+  data.legacyDiffuseG = d3dMaterial.Diffuse.g;
+  data.legacyDiffuseB = d3dMaterial.Diffuse.b;
+  data.legacyDiffuseA = d3dMaterial.Diffuse.a;
+  data.legacyAmbientR = d3dMaterial.Ambient.r;
+  data.legacySpecularR = d3dMaterial.Specular.r;
+  data.legacySpecularG = d3dMaterial.Specular.g;
+  data.legacySpecularB = d3dMaterial.Specular.b;
+  data.legacySpecularA = d3dMaterial.Specular.a;
   data.alphaTestReferenceValue = alphaTestReferenceValue;
   data.textureColorArg1Source = static_cast<uint8_t>(textureColorArg1Source);
   data.textureColorArg2Source = static_cast<uint8_t>(textureColorArg2Source);
@@ -98,6 +133,19 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
       &LegacyMaterialIdentityHashData::blendAlphaDstFactor,
       &LegacyMaterialIdentityHashData::blendAlphaBlendOp,
       &LegacyMaterialIdentityHashData::blendWriteMask,
+      &LegacyMaterialIdentityHashData::legacyEmissiveR,
+      &LegacyMaterialIdentityHashData::legacyEmissiveG,
+      &LegacyMaterialIdentityHashData::legacyEmissiveB,
+      &LegacyMaterialIdentityHashData::legacyEmissiveA,
+      &LegacyMaterialIdentityHashData::legacyDiffuseR,
+      &LegacyMaterialIdentityHashData::legacyDiffuseG,
+      &LegacyMaterialIdentityHashData::legacyDiffuseB,
+      &LegacyMaterialIdentityHashData::legacyDiffuseA,
+      &LegacyMaterialIdentityHashData::legacyAmbientR,
+      &LegacyMaterialIdentityHashData::legacySpecularR,
+      &LegacyMaterialIdentityHashData::legacySpecularG,
+      &LegacyMaterialIdentityHashData::legacySpecularB,
+      &LegacyMaterialIdentityHashData::legacySpecularA,
       &LegacyMaterialIdentityHashData::alphaTestReferenceValue,
       &LegacyMaterialIdentityHashData::textureColorArg1Source,
       &LegacyMaterialIdentityHashData::textureColorArg2Source,

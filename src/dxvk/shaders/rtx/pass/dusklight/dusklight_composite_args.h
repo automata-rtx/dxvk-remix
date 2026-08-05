@@ -27,16 +27,12 @@
 
 // The far half of the fog.
 //
-// Volumetrics and a distance ramp are not two implementations of one effect; they are good at
-// different things and bad at the other's job. A froxel grid can put light shafts and a glow around
-// a torch in the air, but it stops at the end of its slices, and this game's fog regularly runs
-// hundreds of metres past that. A distance ramp reaches as far as you like and closes to fully
-// opaque exactly where the original did - an exponential medium only ever asymptotes towards that -
-// but it can never make a shaft.
-//
-// So the split is by distance rather than by system: the grid owns everything inside its reach, the
-// game's own ramp owns everything past it, and the ramp is rebased at the handover so the two never
-// count the same air twice.
+// The froxel grid stops at its last slice and this game's fog regularly runs hundreds of metres
+// past that; a distance ramp reaches as far as you like and closes to fully opaque exactly where
+// the original did, which an exponential medium only asymptotes towards. So the split is by
+// distance, not by system: the grid owns everything inside its reach, the game's own ramp owns
+// everything past it, rebased at the handover so the two never count the same air twice.
+// DusklightAtmosphere.md §5.2.
 struct DusklightCompositeArgs {
   // Radiance the far ramp tends towards. Carried separately from CompositeArgs' own fog colour,
   // which has already been through the legacy fog path's scale.
@@ -58,15 +54,12 @@ struct DusklightCompositeArgs {
 
   // How much of the medium a ray that hits no geometry is allowed to pick up.
   //
-  // The far ramp above already refuses to run on a sky pixel - it would drive the sky to full fog
-  // and replace it with a flat colour. The froxel grid was never told the same thing: it attenuates
-  // the dome by the transmittance of its whole depth and adds that depth's in-scatter on top, so
-  // the sky arrives dimmed and tinted towards the fog colour while the terrain in front of it,
-  // which fades towards the sky via skyColorWeight, does not. Two descriptions of one day.
-  //
-  // It bites here far harder than it would upstream because this medium is an artistic quantity,
-  // not air: the game's fog closes over tens of metres, so exp(-sigma * gridDepth) is a large
-  // number and every bit of it lands on the sky.
+  // The far ramp above already refuses to run on a sky pixel; the froxel grid was never told the
+  // same thing, so the sky arrives dimmed and tinted by the grid's whole depth while the terrain in
+  // front of it, which fades towards the sky via skyColorWeight, does not. It bites harder here
+  // than upstream because this medium is an artistic quantity, not air: the game's fog closes over
+  // tens of metres, so exp(-sigma * gridDepth) is large and all of it lands on the sky.
+  // DusklightAtmosphere.md §14.8.
   //
   // 0 = Off, the untreated behaviour, kept as the A/B baseline.
   // 1 = Exempt, sky ignores the medium entirely. What the original did - it drew its sky dome with

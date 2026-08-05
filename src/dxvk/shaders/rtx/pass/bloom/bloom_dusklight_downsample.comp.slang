@@ -23,27 +23,23 @@
 #include "rtx/pass/bloom/bloom_downsample.slangh"
 #include "rtx/utility/color.slangh"
 
-// Downsample step of the Dusklight bloom pyramid.
+// Downsample step of the Dusklight bloom pyramid. Its settings: DusklightOverlay.md.
 //
-// The default Remix pyramid gets all of its blur from the downsample kernel itself. Dusklight
-// instead runs an explicit blur at every level of the pyramid: eight taps spread evenly around a
-// ring of a fixed screen-space radius, with no center tap, each scaled by a per-pass gain. Because
-// the gain is applied once per level and the intermediate results saturate, bright cores wash out
-// to white while the surrounding halo keeps a smooth, wide falloff. That saturation is not an
-// artifact to be avoided - it is a large part of what the effect looks like.
+// The default Remix pyramid gets all of its blur from the downsample kernel; this runs an explicit
+// ring blur at every level instead - eight taps at a fixed screen-space radius, no center tap, each
+// scaled by a per-pass gain. Per-level gain plus saturating intermediates is what washes bright
+// cores to white while the halo keeps a wide smooth falloff. That saturation is the effect, not an
+// artifact to be removed.
 //
-// The first step of the chain does not blur. It thresholds instead, and the shape of that
-// threshold is the single most distinctive thing about the effect. The original spends three TEV
-// stages on it: two build a greyscale key out of the framebuffer through the swap tables, and the
-// third multiplies the *original* colour by that key.
+// The first step thresholds rather than blurring, and that threshold's shape is the most
+// distinctive thing about the effect. Measured from the original's three TEV stages:
 //
 //   key    = 0.25 * R + 0.25 * G + 0.5 * B      (swap tables R,R,R,G then B,B,B,A, mixed by HALF)
 //   source = colour * saturate(key - threshold)
 //
-// So it is a luminance keyed mask, not a per channel subtraction, and the resulting bloom carries
-// the source's own hue rather than drifting towards whichever channel was brightest. The weights
-// are not a standard luma either - blue counts double red or green, which is why blue highlights
-// in this game bloom so much more readily than their brightness alone would suggest.
+// A luminance keyed mask, not a per channel subtraction, so the bloom keeps the source's own hue.
+// The weights are not a standard luma either - blue counts double red or green, which is why blue
+// highlights in this game bloom far more readily than their brightness alone suggests.
 
 layout(binding = BLOOM_DUSKLIGHT_DOWNSAMPLE_INPUT)
 Sampler2D<float4> InColorBuffer;

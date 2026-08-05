@@ -48,6 +48,8 @@
 #include "rtx_render/rtx_options.h"
 #include "rtx_render/rtx_dusklight_env.h"
 #include "rtx_render/rtx_dusklight_game.h"
+#include "rtx_render/rtx_dusklight_emissive.h"
+#include "../../d3d9/d3d9_rtx_matrep.h"
 #include "rtx_render/rtx_global_volumetrics.h"
 #include "rtx_render/rtx_bloom.h"
 #include <functional>
@@ -2967,6 +2969,64 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
+    // Material translation. Remix's side of it, so it sits above the game-owned
+    // controls below and works whether or not the game is connected.
+    // Background: aurora-ao/docs/dx9/remix-material-interface.md - section 9
+    // emissive, section 10 the two-colour ramp.
+    if (RemixGui::CollapsingHeader("Materials", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "GameCube GX has no emissive term, and no single thing it records identifies an emitter - "
+        "the Goron Mines lava has GX lighting switched on, like an ordinary wall. What does identify "
+        "one is a conjunction of three facts, and the game backend measures all three per draw, so "
+        "there is no cut to find and nothing below needs tuning.");
+      RemixGui::Checkbox("Reproduce Two-Colour Ramps", &DusklightRamp::rampMaterialsObject());
+      ImGui::TextWrapped(
+        "Most of this game's materials slide a texture between two authored colours - that is how one rupee "
+        "texture yields seven rupee colours. No stock D3D9 texture op can express it, so with this off they are "
+        "approximated and the Goron Mines lava reads red-and-white instead of red-to-orange. Turn it off to see "
+        "the approximation it replaces.");
+      RemixGui::Separator();
+      RemixGui::Checkbox("Emissive Surfaces Enabled", &DusklightEmissive::enableObject());
+      ImGui::TextWrapped(
+        "A GameCube surface is self-lit when its colour program never reads the lit channel - its colour "
+        "is fixed whatever the lights do, which is what the console draws as full-bright. That plus a "
+        "colour authored in GX constants, and that colour reading as a glow, is the whole rule. There is "
+        "no threshold and nothing to dial: over one measured Goron Mines session it accepts 6 materials "
+        "of 77, every lava and fire surface among them, with nothing else caught.");
+      RemixGui::Combo("Emitted Colour", &DusklightEmissive::colorSourceObject(),
+                      "Reconstructed Albedo\0Albedo Texture\0Presented Colour\0");
+      ImGui::TextWrapped(
+        "GX records no emissive term, so what a glowing surface glows is a reading rather than a "
+        "translation. Reconstructed Albedo is the default and the one to want: it is the two-colour ramp, "
+        "so the texture drives the colour and neither overpowers the other - on the lava, "
+        "lerp(FF0000, FFFE63, texture). Albedo Texture pushes the texture through the material's single "
+        "D3D9 op instead, which on the lava is an ADD against red: red pinned, bright end washed to "
+        "white. Presented Colour is one flat colour and loses a molten surface's crust entirely.");
+      RemixGui::DragFloat("Emissive Intensity", &DusklightEmissive::intensityObject(), 0.05f, 0.f, 200.f);
+      ImGui::TextWrapped(
+        "The only dial worth touching. The colour already carries how bright the game meant the surface "
+        "to look; this scales it into radiance.");
+      RemixGui::Separator();
+      ImGui::TextWrapped(
+        "Below here should not need touching. They decide whether an authored colour counts as a glow, "
+        "and either one alone is enough - a glow is a strong colour or it is near-white-hot, while a "
+        "muted mid-tone is a surface colour.");
+      RemixGui::DragFloat("Saturation Counts As Glow", &DusklightEmissive::glowChromaObject(), 0.01f, 0.f, 1.f);
+      RemixGui::DragFloat("Brightness Counts As Glow", &DusklightEmissive::glowLumaObject(), 0.01f, 0.f, 1.f);
+      RemixGui::Checkbox("Log Emissive Candidates", &DusklightEmissive::logObject());
+      ImGui::TextWrapped(
+        "One line per candidate, accepted or rejected, carrying which of the three facts decided it. "
+        "Colourless rejections are counted rather than listed, and moving any control on this page "
+        "re-reports every candidate - so a session where something looks wrong says why by itself.");
+      RemixGui::Separator();
+      RemixGui::Checkbox("Log Material Translation Report", &DusklightMatrep::matrepObject());
+      ImGui::TextWrapped(
+        "Writes one matrep.rmx line per distinct reconstructed material. Pair it with the game's own "
+        "matrep lines - see aurora-ao/docs/dx9/material-report.md.");
+      ImGui::Unindent();
+    }
+
     RemixGui::Separator();
 
     // These settings belong to the game, not to Remix. They live here because the game's own
@@ -2988,7 +3048,7 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Connected, but the game build is older than this build of Remix: it does not read these "
         "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 4 or newer.");
+        "accurate. Update the game to a build that reports protocol 6 or newer.");
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "

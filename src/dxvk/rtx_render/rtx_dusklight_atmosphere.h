@@ -38,25 +38,20 @@ namespace dxvk {
   class RtxContext;
   struct FogState;
 
-  // One participating medium per frame, derived from the game's own environment feed, shared by
-  // everything that has an opinion about the air: the volumetrics, the fog term in the composite,
-  // and the sky.
+  // One participating medium per frame, derived from the game's own environment feed and shared by
+  // everything with an opinion about the air: the volumetrics, the fog term in the composite, and
+  // the sky.
   //
-  // The unification is not an optimisation, it is the correctness argument. This game authors its
-  // fog colour, its fog distances and every one of its sky colours in the same palette entry,
-  // picks them with the same time of day and weather indices, and blends them in the same call -
-  // so its fog colour *is* its sky colour and distant terrain dissolves into the sky because
-  // somebody drew it that way. Physics says the same thing from the other end: aerial perspective
-  // and sky colour are one scattering integral evaluated over different path lengths. A renderer
-  // that derives the two separately is computing the same quantity twice and will get two answers.
+  // Deriving it once is the correctness argument, not an optimisation. The game authors its fog
+  // colour, its fog distances and every one of its sky colours in the same palette entry, picks
+  // them with the same time of day and weather indices and blends them in the same call, so its fog
+  // colour *is* its sky colour; physics agrees from the other end, aerial perspective and sky colour
+  // being one scattering integral over different path lengths. Derive them separately and you have
+  // computed one quantity twice and will get two answers.
   //
-  // Deriving once also means the froxel grid is already integrating the medium the sky is made of,
-  // so aerial perspective costs nothing extra and needs no lookup table of its own.
-  //
-  // Scope: this is the fog half (linear ramp -> extinction) plus a gradient sky dome built from the
-  // palette colours. The physically based atmosphere that replaces the gradient, and the stylised
-  // versus physical blend weight that governs it, are a later phase; the option surface here is
-  // shaped so that landing them does not move anything already in a config file.
+  // Covers the fog (linear ramp -> extinction), the palette gradient sky dome, and the Hillaire
+  // physical sky that blends over it by sun elevation. Design, measurements and the blend weight:
+  // documentation/DusklightAtmosphere.md - its §12 is what is tested and what is not.
   class DxvkDusklightAtmosphere: public RtxPass {
 
   public:
@@ -77,9 +72,9 @@ namespace dxvk {
       bool    outdoor = false;
 
       // Extinction, per world unit. Deliberately scalar: the game's fog is a colour lerp driven by
-      // a single scalar ramp, so it dims every channel by the same fraction. A per channel
-      // extinction derived from the fog colour would make the fog's *strength* depend on channel,
-      // which the original never does. The colour arrives through scattering instead.
+      // one scalar ramp, so it dims every channel by the same fraction; a per channel extinction
+      // pulled out of the fog colour would make the fog's *strength* channel dependent, which the
+      // original never does. The colour arrives through scattering instead. DusklightAtmosphere.md §5.1.
       float   sigma = 0.0f;
       // Linear radiance the fog tends towards. The game authors this as a display colour.
       Vector3 fogRadiance = Vector3(0.0f, 0.0f, 0.0f);
@@ -150,7 +145,8 @@ namespace dxvk {
     mutable Derived m_derived;
     mutable uint32_t m_resolvedFrame = UINT32_MAX;
     // Smoothed grid extent carried across frames. The game eases its own fog transitions, so
-    // following them rather than snapping is faithful as well as cheap on the denoiser.
+    // following them rather than snapping is faithful as well as cheap on the denoiser. A large
+    // jump - a room change or an area load - snaps instead; see resolve().
     mutable float m_smoothedFroxelMaxDistance = 0.0f;
 
     // Owned once and kept alive for the process, not rebuilt per frame: the dome light holds a
@@ -169,8 +165,9 @@ namespace dxvk {
     RTX_OPTION("rtx.dusklight.atmosphere", bool, enable, false,
                "Derives one participating medium from the game's environment feed and gives it to the volumetrics, the fog and the sky together.\n"
                "The game authors its fog colour and its sky colours in the same palette entry and blends them in the same call, so they are one system in the "
-               "original and splitting them here is what makes fog and sky disagree. Off by default; has no effect unless the game's bridge is running "
-               "(rtx.dusklight.env.enable) and reporting fog (rtx.dusklight.env.fogActive).");
+               "original and splitting them here is what makes fog and sky disagree. Off by default, and inert unless the game's bridge is running "
+               "(rtx.dusklight.env.enable). The fog half additionally waits on rtx.dusklight.env.fogActive; the sky half does not, since an area can have a "
+               "sky and no haze in it.");
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, zHalfMin, 100.0f,
                     "Smallest half density distance the medium is allowed, in world units - one metre at this game's scale.\n"
                     "The medium is solved by matching the game's linear ramp at the point where it is half opaque. Scripted fog banks put that point behind the "
@@ -204,9 +201,9 @@ namespace dxvk {
                     "How much of the game's fog range the froxel grid is sized to cover.\n"
                     "The grid gets a fixed number of depth slices wherever it is pointed, so sizing it from the game's own fog range is what puts them where the "
                     "fog actually is: tight inside a dense interior, wide across an open field. Costs nothing - the slice count does not change, only its reach.\n"
-                    "Deliberately below 1. At 1 the grid swallows the whole ramp, the composite's far half has nothing left to do, and the fog never closes to "
-                    "fully opaque the way the original does - an exponential medium only ever asymptotes towards that. Leaving the last stretch to the ramp is "
-                    "what buys the closure, and it also spends the fixed slice count on the near field where light shafts actually live.\n"
+                    "Deliberately below 1. At 1 the grid swallows the whole ramp and the composite's far half has nothing left to do, so the fog never closes to "
+                    "fully opaque the way the original does - an exponential medium only asymptotes towards that. Leaving the last stretch to the ramp buys the "
+                    "closure and spends the slices on the near field where shafts live. documentation/DusklightAtmosphere.md section 5.2.\n"
                     "UNVALIDATED: never measured against a running build.",
                     args.minValue = 0.1f,
                     args.maxValue = 4.0f);
@@ -229,10 +226,11 @@ namespace dxvk {
 
     RTX_OPTION("rtx.dusklight.atmosphere", bool, skyEnable, false,
                "Builds the sky from the colours the game paints its own sky dome with, and hands it to Remix as a dome light.\n"
-               "The game's dome carries no texture - it is painted by setting a handful of colours per frame - so there is nothing for Remix to hash and it can "
-               "never be tagged as sky. Generating the sky from those same colours sidesteps that permanently, and unlike the auto detected sky probe, which is "
-               "rasterized into the game's own 8 bit target and so can never be brighter than 1, this is real high dynamic range: it can light the scene at the "
-               "intensity an actual sky does.\n"
+               "The dome is painted by setting a handful of colours per frame rather than by drawing a texture, so generating the sky from those same colours is "
+               "the direct translation of it. The result is high dynamic range, non-occluding by construction, and is the same image the physical sky writes into.\n"
+               "Not because the alternatives are impossible: the untextured dome can be categorised as sky by geometry hash (rtx.skyBoxGeometries), and "
+               "rtx.skyForceHDR lifts the auto detected probe's inherited 8 bit clamp. Both were once claimed otherwise here - see "
+               "documentation/DusklightAtmosphere.md sections 14.9 and 14.10.\n"
                "Turn on rtx.dusklight.game.hideVrbox with it, and set rtx.skyAutoDetect to None, or you will be looking at three skies at once.");
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyIntensity, 6.0f,
                     "Radiance of the generated sky, as a multiplier on the game's sky colours.\n"
@@ -314,7 +312,8 @@ namespace dxvk {
                "correctly placed, moves with the sky rather than with the camera, and cannot cast a shadow because it is not geometry.\n"
                "Only the moon. The sun stays out of this image deliberately - it is an analytic distant light, and baking something that bright into a "
                "dome only ever reached by ray miss would double count it and sample it badly.\n"
-               "Inert unless rtx.dusklight.atmosphere.skyEnable is on, and drawn only while the game's celestial body is the moon.");
+               "Inert unless rtx.dusklight.atmosphere.skyEnable is on, and drawn only while the game's celestial body is the moon.\n"
+               "The billboard cause was confirmed by testing on 2026-07-29; this replacement is built and CI-green but has never been run in game.");
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyMoonAngularDiameterDegrees, 5.7f,
                     "Apparent size of the painted moon, in degrees.\n"
                     "The default matches the game's own: its moon quad is 8000 units across at an orbit radius of 80000, which subtends about 5.7 "
@@ -337,15 +336,14 @@ namespace dxvk {
 
     // Two candidate fixes for the same defect, kept side by side deliberately so they can be
     // compared in game rather than argued about. One of them is meant to be deleted once the
-    // comparison has been made.
+    // comparison has been made. Both are untested in game; DusklightAtmosphere.md §12.
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", int, skyFogMode, 1,
                     "How much of the fog a ray that hits nothing - the visible sky - is allowed to pick up.\n"
-                    "The distance ramp already refuses to run on the sky, because it would drive it to full fog and leave a flat colour where the sky "
-                    "should be. The froxel grid was never told the same thing: it dims the sky by the transmittance of its whole depth and adds that "
-                    "depth's fog colour on top. The result is a sky that reads dim and dingy while the terrain in front of it, which correctly fades "
-                    "towards the sky's own colour, does not - a seam along the horizon that gets worse the denser the fog.\n"
-                    "It matters more here than it would in another game because this fog is an artistic quantity rather than air: it closes over tens "
-                    "of metres, so there is a great deal of it to apply and all of it lands on the sky.\n"
+                    "The distance ramp already refuses to run on the sky; the froxel grid was never told the same thing, so it dims the sky by the "
+                    "transmittance of its whole depth and adds that depth's fog colour on top. The sky then reads dim and dingy while the terrain in "
+                    "front of it, correctly fading towards the sky's own colour, does not - a horizon seam that worsens with density. It bites harder "
+                    "here than elsewhere because this fog is an artistic quantity rather than air: it closes over tens of metres, and all of that lands "
+                    "on the sky.\n"
                     "0: Off. The untreated behaviour, kept so the defect can be seen on demand.\n"
                     "1: Exempt. The sky ignores the fog entirely, which is what the original did - it drew its sky with fog switched off at any density. "
                     "Costs light shafts that would have been visible against the sky, since those are the same in-scatter.\n"

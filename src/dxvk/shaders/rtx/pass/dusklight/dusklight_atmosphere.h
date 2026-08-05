@@ -74,18 +74,12 @@ struct DusklightAtmosphereArgs {
   // because single scattering alone throws away everything that bounced more than once.
   float multiScatterScale;
 
-  // The moon, painted into the dome rather than drawn as geometry.
-  //
-  // The game hangs its moon on a camera-anchored billboard, which under a path tracer became an
-  // occluder travelling with the player and was the measured cause of shadows appearing to wander
-  // at night. rtx.dusklight.game.hideSkyBillboards removes it and fixes that, at the cost of the
-  // visible moon and stars. Painting the moon here gives it back without giving the problem back:
-  // a disc in the dome is correctly placed, moves with the sky rather than the camera, and is
-  // structurally incapable of casting a shadow because it is not geometry at all.
-  //
-  // Deliberately the moon and not the sun. The sun disc stays out of this image - it is analytic
-  // and sampled as a distant light, and baking a body that bright into a dome that is only ever
-  // reached by ray miss would both double count it and sample it terribly.
+  // The moon, painted into the dome rather than drawn as geometry. The game's camera-anchored moon
+  // billboard was the measured cause of night shadows wandering with the player; hideSkyBillboards
+  // removes it and takes the visible moon with it. A disc painted here cannot cast a shadow because
+  // it is not geometry. Deliberately the moon only - the sun is analytic and NEE-sampled, so baking
+  // something that bright into an image only reached by ray miss would double count it.
+  // DusklightAtmosphere.md §13.1.
   vec3 moonColor;
   // Absolute radiance of the disc, already faded across the dawn/dusk handover. 0 draws nothing.
   // Applied after the sky's own intensity so it does not ride the palette's brightness.

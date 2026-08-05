@@ -2,11 +2,47 @@
 
 This file provides context for AI coding agents working in this repository.
 
+> ## Read `CLAUDE.md` first — this is not stock dxvk-remix
+>
+> Everything below is upstream NVIDIA's build, style and layout guidance, and it
+> is still correct. What it does **not** carry is why this fork exists, and an
+> agent working from this file alone will get the design intent wrong.
+>
+> **`CLAUDE.md` at the repo root is the authority** on all of the following, and
+> none of it is repeated here:
+>
+> - **What the D3D9 renderer is for.** This fork serves one game, Dusklight,
+>   rendering through a GX→D3D9 fixed-function backend. **The raw fixed-function
+>   D3D9 image is never shown to a player** — it is the feed into Remix's
+>   renderer, which is the product. So fixed-function limits are not a ceiling:
+>   where the D3D9 stream cannot carry something, the answer is a change *here*,
+>   in the fork or through the Remix API, not a contortion of the D3D9 stream.
+>   "Raw D3D9 stays correct" is a safety property, never a design goal. The two
+>   exceptions that must still rasterize correctly are the **HUD** (Remix
+>   rasterizes UI draws) and **alpha** (Remix reads it for opacity and the alpha
+>   test). Canonical statement:
+>   `aurora-ao/docs/dx9/remix-material-interface.md` §0.
+> - **The game/DLL protocol.** `rtx.dusklight.env.protocol` vs
+>   `kRequiredProtocol`; skew has cost an evening twice.
+> - **Branch rules** — push only your session branch, and the containment check
+>   before any branch is deleted.
+> - **Two tripwires that only fire in CI**, `CheckRtInstanceSize` and
+>   `hashStructByMemory`, neither of which shows up in a Linux container.
+> - The five project rules, including *a fix that cannot be observed is a guess*
+>   and *say what was verified and what was not*.
+>
+> Design documents for this fork's own work:
+> `documentation/DusklightAtmosphere.md` (the rendering, and §11 the whole-fork
+> rebase surface) and `documentation/DusklightOverlay.md` (the control plane).
+
 ## Project Overview
 
 dxvk-remix is a fork of DXVK that overhauls the fixed-function D3D9 graphics pipeline for path-traced remastering of classic games. The `bridge` subfolder enables 32-bit games to communicate with the 64-bit runtime.
 
 Only x64 build targets are supported.
+
+> Dusklight is 64-bit and loads `d3d9.dll` directly, so it never uses the
+> `bridge`; the x86 bridge steps were removed from this fork's CI on 2026-07-28.
 
 ## Shell
 

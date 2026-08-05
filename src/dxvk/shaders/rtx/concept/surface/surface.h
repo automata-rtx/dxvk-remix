@@ -500,6 +500,37 @@ struct Surface
   {
     get { return asfloat(data15.xyz); }
   }
+
+  // Dusklight two-colour ramp: the GX combiner a*(1-c) + b*c, c the texture
+  // sample. chooseTextureOperationColor has no lerp op and D3D9 carries one
+  // TFACTOR, so the second endpoint rides here in what was data15.w padding.
+  // aurora-ao/docs/dx9/remix-material-interface.md §10.
+  property bool isRampMaterial
+  {
+    get { return packedFlagGet(data13.z, 1 << 15); }
+    set { data13.z = newValue ? packedFlagSet(data13.z, 1 << 15) : packedFlagUnset(data13.z, 1 << 15); }
+  }
+
+  property bool rampTFactorIsHigh
+  {
+    get { return packedFlagGet(data13.z, 1 << 16); }
+    set { data13.z = newValue ? packedFlagSet(data13.z, 1 << 16) : packedFlagUnset(data13.z, 1 << 16); }
+  }
+
+  property uint rampOtherColor
+  {
+    get { return data15.w; }
+    set { data15.w = newValue; }
+  }
+
+  // Dusklight self-illumination: which reading of the material this surface
+  // glows. kEmissiveSource* in surface_shared.h; §9 of
+  // aurora-ao/docs/dx9/remix-material-interface.md says what each one costs.
+  property uint emissiveSource
+  {
+    get { return (data13.z >> 19) & emissiveSourceMask; }
+    set { data13.z = (data13.z & ~(emissiveSourceMask << 19)) | ((newValue & emissiveSourceMask) << 19); }
+  }
 };
 
 // Note: Minimal version of typical Surface Interaction for transmission across passes.

@@ -1,13 +1,17 @@
 name: Build
 
 on:
-  # This fork develops on claude/** branches and merges them to main through a
-  # pull request, so without them here a feature branch gets no build until the
-  # PR opens - which is exactly when a compile error is most expensive to find.
+  # Session work happens on claude/** branches, so those are built directly -
+  # without them a feature branch gets no build until a PR opens, which is
+  # exactly when a compile error is most expensive to find.
+  #
+  # Fixed-Function-dev is the branch this fork actually develops on (CLAUDE.md).
+  # It was missing here, so every merge into it landed unbuilt and a bad
+  # conflict resolution could sit undetected until someone else pulled it.
   push:
-    branches: [ main, 'release/**', 'claude/**' ]
+    branches: [ main, 'release/**', 'claude/**', Fixed-Function-dev ]
   pull_request:
-    branches: [ main, 'release/**' ]
+    branches: [ main, 'release/**', Fixed-Function-dev ]
 
 jobs:
   build-windows:

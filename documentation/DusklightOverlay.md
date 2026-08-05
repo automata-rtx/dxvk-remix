@@ -3,7 +3,9 @@
 *Companion to `DusklightAtmosphere.md`, which covers the rendering. This one
 covers how any of it gets driven while the game runs.*
 
-Last updated 2026-07-28.
+*For material and colour questions, neither of these is the right document —
+see `aurora-ao/docs/dx9/remix-material-interface.md` and, for reading a log,
+`aurora-ao/docs/dx9/material-report.md`.*
 
 ---
 
@@ -152,6 +154,35 @@ here.
 - `rtx.volumetrics.enableAtmosphere` — forced on outdoors
 - `rtx.skyBrightness` — scales the probe the generated dome replaces
 - `rtx.fogColorScale` / `rtx.maxFogDistance` — legacy depth fog, skipped whenever volumetrics run
+
+**Materials.** A third Remix-owned section, above the game's settings and
+working whether or not the game is connected, because material translation is
+this runtime's half of the wire and does not go through the bridge.
+
+| Control | Option | What it decides |
+| :-- | :-- | :-- |
+| Reproduce Two-Colour Ramps | `rtx.dusklight.rampMaterials` | whether `lerp(colourA, colourB, texture)` — this game's dominant material shape — is evaluated exactly (default) or approximated by one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints |
+| Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether self-lit surfaces emit. The rule needs no tuning: a surface qualifies when its GX colour program never reads the lit channel, it has a colour of its own (authored in GX constants, not from the vertex stream and not a bare texture pass-through), and that colour reads as a glow. Over one measured Goron Mines session that is 6 materials of 77 — every lava and fire surface, nothing else |
+| Emitted Colour | `…emissive.colorSource` | what a glowing surface glows. **Reconstructed Albedo (default)** is the two-colour ramp, so the texture drives the colour and neither overpowers the other — on the lava, `lerp(FF0000, FFFE63, texture)`. Albedo Texture pushes the texture through the material's single D3D9 op, which on the lava is an ADD against red: red pinned, bright end washed to white. Presented Colour is one flat colour |
+| Emissive Intensity | `…emissive.intensity` | the only dial worth touching — scales the surface's own colour into radiance |
+| Saturation / Brightness Counts As Glow | `…emissive.glowChroma` / `glowLuma` | **or**'d, not and'd: an authored glow is a strong colour or it is near-white-hot, while a muted mid-tone is a surface colour. This is what stopped the brown false positives. Should not need touching |
+| Log Emissive Candidates | `…emissive.log` | one bounded line per candidate, accepted **or** rejected. Colourless rejections are counted rather than enumerated, and moving any control on this page re-reports every candidate |
+| Log Material Translation Report | `rtx.dusklight.matrep` | one line per distinct reconstructed material |
+
+The rule is deliberately not tunable, and that took three revisions to get to.
+No single GX fact identifies an emitter — "GX lighting is off" is true of 45 of
+77 materials in one measured scene and *false* for the Goron Mines lava. What
+does identify one is a **conjunction**: the colour program never reads the lit
+channel (so the surface takes no light in fact, whatever the channel flag says),
+it has a colour of its own rather than being a texture pass-through (which is
+what every EFB copy and full-screen quad is), and that colour reads as a glow.
+
+Two earlier revisions cut on a weighted score instead. Both missed the lava,
+which scores 0.00 on all three of the signals that score is built from. The
+score is still logged; nothing decides on it.
+
+`aurora-ao/docs/dx9/remix-material-interface.md` §9 for the rule and the
+measurement, §10 for the two-colour ramp.
 
 Then the game's own settings, in collapsible sections: Bridge, Sun / Moon
 Light, Local Point Lights, Geometry, Game, Bloom, Ambient Grade, Atmosphere.
@@ -343,6 +374,8 @@ conversion, not a warning to be silenced.
 | Time of day (called from the Warp tab, and from its early-return path too, so the clock survives the destination list lagging) | `showDusklightTimeOfDay` in the same file |
 | Game-owned settings, hosted in Remix | `src/dxvk/rtx_render/rtx_dusklight_game.h` |
 | Game-pushed readouts | `src/dxvk/rtx_render/rtx_dusklight_env.h` |
+| Self-illumination: options, thresholds, candidate log — and the two-colour ramp, which shares the same `D3DMATERIAL9` transport | `src/dxvk/rtx_render/rtx_dusklight_emissive.h`, applied at one site in `rtx_instance_manager.cpp` |
+| Material translation report, Remix half | `src/d3d9/d3d9_rtx_matrep.h` |
 | Bloom's Dusklight-mode settings, split out for reuse | `src/dxvk/rtx_render/rtx_bloom.{h,cpp}` (`showDusklightImguiSettings`) |
 | Game side of the whole wire | `dusklight-ao/src/dusk/remix_bridge.cpp` |
 | Destination table | `dusklight-ao/src/dusk/map_loader_definitions.h` |
@@ -366,6 +399,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
+| Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the lava scores **0.00**, so no threshold could ever reach it. Rev 4 therefore drops the score from the decision entirely and cuts on three measured facts instead — the section now has no threshold in it, and only Emissive Intensity is expected to be touched. **CI-green, not run in game.** No protocol change: nothing in it is read by the game |
 
 Both of the two designs this document argues for at length are now confirmed in
 practice: the **commit counter** (a preset pressed twice works the second time)
@@ -392,10 +426,10 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
   because of the NaN guards landed alongside. Recorded as unresolved rather than
   dressed up: if they regress, re-check both arrays first.
 
-  Two settings came out of the visit and **neither is the default** —
-  `localLightIntensity` **19** and `localLightRadius` **10**. The 19 is the
-  derived reading of the game's attenuation curve, not a taste value. See
-  `dusklight-ao/docs/kankyo-remix.md` open issue 3.
+  Two settings came out of the visit — `localLightIntensity` **19** and
+  `localLightRadius` **10**. Neither was the default at the time; **both are the
+  defaults now.** The 19 is the derived reading of the game's attenuation curve,
+  not a taste value. See `dusklight-ao/docs/remix-open-issues.md` open issue 3.
 
   Loose end: `found 5` but `drawn 4`. One light is being rejected on the way
   through, and "harmless" is currently an assumption.
@@ -416,20 +450,25 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
   for every remaining draw in the frame (`:576-591`), so those draws never enter
   the raytraced scene and **never reach texture categorization**.
 
-  That is the "not in the categorization screen" symptom, and it makes the
-  natural fix unavailable: `rtx.uiTextures` is consulted *inside*
+  That is the "not in the categorization screen" symptom, and it puts the
+  *configuration* fix out of reach: `rtx.uiTextures` is consulted *inside*
   `isRenderingUI()`, which only runs before injection — so a draw cannot be
-  tagged UI precisely when it needs to be. Same shape of trap as the vrbox sky.
+  tagged UI precisely when it needs to be. Not the same trap as the vrbox sky,
+  which turned out to be taggable after all by geometry hash
+  (`DusklightAtmosphere.md` §14.9); here the draw never reaches categorization
+  at all. And it is a limit of the code as written, not a ceiling: the injection
+  boundary is in **this** repo, so moving it is on the table alongside any
+  game-side change.
 
   The game draws the targeting cursor (a real perspective-projected J3D model,
   not UI) at `m_Do_graphic.cpp:2689`, the 2D game particles at `:2714`, and the
   letterbox bars — an ortho, z-write-off draw — at `:2717`. Since the bars come
   *after* both, they cannot be the trigger that rescues them; something else
   correlated with letterbox must inject earlier. Full analysis, ruled-out
-  candidates and the three settling experiments are in `kankyo-remix.md`
-  open issue 6.
+  candidates and the three settling experiments are in
+  `dusklight-ao/docs/remix-open-issues.md` open issue 6.
 - Controls tab landed but untested in game.
 
 The full step-by-step for all of the above, with baseline `rtx.conf` and
-failure tables, is in `dusklight-ao/docs/kankyo-remix.md` §"Test session
-playbook". It is kept there rather than here because it spans all three repos.
+failure tables, is in `dusklight-ao/docs/remix-test-playbook.md`. It is kept
+there rather than here because it spans all three repos.

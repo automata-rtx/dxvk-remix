@@ -2063,13 +2063,12 @@ namespace dxvk {
       }
     }
 
-    // The fog state above is whichever one the draw stream happened to present first. That is fine for a game with one
-    // global fog, but Dusklight sets fog per object, so which of a room's many states wins is decided by submission
-    // order and can change from frame to frame. When its bridge is running it reports the room's actual environment
-    // fog, which is the value every one of those per object states was derived from.
+    // The fog state above is whichever one the draw stream presented first. Dusklight sets fog per object, so that
+    // pick is decided by submission order and can change frame to frame; the bridge reports the room's actual
+    // environment fog, which every per-object state was derived from. See documentation/DusklightAtmosphere.md.
     //
-    // Placed here because it dominates every writer of the fog state and precedes all three of its readers - the
-    // volumetric arguments, the composite arguments, and the end of frame hash check.
+    // Placed here deliberately: it dominates every writer of the fog state and precedes all three of its readers -
+    // the volumetric arguments, the composite arguments, and the end of frame hash check.
     m_device->getCommon()->metaDusklightAtmosphere().applyFogOverride(
       m_fog, m_fogStartInMediumMaterialIndex_inCache != kInvalidMaterialCacheIndex);
 
@@ -2439,7 +2438,16 @@ namespace dxvk {
       static MaterialData defaultMaterialData(LegacyMaterialData::createDefault());
       auto& materialData = material != nullptr ? *material : defaultMaterialData;
 
-      RtInstance* instance = processDrawCallState(ctx, state.drawCall, materialData, *replacementInstance, existingInstance, pParticles);
+      // An API-submitted asset is replaceable like any other. External draws
+      // supply their material directly and so never reach determineMaterialData,
+      // where the legacy path does this lookup - without it they bypass the
+      // replacer entirely. The other half is content-derived mesh hashes in
+      // rtx_remix_api.cpp; both are needed for capture-then-replace to work.
+      const MaterialData* pReplacement =
+        m_pReplacer->getReplacementMaterial(state.drawCall.getMaterialData().getHash());
+      const MaterialData& renderMaterialData = pReplacement != nullptr ? *pReplacement : materialData;
+
+      RtInstance* instance = processDrawCallState(ctx, state.drawCall, renderMaterialData, *replacementInstance, existingInstance, pParticles);
 
       if (instance != nullptr) {
         if (replacementInstance->root.getUntyped() == nullptr) {

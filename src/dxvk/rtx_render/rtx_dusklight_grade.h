@@ -32,16 +32,17 @@ namespace dxvk {
 
   // Ambient mood grade driven by the game's environment feed.
   //
-  // Fixed function era games carried a per area, per time of day, per weather ambient colour
-  // that every surface was tinted by during shading. Path tracing replaces that lighting
-  // wholesale, so the mood it carried disappears even though the game still computes it and
-  // still pushes it to us (rtx.dusklight.env.actorAmbient / bgAmbient). This pass puts the
-  // chromatic part of it back as a single multiply over the linear HDR image.
+  // The game still computes and pushes its per area, per time of day, per weather ambient colour
+  // (rtx.dusklight.env.actorAmbient / bgAmbient), but path tracing replaces the shading that used
+  // to apply it, so the mood it carried disappears. This puts the chromatic part back as one
+  // multiply over the linear HDR image. Design: dusklight-ao/docs/kankyo-remix.md.
   //
-  // It runs immediately before bloom, which is where the ambient sat in the original frame
-  // too: the ambient was applied during shading, and the bloom and its overlays came after.
-  // Being its own pass rather than another step inside the bloom keeps it working - and
-  // failing - independently of whether bloom is enabled at all.
+  // Ordering: immediately before bloom, which is where the ambient sat in the original frame too.
+  // Its own pass rather than a step inside the bloom, so it works - and fails - independently of
+  // whether bloom is enabled.
+  //
+  // Built and CI-green, never run in game. DusklightAtmosphere.md §12 asks that it stay that way
+  // until the sky/fog defect is settled: grading against a wrongly lit sky is a moving target.
   class DxvkDusklightGrade: public RtxPass {
 
   public:
