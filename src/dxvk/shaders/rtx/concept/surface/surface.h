@@ -522,6 +522,15 @@ struct Surface
     get { return data15.w; }
     set { data15.w = newValue; }
   }
+
+  // Dusklight self-illumination: emit the reconstructed albedo rather than a
+  // constant, because a surface glows the colour it appears. See
+  // aurora-ao/docs/dx9/remix-material-interface.md §9.
+  property bool emissiveFollowsAlbedo
+  {
+    get { return packedFlagGet(data13.z, 1 << 19); }
+    set { data13.z = newValue ? packedFlagSet(data13.z, 1 << 19) : packedFlagUnset(data13.z, 1 << 19); }
+  }
 };
 
 // Note: Minimal version of typical Surface Interaction for transmission across passes.

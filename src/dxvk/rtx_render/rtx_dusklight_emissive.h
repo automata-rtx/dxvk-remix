@@ -74,11 +74,6 @@ namespace dxvk {
                "Reject an emissive candidate whose presented colour is less saturated than this (0..1).\n"
                "White and grey candidates are overwhelmingly UI, screen copies and plain geometry, not emitters. "
                "Raise it to be stricter; set it to 0 to accept white emitters.");
-    RTX_OPTION("rtx.dusklight.emissive", bool, useTextureColor, false,
-               "Take the emitted colour from the albedo texture instead of the colour aurora evaluated.\n"
-               "Off by default because this game keeps a material's colour in a GX constant and its textures are "
-               "usually intensity-only masks - so a textured glow would come out white. Turn it on for a material "
-               "whose texture really is the colour, at the cost of a flat glow becoming a textured one.");
     RTX_OPTION("rtx.dusklight.emissive", bool, log, true,
                "Log one line per distinct emissive candidate, accepted or rejected, with the numbers that decided it.\n"
                "Bounded; see the dusklight.emis.trunc line. This is how a test session answers which surfaces the "
@@ -159,81 +154,11 @@ namespace dxvk {
           && chromaOf(color) >= DusklightEmissive::minChroma();
     }
 
-    // emissiveColorConstant does NOT reach the shader untouched: the fixed
-    // function block in opaque_surface_material_interaction.slangh runs the
-    // emissive colour through the *albedo's* texture op, substituting it for
-    // the texture sample. So setting the constant to the colour we want yields
-    // op(colour, tFactor) on screen, not colour.
-    //
-    // Rather than fight that, invert it. The ops aurora actually emits are
-    // ADD(TEXTURE, TFACTOR), MODULATE(TEXTURE, TFACTOR) and
-    // SELECTARG1(TEXTURE); anything else is left alone and reported, because a
-    // silently wrong glow colour is exactly the failure this project keeps
-    // paying for. Returns false when the op cannot be inverted.
-    inline bool preimage(const LegacyMaterialData& mat, const Vector3& desired, Vector3& out) {
-      const bool arg1IsTexture = mat.textureColorArg1Source == RtTextureArgSource::Texture;
-      const bool arg2IsTFactor = mat.textureColorArg2Source == RtTextureArgSource::TFactor;
-
-      // tFactor is a D3DCOLOR: 0xAARRGGBB.
-      const Vector3 tFactor(float((mat.tFactor >> 16) & 0xFF) / 255.0f,
-                            float((mat.tFactor >> 8) & 0xFF) / 255.0f,
-                            float(mat.tFactor & 0xFF) / 255.0f);
-
-      // isTextureFactorBlend applies one more multiply by tFactor afterwards.
-      Vector3 target = desired;
-      if (mat.isTextureFactorBlend) {
-        for (uint32_t i = 0; i < 3; ++i) {
-          if (tFactor[i] <= 0.0f) {
-            return false;
-          }
-          target[i] /= tFactor[i];
-        }
-      }
-
-      switch (mat.textureColorOperation) {
-      case DxvkRtTextureOperation::SelectArg1:
-        if (!arg1IsTexture) {
-          return false;
-        }
-        out = target;
-        return true;
-      case DxvkRtTextureOperation::Add:
-        if (!arg1IsTexture || !arg2IsTFactor) {
-          return false;
-        }
-        for (uint32_t i = 0; i < 3; ++i) {
-          out[i] = std::max(0.0f, target[i] - tFactor[i]);
-        }
-        return true;
-      case DxvkRtTextureOperation::Modulate:
-      case DxvkRtTextureOperation::Modulate2x:
-      case DxvkRtTextureOperation::Force_Modulate2x:
-      case DxvkRtTextureOperation::Modulate4x: {
-        if (!arg1IsTexture || !arg2IsTFactor) {
-          return false;
-        }
-        const float scale = mat.textureColorOperation == DxvkRtTextureOperation::Modulate4x ? 4.0f
-                          : mat.textureColorOperation == DxvkRtTextureOperation::Modulate    ? 1.0f
-                                                                                             : 2.0f;
-        for (uint32_t i = 0; i < 3; ++i) {
-          const float d = tFactor[i] * scale;
-          if (d <= 0.0f) {
-            return false;
-          }
-          out[i] = target[i] / d;
-        }
-        return true;
-      }
-      default:
-        return false;
-      }
-    }
-
     // Bounded, one line per distinct material hash, accepted or not. Rejections
     // are logged too: an emitter that failed by 0.02 of chroma is a threshold
     // to move, and that is invisible if only acceptances are printed.
     inline void logOnce(XXH64_hash_t materialHash, const Vector3& color, bool accepted,
-                        XXH64_hash_t textureHash, float score, bool invertible) {
+                        XXH64_hash_t textureHash, float score) {
       if (!DusklightEmissive::log()) {
         return;
       }
@@ -263,9 +188,8 @@ namespace dxvk {
         " threshold=", DusklightEmissive::threshold(),
         " minLuma=", DusklightEmissive::minLuma(),
         " minChroma=", DusklightEmissive::minChroma(),
-        " invertible=", invertible ? 1 : 0,
         " verdict=", accepted ? "emissive" : "rejected",
-        " applied=", (accepted && invertible && DusklightEmissive::enable()) ? 1 : 0));
+        " applied=", (accepted && DusklightEmissive::enable()) ? 1 : 0));
     }
 
   } // namespace dusklightEmissive

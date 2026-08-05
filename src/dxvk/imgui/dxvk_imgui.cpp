@@ -2992,7 +2992,6 @@ namespace dxvk {
       RemixGui::DragFloat("Emissive Intensity", &DusklightEmissive::intensityObject(), 0.05f, 0.f, 200.f);
       RemixGui::DragFloat("Minimum Brightness", &DusklightEmissive::minLumaObject(), 0.01f, 0.f, 1.f);
       RemixGui::DragFloat("Minimum Saturation", &DusklightEmissive::minChromaObject(), 0.01f, 0.f, 1.f);
-      RemixGui::Checkbox("Emit The Texture, Not The Material Colour", &DusklightEmissive::useTextureColorObject());
       RemixGui::Checkbox("Log Emissive Candidates", &DusklightEmissive::logObject());
       ImGui::TextWrapped(
         "Evidence is scored 0.50 for GX lighting disabled, 0.25 for a colour authored in a register "

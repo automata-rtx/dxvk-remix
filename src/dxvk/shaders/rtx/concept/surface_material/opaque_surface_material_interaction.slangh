@@ -736,12 +736,24 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
       }
     }
 
-    // Fixed function texture stage setting (emissive)
-    chooseTextureArgument(textureArg1, surface.textureColorArg1Source, emissiveColor, surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
-    chooseTextureArgument(textureArg2, surface.textureColorArg2Source, emissiveColor, surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
-    chooseTextureOperationColor(emissiveColor, surface.textureColorOperation, textureArg1, textureArg2);
-    if (surface.isTextureFactorBlend) {
-      emissiveColor *= tFactor.rgb;
+    if (surface.emissiveFollowsAlbedo)
+    {
+      // Dusklight: a self-lit surface glows the colour it appears. GX has no
+      // emissive term to disagree with the albedo, so reconstructing one
+      // separately only invited it to be wrong - a flat constant washed the
+      // lava to one hot colour and lost its crust entirely.
+      // aurora-ao/docs/dx9/remix-material-interface.md §9.
+      emissiveColor = albedo;
+    }
+    else
+    {
+      // Fixed function texture stage setting (emissive)
+      chooseTextureArgument(textureArg1, surface.textureColorArg1Source, emissiveColor, surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
+      chooseTextureArgument(textureArg2, surface.textureColorArg2Source, emissiveColor, surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
+      chooseTextureOperationColor(emissiveColor, surface.textureColorOperation, textureArg1, textureArg2);
+      if (surface.isTextureFactorBlend) {
+        emissiveColor *= tFactor.rgb;
+      }
     }
     
     // Adjust opacity via texture operations.

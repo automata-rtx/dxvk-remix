@@ -1118,35 +1118,26 @@ namespace dxvk {
             tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(RtxOptions::emissiveBlendOverrideEmissiveIntensity());
             tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
           } else if (dusklightEmissive::isCandidate(drawCall.getMaterialData())) {
-            // Dusklight: GX has no emissive term and no single GX fact
-            // identifies an emitter (the Goron Mines lava is lit=1), so aurora
-            // ships an evidence score and this cuts at a live overlay
-            // threshold. rtx_dusklight_emissive.h holds the cut;
-            // aurora-ao/docs/dx9/remix-material-interface.md §9 holds the why.
+            // Dusklight: aurora scored what GX says about this surface. Where to
+            // cut is a judgement, so it lives in rtx_dusklight_emissive.h - one
+            // place, dialable live from the F1 overlay.
             const LegacyMaterialData& legacy = drawCall.getMaterialData();
             const Vector3 emissiveColor = dusklightEmissive::candidateColor(legacy);
             const bool accepted = dusklightEmissive::accepts(legacy, emissiveColor);
 
-            Vector3 constant(0.0f);
-            const bool invertible =
-              DusklightEmissive::useTextureColor() || dusklightEmissive::preimage(legacy, emissiveColor, constant);
-
             dusklightEmissive::logOnce(currentInstance.m_materialDataHash, emissiveColor, accepted,
                                        legacy.getColorTexture().getImageHash(),
-                                       dusklightEmissive::evidenceScore(legacy), invertible);
+                                       dusklightEmissive::evidenceScore(legacy));
 
-            if (accepted && invertible && DusklightEmissive::enable()) {
+            if (accepted && DusklightEmissive::enable()) {
               tmpMaterialData = *materialData;
               materialData = &tmpMaterialData;
               tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
               tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(DusklightEmissive::intensity());
-              if (DusklightEmissive::useTextureColor()) {
-                tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
-              } else {
-                // Pre-image, not the colour itself: the shader re-applies the
-                // albedo's texture op to whatever is set here. See preimage().
-                tmpMaterialData.getOpaqueMaterialData().setEmissiveColorConstant(constant);
-              }
+              // The shader takes the reconstructed albedo, so no colour is set
+              // here: the surface glows the colour it appears. Tested 2026-08-04
+              // - a constant made the lava one flat hot colour with no crust.
+              currentInstance.surface.emissiveFollowsAlbedo = true;
               // Gates NEECacheUtils.shouldSampleObject (nee_cache_light.slangh),
               // so the emitter is sampled as a light rather than found by chance.
               // That and one debug view are its only readers - post-FX's own

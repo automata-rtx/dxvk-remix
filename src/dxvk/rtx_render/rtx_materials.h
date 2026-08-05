@@ -278,6 +278,7 @@ struct RtSurface {
     // Dusklight two-colour ramp, see rampOtherColor.
     textureFlags |= isRampMaterial ? (1 << 15) : 0;
     textureFlags |= rampTFactorIsHigh ? (1 << 16) : 0;
+    textureFlags |= emissiveFollowsAlbedo ? (1 << 19) : 0;
 
     static_assert(static_cast<uint32_t>(TexGenMode::Count) <= 4);
     textureFlags |= ((static_cast<uint32_t>(texgenMode) & 0x3) << 17);
@@ -361,6 +362,9 @@ struct RtSurface {
   uint32_t rampOtherColor = 0;
   bool isRampMaterial = false;
   bool rampTFactorIsHigh = false;  // tFactor holds the texture-white endpoint
+  // Dusklight self-illumination: the surface glows the colour it appears, so
+  // the shader takes the reconstructed albedo rather than a constant. §9.
+  bool emissiveFollowsAlbedo = false;
   TexGenMode texgenMode = TexGenMode::None;
   std::optional<RtEyeParams> eyeParams = {};
 
