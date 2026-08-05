@@ -2977,9 +2977,9 @@ namespace dxvk {
       ImGui::Indent();
       ImGui::TextWrapped(
         "GameCube GX has no emissive term, and no single thing it records identifies an emitter - "
-        "the Goron Mines lava has GX lighting switched on, like an ordinary wall. So the game "
-        "backend scores the evidence it does have per draw, and Evidence Needed decides where to "
-        "cut. Lower it when something that clearly glows in the original does not glow here.");
+        "the Goron Mines lava has GX lighting switched on, like an ordinary wall. What does identify "
+        "one is a conjunction of three facts, and the game backend measures all three per draw, so "
+        "there is no cut to find and nothing below needs tuning.");
       RemixGui::Checkbox("Reproduce Two-Colour Ramps", &DusklightRamp::rampMaterialsObject());
       ImGui::TextWrapped(
         "Most of this game's materials slide a texture between two authored colours - that is how one rupee "

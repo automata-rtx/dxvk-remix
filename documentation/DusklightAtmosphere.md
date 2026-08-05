@@ -678,8 +678,8 @@ merely masking it.
 untested until the defect below is fixed, because grading on a wrongly-lit sky
 is tuning against a moving target — and everything built since 2026-07-29 and
 never run: the `skyFogMode` treatments below and the painted moon (§13.1). The
-2026-08-04 material work (two-colour ramps, per-draw vertex colour, the emissive
-evidence score) is likewise CI-green and unrun; it is tracked in
+2026-08-04/05 material work (two-colour ramps, per-draw vertex colour, and the
+self-illumination rule) is likewise CI-green and unrun; it is tracked in
 `aurora-ao/docs/dx9/remix-material-interface.md` §9–§10, not here.
 
 `disableFrustumCulling` **is** tested: it works and it visibly helps with

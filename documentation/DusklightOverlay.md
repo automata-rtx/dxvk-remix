@@ -399,7 +399,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
-| Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the main lava scores **0.00**, so no threshold could reach it, and rev 2 had meanwhile removed the one control the owner had found useful. Emitted Colour, Require Authored Colour and a default threshold of 0 are the response — **CI-green, not run in game**. No protocol change: nothing in it is read by the game |
+| Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the lava scores **0.00**, so no threshold could ever reach it. Rev 4 therefore drops the score from the decision entirely and cuts on three measured facts instead — the section now has no threshold in it, and only Emissive Intensity is expected to be touched. **CI-green, not run in game.** No protocol change: nothing in it is read by the game |
 
 Both of the two designs this document argues for at length are now confirmed in
 practice: the **commit counter** (a preset pressed twice works the second time)
