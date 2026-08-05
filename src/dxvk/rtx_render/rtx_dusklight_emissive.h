@@ -34,6 +34,10 @@
 // the one surface this feature exists for. Hence a score and a threshold rather
 // than a predicate, with the threshold live in the F1 overlay.
 //
+// And the score is weaker still than that: the lava pool scores **0.00**, in
+// two independent runs. So the threshold has to reach zero, and at zero the
+// colour gates below plus `authoredColor` are the whole rule. See §9.
+//
 // Design, the measurements, and what to do when the rule over- or under-fires:
 //   aurora-ao/docs/dx9/remix-material-interface.md §9
 
@@ -47,6 +51,23 @@
 
 namespace dxvk {
 
+  // Where an accepted emitter's colour comes from. GX has no emissive term, so
+  // every one of these is a reading of the same data rather than a translation
+  // of something the console recorded - which is exactly why it is a choice and
+  // not a constant. The names match the overlay's combo.
+  enum class DusklightEmissiveSource : int {
+    // The albedo the shader has just reconstructed, ramp included. A surface
+    // glows the colour it appears.
+    ReconstructedAlbedo = 0,
+    // The albedo texture, run through the material's own texture op. This is
+    // what "Emit The Texture" did on 2026-08-04 and what the owner reported as
+    // the right look for both the lava and the heart.
+    AlbedoTexture = 1,
+    // The flat colour aurora evaluated, used verbatim. Cheapest and steadiest;
+    // reported as "an almost solid red" on the lava, so it is not the default.
+    PresentedColor = 2,
+  };
+
   struct DusklightEmissive {
     RTX_OPTION("rtx.dusklight.emissive", bool, enable, true,
                "Let surfaces the GameCube material evidence marks as self-illuminated actually emit light.\n"
@@ -59,13 +80,26 @@ namespace dxvk {
                "The colour already carries the game's idea of how bright the surface looks, so this is a flat "
                "scale rather than a per-material value. 2.0 matches what Remix already uses to make a world space "
                "UI surface read as self-lit; raise it if a big emitter glows but does not light the room around it.");
-    RTX_OPTION("rtx.dusklight.emissive", float, threshold, 0.70f,
+    RTX_OPTION("rtx.dusklight.emissive", DusklightEmissiveSource, colorSource,
+               DusklightEmissiveSource::AlbedoTexture,
+               "Where an accepted emitter takes the colour it glows.\n"
+               "0 Reconstructed Albedo - the colour the surface appears, two-colour ramp included.\n"
+               "1 Albedo Texture - the texture through the material's own op; the most detail, and what looked "
+               "right on the Goron Mines lava and the heart pickup on 2026-08-04.\n"
+               "2 Presented Colour - the flat colour the game backend evaluated; steadiest, but a molten surface "
+               "loses its crust and reads as one hot colour.");
+    RTX_OPTION("rtx.dusklight.emissive", float, threshold, 0.0f,
                "How much GX evidence a surface needs before it is treated as an emitter (0..1).\n"
                "The game backend scores three facts: GX lighting disabled (0.50), colour authored in a register "
                "rather than per-vertex (0.25), and a TEV stage scaled past what the console could display (0.25). "
-               "0.70 admits anything unlit plus one other fact. Drop to 0.20 to admit the over-range materials on "
-               "their own - that is the setting to try when something that clearly glows in the original does not "
-               "here. The dusklight.emis log prints every surface's score, so this can be aimed rather than guessed.");
+               "The Goron Mines lava scores 0.00 on all three, so the default is 0 and the colour gates below do "
+               "the work - raise it toward 0.50 if too much of the world glows. The dusklight.emis log prints "
+               "every surface's score, so this can be aimed rather than guessed.");
+    RTX_OPTION("rtx.dusklight.emissive", bool, requireAuthoredColor, true,
+               "Only let a surface glow when its colour came entirely from GameCube TEV constants.\n"
+               "A colour mixed from the vertex stream is this game's baked room lighting, never an emitter, and "
+               "excluding it is what makes a threshold of 0 usable at all. Turn it off only to check whether it "
+               "is what is holding a surface back - the dusklight.emis log prints authored= per candidate.");
     RTX_OPTION("rtx.dusklight.emissive", float, minLuma, 0.25f,
                "Reject an emissive candidate whose presented colour is darker than this (0..1).\n"
                "Keeps dark interior geometry that scored above the threshold from glowing. Lower it if something "
@@ -76,11 +110,13 @@ namespace dxvk {
                "Raise it to be stricter; set it to 0 to accept white emitters.");
     RTX_OPTION("rtx.dusklight.emissive", bool, log, true,
                "Log one line per distinct emissive candidate, accepted or rejected, with the numbers that decided it.\n"
-               "Bounded; see the dusklight.emis.trunc line. This is how a test session answers which surfaces the "
-               "rule caught without anyone having to describe what they saw.");
+               "Candidates rejected on colour alone are counted rather than enumerated - see the dusklight.emis.grey "
+               "line - because on 2026-08-04 ninety of them spent the whole cap before the player reached the lava. "
+               "Moving any control on this page makes every candidate report again, so what a setting did is "
+               "recoverable from the log instead of having to be described.");
 
-    // Small on purpose: this reports distinct *candidates*, and a scene with
-    // hundreds of them means the rule is wrong, not that the cap is too low.
+    // Covers the candidates a threshold could plausibly flip: colourless ones
+    // are counted separately and do not consume it.
     static constexpr size_t kMaxLogged = 96;
   };
 
@@ -130,13 +166,35 @@ namespace dxvk {
       return mat.getLegacyMaterial().Emissive.a;
     }
 
+    // Aurora evaluated a presentable colour for this draw. Zero for HUD
+    // (orthographic) and unevaluable draws, so those never become candidates
+    // however low the threshold goes.
+    //
+    // The `score > 0` fallback is for an older aurora against this fork: before
+    // 2026-08-05 the score was the only marker, and without the fallback a
+    // mismatched pair would silently emit nothing at all.
     inline bool isCandidate(const LegacyMaterialData& mat) {
-      return evidenceScore(mat) > 0.0f;
+      return mat.getLegacyMaterial().Specular.g >= 0.5f || evidenceScore(mat) > 0.0f;
+    }
+
+    // The presented colour came entirely from TEV constants. See
+    // requireAuthoredColor - this is the gate that makes threshold 0 usable.
+    inline bool authoredColor(const LegacyMaterialData& mat) {
+      return mat.getLegacyMaterial().Specular.b >= 0.5f;
     }
 
     inline Vector3 candidateColor(const LegacyMaterialData& mat) {
       const D3DCOLORVALUE& e = mat.getLegacyMaterial().Emissive;
       return Vector3(e.r, e.g, e.b);
+    }
+
+    inline const char* sourceName(DusklightEmissiveSource s) {
+      switch (s) {
+      case DusklightEmissiveSource::ReconstructedAlbedo: return "albedo";
+      case DusklightEmissiveSource::AlbedoTexture:       return "texture";
+      case DusklightEmissiveSource::PresentedColor:      return "constant";
+      default:                                           return "?";
+      }
     }
 
     inline float lumaOf(const Vector3& c) {
@@ -150,6 +208,7 @@ namespace dxvk {
     // The judgement call, isolated so there is exactly one place to argue with.
     inline bool accepts(const LegacyMaterialData& mat, const Vector3& color) {
       return evidenceScore(mat) >= DusklightEmissive::threshold()
+          && (!DusklightEmissive::requireAuthoredColor() || authoredColor(mat))
           && lumaOf(color) >= DusklightEmissive::minLuma()
           && chromaOf(color) >= DusklightEmissive::minChroma();
     }
@@ -157,19 +216,73 @@ namespace dxvk {
     // Bounded, one line per distinct material hash, accepted or not. Rejections
     // are logged too: an emitter that failed by 0.02 of chroma is a threshold
     // to move, and that is invisible if only acceptances are printed.
+    //
+    // Two things this got wrong on 2026-08-04, both of which cost that session's
+    // evidence and are fixed here:
+    //
+    //  - the 96-line cap was spent on 90 chroma-zero candidates before the
+    //    player reached the lava, so the one question the log existed to answer
+    //    went unanswered. Colourless candidates are counted now, not
+    //    enumerated, and they no longer consume the cap.
+    //  - once-per-material meant dialling a threshold mid-session produced no
+    //    new lines, so what a setting actually did was unrecoverable. The
+    //    memory is cleared whenever a setting that decides a verdict changes.
     inline void logOnce(XXH64_hash_t materialHash, const Vector3& color, bool accepted,
-                        XXH64_hash_t textureHash, float score) {
+                        XXH64_hash_t textureHash, float score, const LegacyMaterialData& mat) {
       if (!DusklightEmissive::log()) {
         return;
       }
       // Same single-writer assumption as matrep: the instance manager updates
       // instances on one thread.
       static std::unordered_set<XXH64_hash_t> s_seen;
+      static size_t s_logged = 0;
       static bool s_truncated = false;
-      if (s_seen.count(materialHash) != 0) {
+      static size_t s_colourless = 0;
+      static size_t s_colourlessNextReport = 8;
+
+      // Re-report everything when the rule itself moves, so a slider drag is
+      // followed by evidence rather than silence.
+      static XXH64_hash_t s_settings = 0;
+      const struct {
+        float threshold;
+        float minLuma;
+        float minChroma;
+        uint32_t requireAuthored;
+        uint32_t source;
+      } settings = { DusklightEmissive::threshold(), DusklightEmissive::minLuma(),
+                     DusklightEmissive::minChroma(),
+                     DusklightEmissive::requireAuthoredColor() ? 1u : 0u,
+                     static_cast<uint32_t>(DusklightEmissive::colorSource()) };
+      const XXH64_hash_t settingsHash = XXH3_64bits(&settings, sizeof(settings));
+      if (settingsHash != s_settings) {
+        s_settings = settingsHash;
+        s_seen.clear();
+        s_logged = 0;
+        s_truncated = false;
+        s_colourless = 0;
+        s_colourlessNextReport = 8;
+      }
+
+      if (!s_seen.insert(materialHash).second) {
         return;
       }
-      if (s_seen.size() >= DusklightEmissive::kMaxLogged) {
+
+      // A candidate with no colour cannot be flipped by any threshold while
+      // minChroma is above zero, so enumerating it teaches nothing. Counted
+      // instead, and reported on each doubling - bounded at roughly log2(N)
+      // lines while still showing the final magnitude.
+      if (!accepted && chromaOf(color) < DusklightEmissive::minChroma()) {
+        ++s_colourless;
+        if (s_colourless >= s_colourlessNextReport) {
+          Logger::info(str::format("dusklight.emis.grey distinct=", s_colourless,
+                                   " minChroma=", DusklightEmissive::minChroma(),
+                                   " - candidates rejected on colour alone, not enumerated"));
+          s_colourlessNextReport *= 2;
+        }
+        return;
+      }
+
+      if (s_logged >= DusklightEmissive::kMaxLogged) {
         if (!s_truncated) {
           s_truncated = true;
           Logger::info(str::format("dusklight.emis.trunc cap=", DusklightEmissive::kMaxLogged,
@@ -177,7 +290,9 @@ namespace dxvk {
         }
         return;
       }
-      s_seen.insert(materialHash);
+      ++s_logged;
+
+      const D3DMATERIAL9& legacy = mat.getLegacyMaterial();
       Logger::info(str::format(
         "dusklight.emis mat=", std::hex, materialHash,
         " tex0hash=", textureHash, std::dec,
@@ -185,9 +300,18 @@ namespace dxvk {
         " score=", score,
         " luma=", lumaOf(color),
         " chroma=", chromaOf(color),
+        " authored=", authoredColor(mat) ? 1 : 0,
+        // The ramp decides what the reconstructed albedo is, so it decides what
+        // a ReconstructedAlbedo emitter glows. Printed here because pairing two
+        // logs by hand to answer "did the ramp reach this surface" is exactly
+        // the step that gets skipped.
+        " ramp=", legacy.Diffuse.a >= 0.5f ? 1 : 0,
+        " rampOther=", std::hex, dusklightRamp::otherColor(mat),
+        " tFactor=", mat.tFactor, std::dec,
         " threshold=", DusklightEmissive::threshold(),
         " minLuma=", DusklightEmissive::minLuma(),
         " minChroma=", DusklightEmissive::minChroma(),
+        " src=", sourceName(DusklightEmissive::colorSource()),
         " verdict=", accepted ? "emissive" : "rejected",
         " applied=", (accepted && DusklightEmissive::enable()) ? 1 : 0));
     }

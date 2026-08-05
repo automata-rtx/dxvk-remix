@@ -2988,17 +2988,30 @@ namespace dxvk {
         "the approximation it replaces.");
       RemixGui::Separator();
       RemixGui::Checkbox("Emissive Surfaces Enabled", &DusklightEmissive::enableObject());
-      RemixGui::DragFloat("Evidence Needed", &DusklightEmissive::thresholdObject(), 0.01f, 0.f, 1.f);
+      RemixGui::Combo("Emitted Colour", &DusklightEmissive::colorSourceObject(),
+                      "Reconstructed Albedo\0Albedo Texture\0Presented Colour\0");
+      ImGui::TextWrapped(
+        "GX has no emissive term, so what a glowing surface should glow is a reading, not a "
+        "translation - hence a choice. Albedo Texture keeps the most detail and is what looked right "
+        "on the lava and the heart pickup. Presented Colour is one flat colour, which loses a molten "
+        "surface's crust.");
       RemixGui::DragFloat("Emissive Intensity", &DusklightEmissive::intensityObject(), 0.05f, 0.f, 200.f);
+      RemixGui::DragFloat("Evidence Needed", &DusklightEmissive::thresholdObject(), 0.01f, 0.f, 1.f);
+      RemixGui::Checkbox("Require Authored Colour", &DusklightEmissive::requireAuthoredColorObject());
       RemixGui::DragFloat("Minimum Brightness", &DusklightEmissive::minLumaObject(), 0.01f, 0.f, 1.f);
       RemixGui::DragFloat("Minimum Saturation", &DusklightEmissive::minChromaObject(), 0.01f, 0.f, 1.f);
       RemixGui::Checkbox("Log Emissive Candidates", &DusklightEmissive::logObject());
       ImGui::TextWrapped(
         "Evidence is scored 0.50 for GX lighting disabled, 0.25 for a colour authored in a register "
         "rather than per-vertex, and 0.25 for a stage scaled past what the console could display. "
-        "0.20 admits that last one on its own. Every surface considered is written to the log as a "
-        "dusklight.emis line carrying its score, so this can be aimed rather than guessed - and a "
-        "session where nothing glows still says why.");
+        "The Goron Mines lava scores zero on all three - measured, twice - so Evidence Needed "
+        "defaults to 0 and the two colour gates decide instead. Raise it toward 0.50 if too much of "
+        "the world glows. Require Authored Colour keeps that safe: it excludes any surface whose "
+        "colour is mixed from the vertex stream, which in this game is baked room lighting.");
+      ImGui::TextWrapped(
+        "Every surface considered is written to the log as a dusklight.emis line carrying its score, "
+        "and moving any control on this page makes them all report again - so a session where "
+        "nothing glows still says why.");
       RemixGui::Separator();
       RemixGui::Checkbox("Log Material Translation Report", &DusklightMatrep::matrepObject());
       ImGui::TextWrapped(

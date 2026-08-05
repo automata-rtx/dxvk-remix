@@ -51,8 +51,10 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     // endpoint, Ambient.r which endpoint tFactor holds. See
     // rtx_dusklight_emissive.h. Two draws differing only in these are different
     // materials; without this they collapse onto whichever the cache saw first.
-    // Specular.r says whether the vertex colour stream is material colour.
-    // Power and the other Specular channels are not hashed - nothing reads them.
+    // Specular.r says whether the vertex colour stream is material colour,
+    // Specular.g whether aurora evaluated this material at all, Specular.b
+    // whether its colour came entirely from TEV constants.
+    // Power and Specular.a are not hashed - nothing reads them.
     float legacyEmissiveR;
     float legacyEmissiveG;
     float legacyEmissiveB;
@@ -63,6 +65,8 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     float legacyDiffuseA;
     float legacyAmbientR;
     float legacySpecularR;
+    float legacySpecularG;
+    float legacySpecularB;
     uint8_t alphaTestReferenceValue;
     uint8_t textureColorArg1Source;
     uint8_t textureColorArg2Source;
@@ -100,6 +104,8 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
   data.legacyDiffuseA = d3dMaterial.Diffuse.a;
   data.legacyAmbientR = d3dMaterial.Ambient.r;
   data.legacySpecularR = d3dMaterial.Specular.r;
+  data.legacySpecularG = d3dMaterial.Specular.g;
+  data.legacySpecularB = d3dMaterial.Specular.b;
   data.alphaTestReferenceValue = alphaTestReferenceValue;
   data.textureColorArg1Source = static_cast<uint8_t>(textureColorArg1Source);
   data.textureColorArg2Source = static_cast<uint8_t>(textureColorArg2Source);
@@ -135,6 +141,8 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
       &LegacyMaterialIdentityHashData::legacyDiffuseA,
       &LegacyMaterialIdentityHashData::legacyAmbientR,
       &LegacyMaterialIdentityHashData::legacySpecularR,
+      &LegacyMaterialIdentityHashData::legacySpecularG,
+      &LegacyMaterialIdentityHashData::legacySpecularB,
       &LegacyMaterialIdentityHashData::alphaTestReferenceValue,
       &LegacyMaterialIdentityHashData::textureColorArg1Source,
       &LegacyMaterialIdentityHashData::textureColorArg2Source,

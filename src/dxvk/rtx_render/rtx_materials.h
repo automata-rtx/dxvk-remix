@@ -278,11 +278,12 @@ struct RtSurface {
     // Dusklight two-colour ramp, see rampOtherColor.
     textureFlags |= isRampMaterial ? (1 << 15) : 0;
     textureFlags |= rampTFactorIsHigh ? (1 << 16) : 0;
-    textureFlags |= emissiveFollowsAlbedo ? (1 << 19) : 0;
+    // Dusklight self-illumination, see emissiveSource.
+    textureFlags |= ((static_cast<uint32_t>(emissiveSource) & emissiveSourceMask) << 19);
 
     static_assert(static_cast<uint32_t>(TexGenMode::Count) <= 4);
     textureFlags |= ((static_cast<uint32_t>(texgenMode) & 0x3) << 17);
-    // textureFlags bits 19-30 unused
+    // textureFlags bits 21-30 unused
 
     writeGPUHelper(data, offset, textureFlags);
 
@@ -362,9 +363,10 @@ struct RtSurface {
   uint32_t rampOtherColor = 0;
   bool isRampMaterial = false;
   bool rampTFactorIsHigh = false;  // tFactor holds the texture-white endpoint
-  // Dusklight self-illumination: the surface glows the colour it appears, so
-  // the shader takes the reconstructed albedo rather than a constant. §9.
-  bool emissiveFollowsAlbedo = false;
+  // Dusklight self-illumination: which reading of the material the shader
+  // emits. GX records no emissive term, so this is a choice - see
+  // DusklightEmissiveSource in rtx_dusklight_emissive.h and §9.
+  uint8_t emissiveSource = static_cast<uint8_t>(kEmissiveSourceTextureOp);
   TexGenMode texgenMode = TexGenMode::None;
   std::optional<RtEyeParams> eyeParams = {};
 

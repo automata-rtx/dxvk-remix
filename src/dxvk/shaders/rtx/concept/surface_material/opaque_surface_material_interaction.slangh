@@ -736,14 +736,21 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
       }
     }
 
-    if (surface.emissiveFollowsAlbedo)
+    // Dusklight: GX records no emissive term, so which of these an emitter
+    // glows is a choice made in the F1 overlay rather than a translation.
+    // kEmissiveSourceTextureOp is upstream's behaviour and the path every
+    // non-Dusklight surface still takes.
+    // aurora-ao/docs/dx9/remix-material-interface.md §9.
+    if (surface.emissiveSource == kEmissiveSourceAlbedo)
     {
-      // Dusklight: a self-lit surface glows the colour it appears. GX has no
-      // emissive term to disagree with the albedo, so reconstructing one
-      // separately only invited it to be wrong - a flat constant washed the
-      // lava to one hot colour and lost its crust entirely.
-      // aurora-ao/docs/dx9/remix-material-interface.md §9.
       emissiveColor = albedo;
+    }
+    else if (surface.emissiveSource == kEmissiveSourceConstant)
+    {
+      // Left exactly as set. The texture op below substitutes emissiveColor for
+      // the texture sample, so running a constant through it yields
+      // op(constant, tFactor) instead of the constant - the trap that used to
+      // need a pre-image inversion to work around.
     }
     else
     {

@@ -13,6 +13,7 @@
 #include "../util/util_math.h"
 #include "d3d9_rtx_utils.h"
 #include "d3d9_rtx_matrep.h"
+#include "../dxvk/rtx_render/rtx_dusklight_emissive.h"
 #include "d3d9_texture.h"
 #include "../dxvk/rtx_render/rtx_terrain_baker.h"
 
@@ -1176,6 +1177,9 @@ namespace dxvk {
           // what the shader evaluates. See rtx_dusklight_emissive.h.
           " ramp=", mat.getLegacyMaterial().Diffuse.a >= 0.5f ? 1 : 0,
           " rampTfHigh=", mat.getLegacyMaterial().Ambient.r >= 0.5f ? 1 : 0,
+          // The second endpoint, without which "ramp=1" says the lerp happened
+          // but not between what. Same 0x00RRGGBB packing the shader unpacks.
+          " rampOther=", std::hex, dusklightRamp::otherColor(mat), std::dec,
           " albedo=\"", matrep::albedoExpression(mat), "\""));
       }
     }

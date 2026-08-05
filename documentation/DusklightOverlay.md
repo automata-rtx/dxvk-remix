@@ -162,11 +162,13 @@ this runtime's half of the wire and does not go through the bridge.
 | Control | Option | What it decides |
 | :-- | :-- | :-- |
 | Reproduce Two-Colour Ramps | `rtx.dusklight.rampMaterials` | whether `lerp(colourA, colourB, texture)` — this game's dominant material shape — is evaluated exactly (default) or approximated by one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints |
-| Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether scored surfaces actually emit |
-| Evidence Needed | `…emissive.threshold` | how much GX evidence a surface needs. 0.70 conservative, 0.20 wide |
-| Emissive Intensity | `…emissive.intensity` | radiance multiplier on the surface's own colour |
+| Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether accepted surfaces actually emit |
+| Emitted Colour | `…emissive.colorSource` | what a glowing surface glows: the reconstructed albedo, the albedo texture through its own op (default), or the flat colour aurora evaluated. GX records no emissive term, so this is a reading rather than a translation — hence a control |
+| Emissive Intensity | `…emissive.intensity` | radiance multiplier on that colour |
+| Evidence Needed | `…emissive.threshold` | how much GX evidence a surface needs. **Defaults to 0**: the Goron Mines lava scores zero on all three signals, measured twice, so the gates below are the actual rule. Raise toward 0.50 if too much of the world glows |
+| Require Authored Colour | `…emissive.requireAuthoredColor` | exclude any surface whose colour is mixed from the vertex stream — baked room lighting in this game. This is what makes a threshold of 0 usable |
 | Minimum Brightness / Saturation | `…emissive.minLuma` / `minChroma` | the thresholds that separate lava from an unlit interior wall |
-| Log Emissive Candidates | `…emissive.log` | one bounded line per candidate, accepted **or** rejected |
+| Log Emissive Candidates | `…emissive.log` | one bounded line per candidate, accepted **or** rejected. Colourless rejections are counted rather than enumerated, and moving any control on this page re-reports every candidate |
 | Log Material Translation Report | `rtx.dusklight.matrep` | one line per distinct reconstructed material |
 
 These are here rather than hardcoded for one reason: **the cut is the part
@@ -396,7 +398,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
-| Materials section (self-illumination + matrep) | landed 2026-08-04, **run in game the same day**. The controls worked; nothing on screen was emissive for them to change, which is a fault in the rule rather than the tab — the rule required GX lighting to be **off**, and the Goron Mines lava has it **on** (`lit=1`). Evidence Needed, the score behind it, and Reproduce Two-Colour Ramps were added in response and are **CI-green, not run in game**. No protocol change: nothing in it is read by the game |
+| Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the main lava scores **0.00**, so no threshold could reach it, and rev 2 had meanwhile removed the one control the owner had found useful. Emitted Colour, Require Authored Colour and a default threshold of 0 are the response — **CI-green, not run in game**. No protocol change: nothing in it is read by the game |
 
 Both of the two designs this document argues for at length are now confirmed in
 practice: the **commit counter** (a preset pressed twice works the second time)

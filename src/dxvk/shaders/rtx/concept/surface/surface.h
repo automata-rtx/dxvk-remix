@@ -523,13 +523,13 @@ struct Surface
     set { data15.w = newValue; }
   }
 
-  // Dusklight self-illumination: emit the reconstructed albedo rather than a
-  // constant, because a surface glows the colour it appears. See
-  // aurora-ao/docs/dx9/remix-material-interface.md §9.
-  property bool emissiveFollowsAlbedo
+  // Dusklight self-illumination: which reading of the material this surface
+  // glows. kEmissiveSource* in surface_shared.h; §9 of
+  // aurora-ao/docs/dx9/remix-material-interface.md says what each one costs.
+  property uint emissiveSource
   {
-    get { return packedFlagGet(data13.z, 1 << 19); }
-    set { data13.z = newValue ? packedFlagSet(data13.z, 1 << 19) : packedFlagUnset(data13.z, 1 << 19); }
+    get { return (data13.z >> 19) & emissiveSourceMask; }
+    set { data13.z = (data13.z & ~(emissiveSourceMask << 19)) | ((newValue & emissiveSourceMask) << 19); }
   }
 };
 

@@ -1052,6 +1052,9 @@ namespace dxvk {
 
         // Surface meta data
         currentInstance.surface.isEmissive = false;
+        // Reset for the same reason isEmissive is: instances are pooled, so a
+        // flag left set by a previous occupant makes an unrelated surface glow.
+        currentInstance.surface.emissiveSource = static_cast<uint8_t>(kEmissiveSourceTextureOp);
         currentInstance.surface.isMatte = false;
         currentInstance.surface.textureColorArg1Source = drawCall.getMaterialData().textureColorArg1Source;
         currentInstance.surface.textureColorArg2Source = drawCall.getMaterialData().textureColorArg2Source;
@@ -1127,17 +1130,35 @@ namespace dxvk {
 
             dusklightEmissive::logOnce(currentInstance.m_materialDataHash, emissiveColor, accepted,
                                        legacy.getColorTexture().getImageHash(),
-                                       dusklightEmissive::evidenceScore(legacy));
+                                       dusklightEmissive::evidenceScore(legacy), legacy);
 
             if (accepted && DusklightEmissive::enable()) {
               tmpMaterialData = *materialData;
               materialData = &tmpMaterialData;
               tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
               tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(DusklightEmissive::intensity());
-              // The shader takes the reconstructed albedo, so no colour is set
-              // here: the surface glows the colour it appears. Tested 2026-08-04
-              // - a constant made the lava one flat hot colour with no crust.
-              currentInstance.surface.emissiveFollowsAlbedo = true;
+              // GX records nothing about what an emitter should glow, so this is
+              // a reading rather than a translation and the owner picks it live.
+              // rtx_dusklight_emissive.h names the three; §9 says what each cost.
+              switch (DusklightEmissive::colorSource()) {
+              case DusklightEmissiveSource::AlbedoTexture:
+                // Upstream's own path: the shader runs the albedo texture
+                // through this material's texture op, exactly as it does for a
+                // world space UI surface.
+                tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(
+                  tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
+                break;
+              case DusklightEmissiveSource::PresentedColor:
+                // Verbatim - EmissiveSource::Constant tells the shader to leave
+                // it alone. Setting a constant without that flag is the trap
+                // that made a pre-image inversion necessary before 2026-08-05.
+                tmpMaterialData.getOpaqueMaterialData().setEmissiveColorConstant(emissiveColor);
+                currentInstance.surface.emissiveSource = static_cast<uint8_t>(kEmissiveSourceConstant);
+                break;
+              default:
+                currentInstance.surface.emissiveSource = static_cast<uint8_t>(kEmissiveSourceAlbedo);
+                break;
+              }
               // Gates NEECacheUtils.shouldSampleObject (nee_cache_light.slangh),
               // so the emitter is sampled as a light rather than found by chance.
               // That and one debug view are its only readers - post-FX's own
