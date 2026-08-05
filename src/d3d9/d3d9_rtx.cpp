@@ -1172,6 +1172,9 @@ namespace dxvk {
           " stageTf=", useStageTextureFactorBlending,
           " multiTf=", useMultipleStageTextureFactorBlending,
           " vcBaked=", mat.isVertexColorBakedLighting,
+          // "additive" here means Remix's own emissive-blend override claims
+          // this draw before the Dusklight rule sees it. See blendName().
+          " blend=", matrep::blendName(mat.blendMode),
           // The two-colour ramp aurora ships in the unused half of
           // D3DMATERIAL9; when this is 1 the albedo expression below is not
           // what the shader evaluates. See rtx_dusklight_emissive.h.

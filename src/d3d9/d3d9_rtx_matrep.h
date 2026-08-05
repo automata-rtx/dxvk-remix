@@ -67,6 +67,60 @@ namespace dxvk {
       }
     }
 
+    // Compact blend state. Here because an **additive draw is the one thing in
+    // the whole GX stream that unambiguously means "add light"** - GX_BM_BLEND
+    // with GX_BL_ONE/GX_BL_ONE reaches Remix as BlendType::kEmissive, and the
+    // emissive-blend override in rtx_instance_manager.cpp claims that draw one
+    // branch *before* the Dusklight rule is consulted. Neither log carried the
+    // blend state, so whether any of this game's draws take that path has never
+    // been checked - which is why the emissive work went looking in TEV state.
+    enum class BlendClass : uint8_t {
+      Off = 0,
+      Alpha,
+      Additive,       // ONE/ONE               -> kEmissive
+      AdditiveAlpha,  // SRC_ALPHA/ONE         -> kAlphaEmissive
+      Multiply,
+      Subtract,
+      Other,
+    };
+
+    inline BlendClass blendClass(const DxvkBlendMode& b) {
+      if (!b.enableBlending) {
+        return BlendClass::Off;
+      }
+      if (b.colorBlendOp == VK_BLEND_OP_REVERSE_SUBTRACT) {
+        return BlendClass::Subtract;
+      }
+      if (b.colorSrcFactor == VK_BLEND_FACTOR_DST_COLOR && b.colorDstFactor == VK_BLEND_FACTOR_ZERO) {
+        return BlendClass::Multiply;
+      }
+      if (b.colorBlendOp == VK_BLEND_OP_ADD) {
+        if (b.colorSrcFactor == VK_BLEND_FACTOR_ONE && b.colorDstFactor == VK_BLEND_FACTOR_ONE) {
+          return BlendClass::Additive;
+        }
+        if (b.colorSrcFactor == VK_BLEND_FACTOR_SRC_ALPHA && b.colorDstFactor == VK_BLEND_FACTOR_ONE) {
+          return BlendClass::AdditiveAlpha;
+        }
+        if (b.colorSrcFactor == VK_BLEND_FACTOR_SRC_ALPHA &&
+            b.colorDstFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA) {
+          return BlendClass::Alpha;
+        }
+      }
+      return BlendClass::Other;
+    }
+
+    inline const char* blendName(const DxvkBlendMode& b) {
+      switch (blendClass(b)) {
+      case BlendClass::Off:           return "off";
+      case BlendClass::Alpha:         return "alpha";
+      case BlendClass::Additive:      return "additive";
+      case BlendClass::AdditiveAlpha: return "additiveAlpha";
+      case BlendClass::Multiply:      return "multiply";
+      case BlendClass::Subtract:      return "subtract";
+      default:                        return "other";
+      }
+    }
+
     inline const char* opName(DxvkRtTextureOperation op) {
       switch (op) {
       case DxvkRtTextureOperation::Disable:          return "Disable";
@@ -116,18 +170,25 @@ namespace dxvk {
     inline XXH64_hash_t shapeKey(const LegacyMaterialData& m) {
       // Zero-initialised, and laid out so there is no padding at all: hashing a
       // struct with indeterminate padding bytes would key on uninitialised
-      // memory. Two 8-byte hashes plus eight 1-byte fields fill exactly 24,
-      // which is already a multiple of the 8-byte alignment - an explicit tail
-      // pad here would push it to 32 and reintroduce the problem, which is what
-      // the first version of this did and what the assert caught.
+      // memory. Two 8-byte hashes plus sixteen 1-byte fields fill exactly 32.
+      // The explicit tail pad is part of that count and is zero-initialised, so
+      // it is deterministic - the version without it was 24 bytes and adding a
+      // ninth flag silently reintroduced implicit padding, which is what the
+      // assert catches.
       struct Shape {
         XXH64_hash_t tex0;
         XXH64_hash_t tex1;
         uint8_t colorOp, colorArg1, colorArg2;
         uint8_t alphaOp, alphaArg1, alphaArg2;
         uint8_t tfBlend, vcBaked;
+        // Included because the same texture drawn opaque and drawn additively
+        // are different materials to Remix - the second one is claimed by the
+        // emissive-blend override - and collapsing them would hide exactly the
+        // draw this field was added to find.
+        uint8_t blend;
+        uint8_t pad[7];
       };
-      static_assert(sizeof(Shape) == 2 * sizeof(XXH64_hash_t) + 8,
+      static_assert(sizeof(Shape) == 2 * sizeof(XXH64_hash_t) + 16,
                     "Shape must have no implicit padding: it is hashed byte-wise");
       Shape shape {};
       shape.tex0 = m.getColorTexture().getImageHash();
@@ -140,6 +201,7 @@ namespace dxvk {
       shape.alphaArg2 = static_cast<uint8_t>(m.textureAlphaArg2Source);
       shape.tfBlend = m.isTextureFactorBlend ? 1u : 0u;
       shape.vcBaked = m.isVertexColorBakedLighting ? 1u : 0u;
+      shape.blend = static_cast<uint8_t>(blendClass(m.blendMode));
       return XXH3_64bits(&shape, sizeof(shape));
     }
 
