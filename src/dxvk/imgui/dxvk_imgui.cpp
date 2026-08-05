@@ -48,6 +48,7 @@
 #include "rtx_render/rtx_options.h"
 #include "rtx_render/rtx_dusklight_env.h"
 #include "rtx_render/rtx_dusklight_game.h"
+#include "rtx_render/rtx_dusklight_texrep.h"
 #include "rtx_render/rtx_dusklight_emissive.h"
 #include "../../d3d9/d3d9_rtx_matrep.h"
 #include "rtx_render/rtx_global_volumetrics.h"
@@ -3039,7 +3040,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 6;
+    constexpr int kRequiredProtocol = 7;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -3048,7 +3049,7 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Connected, but the game build is older than this build of Remix: it does not read these "
         "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 6 or newer.");
+        "accurate. Update the game to a build that reports protocol 7 or newer.");
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "
@@ -3138,6 +3139,49 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Radius changes brightness as well as softness: the radiance is solved so the light still "
         "reaches the same distance, so a larger emitter needs less of it.");
+      ImGui::Unindent();
+    }
+
+    if (RemixGui::CollapsingHeader("HD Texture Pack", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Use HD Replacements", &DusklightTexRep::enableObject());
+      RemixGui::Checkbox("Apply To HUD", &DusklightTexRep::applyToRasterObject());
+      RemixGui::Checkbox("Hold At Full Resolution", &DusklightTexRep::forceFullMipsObject());
+      RemixGui::Checkbox("Log A Report Next Frame", &DusklightTexRep::reportObject());
+
+      const auto& texRepStats = dusklightTexRep::stats();
+      ImGui::Text("Game: %d selected, %d handed over, %d skipped",
+                  DusklightEnv::texrepEntries(), DusklightEnv::texrepCreated(),
+                  DusklightEnv::texrepSkipped());
+      ImGui::Text("Remix: %d draws tagged, %d substituted (%d of them HUD), %d still loading, %d unknown",
+                  texRepStats.handlesSeen, texRepStats.applied, texRepStats.appliedRaster,
+                  texRepStats.pending, texRepStats.missing);
+
+      // "Handed over" and "substituted" failing separately are quite different bugs and read
+      // identically as "the pack does nothing", so each is named rather than left to be inferred.
+      if (!DusklightEnv::texrepEnabled()) {
+        ImGui::TextWrapped(
+          "The game is not handing a pack over. Either texture replacements are off in its config, its "
+          "texture_replacements directory is empty, or the game build predates this feature - the Bridge "
+          "section above says whether it is connected at all.");
+      } else if (DusklightEnv::texrepCreated() == 0 && DusklightEnv::texrepEntries() > 0) {
+        ImGui::TextWrapped(
+          "The game selected replacements but has handed none over yet. It spreads creation over frames "
+          "at launch; if this stays at zero, its D3D9 device never registered with Remix.");
+      } else if (texRepStats.handlesSeen == 0 && DusklightEnv::texrepCreated() > 0) {
+        ImGui::TextWrapped(
+          "Materials were handed over but no draw is tagged with one, so the D3D9 stream is not carrying "
+          "the index. That is an aurora older than this build of Remix, or a scene whose textures simply "
+          "have no replacements in the pack.");
+      } else if (texRepStats.missing > 0) {
+        ImGui::TextWrapped(
+          "Some draws are tagged with an index Remix has no material for. The two sides disagree about "
+          "the pack - most likely the game reloaded its registry after handing it over.");
+      }
+      ImGui::TextWrapped(
+        "The pack never travels through D3D9, so the game's own textures are what Remix hashes and what "
+        "the texture categorization list shows. Tags and rtx.conf categories are unaffected by installing, "
+        "changing or removing a pack.");
       ImGui::Unindent();
     }
 
