@@ -81,13 +81,15 @@ namespace dxvk {
                "scale rather than a per-material value. 2.0 matches what Remix already uses to make a world space "
                "UI surface read as self-lit; raise it if a big emitter glows but does not light the room around it.");
     RTX_OPTION("rtx.dusklight.emissive", DusklightEmissiveSource, colorSource,
-               DusklightEmissiveSource::AlbedoTexture,
+               DusklightEmissiveSource::ReconstructedAlbedo,
                "Where an accepted emitter takes the colour it glows.\n"
-               "0 Reconstructed Albedo - the colour the surface appears, two-colour ramp included.\n"
-               "1 Albedo Texture - the texture through the material's own op; the most detail, and what looked "
-               "right on the Goron Mines lava and the heart pickup on 2026-08-04.\n"
-               "2 Presented Colour - the flat colour the game backend evaluated; steadiest, but a molten surface "
-               "loses its crust and reads as one hot colour.");
+               "0 Reconstructed Albedo - what the surface appears to be, two-colour ramp included. For the Goron "
+               "Mines lava that is lerp(FF0000, FFFE63, texture): the texture drives the colour, and both survive.\n"
+               "1 Albedo Texture - the texture through the material's own single D3D9 op. Looked right on "
+               "2026-08-04, but only because the albedo was that same approximation then; now that the ramp is "
+               "exact this is the worse of the two - on the lava the op is ADD, so it emits texture + red, which "
+               "pins the red channel and washes the bright end to white.\n"
+               "2 Presented Colour - one flat colour. A molten surface loses its crust entirely.");
     RTX_OPTION("rtx.dusklight.emissive", float, threshold, 0.0f,
                "How much GX evidence a surface needs before it is treated as an emitter (0..1).\n"
                "The game backend scores three facts: GX lighting disabled (0.50), colour authored in a register "

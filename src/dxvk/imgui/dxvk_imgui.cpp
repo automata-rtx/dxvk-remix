@@ -2991,10 +2991,12 @@ namespace dxvk {
       RemixGui::Combo("Emitted Colour", &DusklightEmissive::colorSourceObject(),
                       "Reconstructed Albedo\0Albedo Texture\0Presented Colour\0");
       ImGui::TextWrapped(
-        "GX has no emissive term, so what a glowing surface should glow is a reading, not a "
-        "translation - hence a choice. Albedo Texture keeps the most detail and is what looked right "
-        "on the lava and the heart pickup. Presented Colour is one flat colour, which loses a molten "
-        "surface's crust.");
+        "GX records no emissive term, so what a glowing surface glows is a reading rather than a "
+        "translation - hence a choice. Reconstructed Albedo is the default and the one to want: it is "
+        "the two-colour ramp, so the texture drives the colour and neither overpowers the other. "
+        "Albedo Texture pushes the texture through the material's single D3D9 op instead, which on the "
+        "lava is an ADD against red - that pins the red channel and washes the bright end to white. "
+        "Presented Colour is one flat colour and loses a molten surface's crust entirely.");
       RemixGui::DragFloat("Emissive Intensity", &DusklightEmissive::intensityObject(), 0.05f, 0.f, 200.f);
       RemixGui::DragFloat("Evidence Needed", &DusklightEmissive::thresholdObject(), 0.01f, 0.f, 1.f);
       RemixGui::Checkbox("Require Authored Colour", &DusklightEmissive::requireAuthoredColorObject());
@@ -3004,10 +3006,12 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Evidence is scored 0.50 for GX lighting disabled, 0.25 for a colour authored in a register "
         "rather than per-vertex, and 0.25 for a stage scaled past what the console could display. "
-        "The Goron Mines lava scores zero on all three - measured, twice - so Evidence Needed "
-        "defaults to 0 and the two colour gates decide instead. Raise it toward 0.50 if too much of "
-        "the world glows. Require Authored Colour keeps that safe: it excludes any surface whose "
-        "colour is mixed from the vertex stream, which in this game is baked room lighting.");
+        "\"Takes no light\" means the TEV colour program never reads the lit channel, which is not the "
+        "same as lighting being switched off - 10 of 77 materials in one Goron Mines session had "
+        "lighting on and still never read it, the lava among them. Evidence Needed defaults to 0 and "
+        "the colour gates do the work; replayed against that session the defaults glow 9 materials of "
+        "77, all four lava and fire surfaces plus three browns. Raising it to 0.50 keeps everything "
+        "that takes no light and drops the rest.");
       ImGui::TextWrapped(
         "Every surface considered is written to the log as a dusklight.emis line carrying its score, "
         "and moving any control on this page makes them all report again - so a session where "
