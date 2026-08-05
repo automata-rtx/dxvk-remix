@@ -2988,34 +2988,37 @@ namespace dxvk {
         "the approximation it replaces.");
       RemixGui::Separator();
       RemixGui::Checkbox("Emissive Surfaces Enabled", &DusklightEmissive::enableObject());
+      ImGui::TextWrapped(
+        "A GameCube surface is self-lit when its colour program never reads the lit channel - its colour "
+        "is fixed whatever the lights do, which is what the console draws as full-bright. That plus a "
+        "colour authored in GX constants, and that colour reading as a glow, is the whole rule. There is "
+        "no threshold and nothing to dial: over one measured Goron Mines session it accepts 6 materials "
+        "of 77, every lava and fire surface among them, with nothing else caught.");
       RemixGui::Combo("Emitted Colour", &DusklightEmissive::colorSourceObject(),
                       "Reconstructed Albedo\0Albedo Texture\0Presented Colour\0");
       ImGui::TextWrapped(
         "GX records no emissive term, so what a glowing surface glows is a reading rather than a "
-        "translation - hence a choice. Reconstructed Albedo is the default and the one to want: it is "
-        "the two-colour ramp, so the texture drives the colour and neither overpowers the other. "
-        "Albedo Texture pushes the texture through the material's single D3D9 op instead, which on the "
-        "lava is an ADD against red - that pins the red channel and washes the bright end to white. "
-        "Presented Colour is one flat colour and loses a molten surface's crust entirely.");
+        "translation. Reconstructed Albedo is the default and the one to want: it is the two-colour ramp, "
+        "so the texture drives the colour and neither overpowers the other - on the lava, "
+        "lerp(FF0000, FFFE63, texture). Albedo Texture pushes the texture through the material's single "
+        "D3D9 op instead, which on the lava is an ADD against red: red pinned, bright end washed to "
+        "white. Presented Colour is one flat colour and loses a molten surface's crust entirely.");
       RemixGui::DragFloat("Emissive Intensity", &DusklightEmissive::intensityObject(), 0.05f, 0.f, 200.f);
-      RemixGui::DragFloat("Evidence Needed", &DusklightEmissive::thresholdObject(), 0.01f, 0.f, 1.f);
-      RemixGui::Checkbox("Require Authored Colour", &DusklightEmissive::requireAuthoredColorObject());
-      RemixGui::DragFloat("Minimum Brightness", &DusklightEmissive::minLumaObject(), 0.01f, 0.f, 1.f);
-      RemixGui::DragFloat("Minimum Saturation", &DusklightEmissive::minChromaObject(), 0.01f, 0.f, 1.f);
+      ImGui::TextWrapped(
+        "The only dial worth touching. The colour already carries how bright the game meant the surface "
+        "to look; this scales it into radiance.");
+      RemixGui::Separator();
+      ImGui::TextWrapped(
+        "Below here should not need touching. They decide whether an authored colour counts as a glow, "
+        "and either one alone is enough - a glow is a strong colour or it is near-white-hot, while a "
+        "muted mid-tone is a surface colour.");
+      RemixGui::DragFloat("Saturation Counts As Glow", &DusklightEmissive::glowChromaObject(), 0.01f, 0.f, 1.f);
+      RemixGui::DragFloat("Brightness Counts As Glow", &DusklightEmissive::glowLumaObject(), 0.01f, 0.f, 1.f);
       RemixGui::Checkbox("Log Emissive Candidates", &DusklightEmissive::logObject());
       ImGui::TextWrapped(
-        "Evidence is scored 0.50 for GX lighting disabled, 0.25 for a colour authored in a register "
-        "rather than per-vertex, and 0.25 for a stage scaled past what the console could display. "
-        "\"Takes no light\" means the TEV colour program never reads the lit channel, which is not the "
-        "same as lighting being switched off - 10 of 77 materials in one Goron Mines session had "
-        "lighting on and still never read it, the lava among them. Evidence Needed defaults to 0 and "
-        "the colour gates do the work; replayed against that session the defaults glow 9 materials of "
-        "77, all four lava and fire surfaces plus three browns. Raising it to 0.50 keeps everything "
-        "that takes no light and drops the rest.");
-      ImGui::TextWrapped(
-        "Every surface considered is written to the log as a dusklight.emis line carrying its score, "
-        "and moving any control on this page makes them all report again - so a session where "
-        "nothing glows still says why.");
+        "One line per candidate, accepted or rejected, carrying which of the three facts decided it. "
+        "Colourless rejections are counted rather than listed, and moving any control on this page "
+        "re-reports every candidate - so a session where something looks wrong says why by itself.");
       RemixGui::Separator();
       RemixGui::Checkbox("Log Material Translation Report", &DusklightMatrep::matrepObject());
       ImGui::TextWrapped(

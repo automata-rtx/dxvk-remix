@@ -162,26 +162,27 @@ this runtime's half of the wire and does not go through the bridge.
 | Control | Option | What it decides |
 | :-- | :-- | :-- |
 | Reproduce Two-Colour Ramps | `rtx.dusklight.rampMaterials` | whether `lerp(colourA, colourB, texture)` — this game's dominant material shape — is evaluated exactly (default) or approximated by one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints |
-| Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether accepted surfaces actually emit |
+| Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether self-lit surfaces emit. The rule needs no tuning: a surface qualifies when its GX colour program never reads the lit channel, it has a colour of its own (authored in GX constants, not from the vertex stream and not a bare texture pass-through), and that colour reads as a glow. Over one measured Goron Mines session that is 6 materials of 77 — every lava and fire surface, nothing else |
 | Emitted Colour | `…emissive.colorSource` | what a glowing surface glows. **Reconstructed Albedo (default)** is the two-colour ramp, so the texture drives the colour and neither overpowers the other — on the lava, `lerp(FF0000, FFFE63, texture)`. Albedo Texture pushes the texture through the material's single D3D9 op, which on the lava is an ADD against red: red pinned, bright end washed to white. Presented Colour is one flat colour |
-| Emissive Intensity | `…emissive.intensity` | radiance multiplier on that colour |
-| Evidence Needed | `…emissive.threshold` | how much GX evidence a surface needs. **Defaults to 0**, with the colour gates below doing the work. The 0.50 signal is "the TEV colour program never reads the lit channel" — not "lighting is off", which is what it wrongly tested until 2026-08-05 and why the lava scored zero. Replayed over that session the defaults glow 9 of 77 materials, all four lava and fire surfaces among them; 0.50 drops the one accepted surface that does take light |
-| Require Authored Colour | `…emissive.requireAuthoredColor` | exclude any surface whose colour is mixed from the vertex stream — baked room lighting in this game. This is what makes a threshold of 0 usable |
-| Minimum Brightness / Saturation | `…emissive.minLuma` / `minChroma` | the thresholds that separate lava from an unlit interior wall |
+| Emissive Intensity | `…emissive.intensity` | the only dial worth touching — scales the surface's own colour into radiance |
+| Saturation / Brightness Counts As Glow | `…emissive.glowChroma` / `glowLuma` | **or**'d, not and'd: an authored glow is a strong colour or it is near-white-hot, while a muted mid-tone is a surface colour. This is what stopped the brown false positives. Should not need touching |
 | Log Emissive Candidates | `…emissive.log` | one bounded line per candidate, accepted **or** rejected. Colourless rejections are counted rather than enumerated, and moving any control on this page re-reports every candidate |
 | Log Material Translation Report | `rtx.dusklight.matrep` | one line per distinct reconstructed material |
 
-These are here rather than hardcoded for one reason: **the cut is the part
-nobody can derive.** No single GX fact identifies an emitter — "takes no light"
-is true of 59% of one measured scene and *false* for the Goron Mines lava, which
-was measured at `lit=1`. So the game side scores three weak signals (lighting
-disabled 0.50, register-sourced colour 0.25, a TEV stage scaled past displayable
-0.25) and this tab decides where to cut, and a judgement that needed a rebuild to
-change would cost a test window each time.
+The rule is deliberately not tunable, and that took three revisions to get to.
+No single GX fact identifies an emitter — "GX lighting is off" is true of 45 of
+77 materials in one measured scene and *false* for the Goron Mines lava. What
+does identify one is a **conjunction**: the colour program never reads the lit
+channel (so the surface takes no light in fact, whatever the channel flag says),
+it has a colour of its own rather than being a texture pass-through (which is
+what every EFB copy and full-screen quad is), and that colour reads as a glow.
 
-Full design, and the measurement the defaults came from:
-`aurora-ao/docs/dx9/remix-material-interface.md` §9 for the emissive score, §10
-for the ramp.
+Two earlier revisions cut on a weighted score instead. Both missed the lava,
+which scores 0.00 on all three of the signals that score is built from. The
+score is still logged; nothing decides on it.
+
+`aurora-ao/docs/dx9/remix-material-interface.md` §9 for the rule and the
+measurement, §10 for the two-colour ramp.
 
 Then the game's own settings, in collapsible sections: Bridge, Sun / Moon
 Light, Local Point Lights, Geometry, Game, Bloom, Ambient Grade, Atmosphere.
