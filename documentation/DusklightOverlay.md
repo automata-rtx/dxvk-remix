@@ -166,7 +166,6 @@ this runtime's half of the wire and does not go through the bridge.
 | Evidence Needed | `…emissive.threshold` | how much GX evidence a surface needs. 0.70 conservative, 0.20 wide |
 | Emissive Intensity | `…emissive.intensity` | radiance multiplier on the surface's own colour |
 | Minimum Brightness / Saturation | `…emissive.minLuma` / `minChroma` | the thresholds that separate lava from an unlit interior wall |
-| Emit The Texture, Not The Material Colour | `…emissive.useTextureColor` | flat authored glow (default) vs the albedo texture |
 | Log Emissive Candidates | `…emissive.log` | one bounded line per candidate, accepted **or** rejected |
 | Log Material Translation Report | `rtx.dusklight.matrep` | one line per distinct reconstructed material |
 
