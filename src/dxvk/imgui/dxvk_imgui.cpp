@@ -3003,10 +3003,13 @@ namespace dxvk {
         "lerp(FF0000, FFFE63, texture). Albedo Texture pushes the texture through the material's single "
         "D3D9 op instead, which on the lava is an ADD against red: red pinned, bright end washed to "
         "white. Presented Colour is one flat colour and loses a molten surface's crust entirely.");
-      RemixGui::DragFloat("Emissive Intensity", &DusklightEmissive::intensityObject(), 0.05f, 0.f, 200.f);
+      RemixGui::DragFloat("Emissive Brightness", &DusklightEmissive::brightnessObject(), 0.02f, 0.f, 50.f);
       ImGui::TextWrapped(
-        "The only dial worth touching. The colour already carries how bright the game meant the surface "
-        "to look; this scales it into radiance.");
+        "The only dial worth touching, and it is a target brightness rather than a multiplier - a dark "
+        "saturated emitter and a pale one reach the same brightness at the same setting. A surface whose "
+        "colour sweeps, like the lava's red-to-yellow ramp, is normalised by its dark end, so its bright "
+        "end overshoots into a white-hot core; a flat pickup glow stays even. Each material's resulting "
+        "radiance is printed in the log.");
       RemixGui::Separator();
       ImGui::TextWrapped(
         "Below here should not need touching. They decide whether an authored colour counts as a glow, "
@@ -3147,6 +3150,12 @@ namespace dxvk {
       RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
       RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
       RemixGui::Checkbox("Per-Blade Grass", &DusklightGame::perBladeGrassObject());
+      RemixGui::Checkbox("Game's Blob Shadows", &DusklightGame::blobShadowsObject());
+      ImGui::TextWrapped(
+        "Blob shadows are the flat discs the game paints under rupees, hearts and pots. Off by "
+        "default: Remix traces a real shadow for each of those objects, so the disc lands on top of a "
+        "correct one. The game drops them at registration, so no draw call is issued at all. Its "
+        "projected shadows - Link and the major actors - are a separate system and are untouched.");
       ImGui::TextWrapped(
         "The game drops geometry outside the camera's view, which a path tracer still needs: a wall "
         "culled because you turned away stops occluding, and light leaks through where it was. Costs "

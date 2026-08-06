@@ -1136,7 +1136,9 @@ namespace dxvk {
               tmpMaterialData = *materialData;
               materialData = &tmpMaterialData;
               tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
-              tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(DusklightEmissive::intensity());
+              // Derived per material, not flat: see dusklightEmissive::radianceFor.
+              tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(
+                dusklightEmissive::radianceFor(emissiveColor));
               // GX records nothing about what an emitter should glow, so this is
               // a reading rather than a translation and the owner picks it live.
               // rtx_dusklight_emissive.h names the three; §9 says what each cost.
