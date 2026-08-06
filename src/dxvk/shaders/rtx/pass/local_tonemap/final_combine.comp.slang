@@ -96,11 +96,14 @@ void main(uint2 threadId : SV_DispatchThreadID)
   //
   // NOTE: this ACES call is deliberately NOT switched with the operator selection below. Here the
   // operator is being used as a RULER - to measure this pixel's local intensity - not as a look.
-  // The exposure fusion this feeds decides per pixel which of three synthetic exposures wins, and
-  // it needs a contrasty ruler to tell them apart. Substituting AgX, whose whole virtue is being
-  // gentle, was measured to flatten the fusion weights and weaken local adaptation by roughly 4x
-  // in the midtones. The same applies to the ACES calls in luminance.comp.slang. Change the look
-  // below; leave the ruler alone.
+  // The same applies to the ACES calls in luminance.comp.slang.
+  //
+  // The reason is narrower than an earlier version of this comment claimed: substituting AgX
+  // weakens fusion weight spread around mid grey by about 2.2x, but is equal or STRONGER
+  // everywhere else, and is the better calibrated ruler against the fusion's hardcoded 0.50
+  // target. The one solid objection left is that the shipped shadows/highlights/
+  // exposurePreferenceSigma defaults are tuned against this curve's response. See
+  // documentation/ToneMappingExposureNotes.md section 8, including the correction notice.
   vec3 texelOriginal = linearToGamma(ACESFilm(originalColor.xyz, cb.useLegacyACES, true));
   float luminance = calcBt709Luminance(texelOriginal) + 0.00001;
   float finalMultiplier = max(A * luminance + B, 0.0) / luminance;

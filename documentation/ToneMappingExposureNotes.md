@@ -180,26 +180,43 @@ The local path is **exposure fusion**: synthesise three exposures from the one i
 pixel in each for "well-exposedness" against a target of 0.50, blend per pixel. It calls ACES in
 three places to *build and score* those synthetic exposures, and once at the end as the look.
 
-In the first three, the operator is a **ruler, not a look** — and a low-contrast ruler cannot tell
-the three synthetic exposures apart. Fusion weight spread (max − min; higher = stronger local
-adaptation):
+In the first three, the operator is a **ruler, not a look**. Fusion weight spread (max − min;
+higher = stronger local adaptation):
 
 | scene brightness | ACES (current) | AgX |
 |---|---|---|
-| −6 stops | 0.11 | **0.16** |
-| −4 | **0.26** | 0.25 |
-| −2 | **0.18** | 0.17 |
-| **mid grey** | **0.32** | 0.08 |
-| +2 | **0.26** | 0.20 |
-| +4 | 0.06 | **0.12** |
+| −8 stops | 0.048 | **0.056** |
+| −6 | 0.113 | **0.169** |
+| −4 | 0.255 | **0.259** |
+| −2 | **0.182** | 0.141 |
+| **mid grey** | **0.321** | 0.144 |
+| +2 | 0.256 | **0.287** |
+| +4 | 0.061 | **0.181** |
+| +6 | 0.000 | **0.037** |
 
-Roughly **4× weaker in the midtones**. Two further reasons: the hardcoded 0.50 target is better
-calibrated to ACES (whose "correctly exposed" sits 0.25 stops off true mid grey, against AgX's
-0.38), and the shipped `shadows`/`highlights`/`exposurePreferenceSigma` defaults are all tuned
-against the ACES response curve.
+> **Correction.** An earlier revision of this document claimed AgX was "roughly 4× weaker in the
+> midtones" and that the fusion's hardcoded 0.50 well-exposedness target was better calibrated to
+> ACES. **Both were wrong**, produced by a throwaway analysis script that carried the same
+> transposed inset/outset matrices later caught and fixed in `agx.slangh`. The table above is
+> recomputed from the shipped constants.
 
-**If a stronger local effect is wanted, `exposurePreferenceSigma` is the direct control** and
-needs none of this.
+What the corrected numbers actually say is narrower and more mixed. AgX is weaker only around mid
+grey (0.144 against 0.321, about 2.2×) and at −2 stops; it is **equal or stronger everywhere
+else**, markedly so in deep shadows and in the highlights. And on calibration the result reverses:
+the 0.50 target corresponds to a scene value **+0.03 stops** off true mid grey under AgX against
+**−0.25 stops** under ACES, so AgX is the better-calibrated ruler, not the worse one.
+
+So only one of the three original arguments survives: the shipped
+`shadows`/`highlights`/`exposurePreferenceSigma` defaults are tuned against the ACES response, and
+swapping the operator silently invalidates that tuning. That is a real cost but a re-tunable one.
+
+**The case for leaving the internals on ACES is therefore much weaker than first stated.** Trying
+AgX as the ruler is a reasonable experiment — expect flatter midtone adaptation, better shadow and
+highlight separation, and a re-tune of those three sliders. It was not done here only because the
+decision to keep it was taken on the strength of the bad numbers.
+
+**If a stronger local effect is wanted without changing the operator,
+`exposurePreferenceSigma` is the direct control.**
 
 ---
 
