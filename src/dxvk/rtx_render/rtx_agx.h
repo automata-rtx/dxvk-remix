@@ -28,15 +28,19 @@ namespace dxvk {
 
   // Which operator finishes the image. Shared by the global and local tone mapping paths, which
   // each carry their own selection.
+  // GT7's own settings live in rtx_gt7.h; the enum stays here because both tone mapping paths
+  // already include this header.
   enum class TonemapOperator : uint32_t {
     None = 0,
     ACES = 1,
     AgX = 2,
+    GT7 = 3,
   };
 
   static_assert(static_cast<uint32_t>(TonemapOperator::None) == tonemapOperatorNone);
   static_assert(static_cast<uint32_t>(TonemapOperator::ACES) == tonemapOperatorACES);
   static_assert(static_cast<uint32_t>(TonemapOperator::AgX) == tonemapOperatorAgX);
+  static_assert(static_cast<uint32_t>(TonemapOperator::GT7) == tonemapOperatorGT7);
 
   enum class AgxLook : uint32_t {
     None = 0,

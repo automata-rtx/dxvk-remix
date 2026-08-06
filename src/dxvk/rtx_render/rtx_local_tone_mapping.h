@@ -74,7 +74,7 @@ namespace dxvk {
     // different defaults by design rather than by oversight.
     RTX_OPTION("rtx.localtonemap", TonemapOperator, tonemapOperator, TonemapOperator::ACES,
                "The operator applied as a final pass over the local tonemapper's result.\n"
-               "Supported enum values are 0 = None, 1 = ACES, 2 = AgX.\n"
+               "Supported enum values are 0 = None, 1 = ACES, 2 = AgX, 3 = GT7.\n"
                "Superseded rtx.localtonemap.finalizeWithACES, whose value is migrated on load: false becomes None and true becomes ACES.");
     RTX_OPTION("rtx.localtonemap", bool, finalizeWithACES, true, "Deprecated, superseded by rtx.localtonemap.tonemapOperator. Still read on load and migrated: false becomes None, true becomes ACES.");
     RTX_OPTION("rtx.localtonemap", float, exposure, 0.75, "Exposure factor applied on average exposure.");

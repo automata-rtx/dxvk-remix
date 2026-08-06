@@ -99,12 +99,13 @@ struct FinalCombineArgs
   float exposure;
   uint debugView;
 
-  uint tonemapOperator;   // tonemapOperatorNone / ACES / AgX, see rtx/pass/tonemap/tonemapping.h
+  uint tonemapOperator;   // tonemapOperatorNone / ACES / AgX / GT7, see rtx/pass/tonemap/tonemapping.h
   uint enableAutoExposure;
   uint useLegacyACES;
   uint pad0;
 
   AgxArgs agx;
+  Gt7Args gt7;
 };
 
 

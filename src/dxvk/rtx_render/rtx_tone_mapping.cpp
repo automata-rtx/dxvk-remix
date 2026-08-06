@@ -25,16 +25,25 @@
 #include "rtx_render/rtx_shader_manager.h"
 #include "rtx.h"
 #include "rtx/pass/tonemap/tonemapping.h"
+#include "dxvk_limits.h"
 
 #include <rtx_shaders/auto_exposure.h>
 #include <rtx_shaders/auto_exposure_histogram.h>
 #include <rtx_shaders/tonemapping_histogram.h>
 #include <rtx_shaders/tonemapping_tone_curve.h>
 #include <rtx_shaders/tonemapping_apply_tonemapping.h>
+#include "rtx_gt7.h"
 #include "rtx_imgui.h"
 #include "rtx/utility/debug_view_indices.h"
 
 static_assert((TONEMAPPING_TONE_CURVE_SAMPLE_COUNT & 1) == 0, "The shader expects a sample count that is a multiple of 2.");
+
+// Push constants are capped at 128 bytes and the operator argument blocks have now filled that
+// budget exactly. If this fires, do not shrink an operator's parameters to squeeze past it -
+// move the operator arguments into a uniform buffer instead, since only one operator ever runs
+// per dispatch and they are all currently paying for each other's space.
+static_assert(sizeof(ToneMappingApplyToneMappingArgs) <= dxvk::MaxPushConstantSize,
+              "ToneMappingApplyToneMappingArgs no longer fits in the push constant budget.");
 
 namespace dxvk {
   // Defined within an unnamed namespace to ensure unique definition across binary
@@ -113,9 +122,11 @@ namespace dxvk {
     RemixGui::Checkbox("Tonemapping Enabled", &tonemappingEnabledObject());
     if (tonemappingEnabled()) {
       ImGui::Indent();
-      RemixGui::Combo("Final Operator", &tonemapOperatorObject(), "None\0ACES\0AgX\0");
+      RemixGui::Combo("Final Operator", &tonemapOperatorObject(), "None\0ACES\0AgX\0GT7\0");
       if (tonemapOperator() == TonemapOperator::AgX) {
         AgxSettings::showImguiSettings();
+      } else if (tonemapOperator() == TonemapOperator::GT7) {
+        Gt7Settings::showImguiSettings();
       }
 
       RemixGui::Checkbox("Tuning Mode", &tuningModeObject());
@@ -260,6 +271,7 @@ namespace dxvk {
     pushArgs.tonemapOperator = static_cast<uint32_t>(tonemapOperator());
     pushArgs.useLegacyACES = RtxOptions::useLegacyACES();
     pushArgs.agx = AgxSettings::buildArgs();
+    pushArgs.gt7 = Gt7Settings::buildArgs();
 
     // Tonemap args
     pushArgs.shadowContrast = shadowContrast();

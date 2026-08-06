@@ -74,6 +74,7 @@ static const uint32_t ditherModeSpatialTemporal = 2;
 static const uint32_t tonemapOperatorNone = 0;
 static const uint32_t tonemapOperatorACES = 1;
 static const uint32_t tonemapOperatorAgX = 2;
+static const uint32_t tonemapOperatorGT7 = 3;
 
 // AgX defaults, from Blender/Filament via three.js:
 //   LOG2_MIN = -10, LOG2_MAX = +6.5, MIDDLE_GRAY = 0.18
@@ -137,6 +138,26 @@ struct AgxArgs {
   float maxEv;
 };
 
+// GT7 operator parameters. Everything here is derived on the CPU by a direct transcription of the
+// reference's initializeAsSDR()/initializeCurve() - see rtx_gt7.cpp - so the shader carries no
+// setup maths of its own.
+//
+// Only the values that actually vary are passed. blendRatio (0.6), fadeStart (0.98) and fadeEnd
+// (1.16) are fixed literals in the reference's initializeParameters() and live as compile time
+// constants in gt7.slangh; promoting them to options would need this block moved out of push
+// constants, which are capped at 128 bytes and are already exactly full.
+struct Gt7Args {
+  float peakIntensity;    // framebufferLuminanceTarget_, in GT frame buffer units
+  float kA;               // shoulder constants, precomputed exactly as initializeCurve() does
+  float kB;
+  float kC;
+
+  float targetUcs;        // framebufferLuminanceTargetUcs_
+  float inputScale;       // scene referred (mid grey at keyValue) -> GT frame buffer units
+  float outputScale;      // sdrCorrectionFactor_; 1.0 in HDR mode
+  float pad0;
+};
+
 struct ToneMappingHistogramArgs {
   float toneCurveMinStops;
   float toneCurveMaxStops;
@@ -180,10 +201,11 @@ struct ToneMappingApplyToneMappingArgs {
 
   float toneCurveMinStops;
   float toneCurveMaxStops;
-  uint tonemapOperator;   // tonemapOperatorNone / ACES / AgX
+  uint tonemapOperator;   // tonemapOperatorNone / ACES / AgX / GT7
   uint useLegacyACES;
 
   AgxArgs agx;
+  Gt7Args gt7;
 };
 
 

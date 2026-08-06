@@ -1,0 +1,204 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// GT7 tone mapping.
+//
+// Port of Polyphony Digital's sample implementation (MIT, (c) 2025 Polyphony Digital Inc.,
+// SIGGRAPH 2025 shading course). The source of truth sits next door in
+// reference/gt7_tone_mapping.cpp; diff against that file rather than against memory.
+//
+// WHY THIS OPERATOR EXISTS HERE. ACES and AgX both curve R, G and B independently, which moves
+// hue whenever one channel shoulders before the others - worst exactly where a physically
+// scattered sky lives. Measured on this fork's own Rayleigh coefficients, mean CIELAB hue
+// rotation across a zenith-to-sunset sweep is 12.95 degrees under ACES and 6.64 under AgX,
+// against 0.62 under GT7. The zenith case alone is -24.2 / -13.5 / -0.9 degrees. That is the
+// entire reason to pay for it.
+//
+// HOW IT GETS THAT. The operator tone maps per channel to get brightness - the reference calls
+// this result "skewed", because per-channel curving is what skews hue - but then rebuilds the
+// pixel in ICtCp, a space that separates intensity from chroma, taking INTENSITY from the skewed
+// result and CHROMA from the original. Chroma is left completely alone until a pixel reaches
+// fadeStart (98%) of display peak and is faded out by fadeEnd (116%). So hue is protected
+// everywhere except the top couple of percent of the range, rather than being continuously
+// distorted the way a per-channel curve distorts it.
+//
+// NOTE ON UNITS - this is the part that silently goes wrong. GT7 is display referred and works
+// in real units: framebuffer 1.0 means REFERENCE_LUMINANCE (100 cd/m^2) and SDR paper white is
+// 250 cd/m^2, i.e. framebuffer 2.5. Our pipeline hands the operator a scene referred value whose
+// mid grey sits at rtx.autoExposure.keyValue (0.18). Feeding that straight in lands mid grey
+// about 1.8 stops dark. Gt7Args::inputScale carries the conversion and outputScale undoes it, so
+// auto exposure needs no special casing - see rtx_gt7.cpp.
+//
+// NOTE ON GAMMA - unlike AgX, there is nothing to undo here. GT7's SDR output is described by the
+// reference as "mapped to [0, 1], ready for sRGB OETF", which is exactly linear display referred,
+// which is what the srgb_dither pass at the end of this chain expects. Do not add a pow.
+//
+// Input and output of gt7ToneMapping() are LINEAR REC.709, matching the rest of this renderer;
+// the Rec.2020 conversion GT7 wants happens inside.
+
+#include "rtx/utility/color.slangh"
+#include "rtx/pass/tonemap/tonemapping.h"
+#include "rtx/pass/tonemap/agx.slangh"   // reuses kAgxLinearSRGBToRec2020 / kAgxRec2020ToLinearSRGB
+
+// -----------------------------------------------------------------------------
+// EOTF / inverse-EOTF for ST-2084 (PQ). Transcribed from the reference.
+// -----------------------------------------------------------------------------
+static const float kGt7PqM1 = 0.1593017578125f;   // (2610 / 4096) / 4
+static const float kGt7PqM2 = 78.84375f;          // (2523 / 4096) * 128
+static const float kGt7PqC1 = 0.8359375f;         // 3424 / 4096
+static const float kGt7PqC2 = 18.8515625f;        // (2413 / 4096) * 32
+static const float kGt7PqC3 = 18.6875f;           // (2392 / 4096) * 32
+static const float kGt7PqMaxLuminance = 10000.0f; // cd/m^2
+
+// In Gran Turismo 1.0 in the linear frame buffer corresponds to this many cd/m^2.
+static const float kGt7ReferenceLuminance = 100.0f;
+
+float gt7EotfSt2084(float n)
+{
+  n = saturate(n);
+
+  const float np = pow(n, 1.0f / kGt7PqM2);
+  float l = max(np - kGt7PqC1, 0.0f);
+  l = l / (kGt7PqC2 - kGt7PqC3 * np);
+  l = pow(l, 1.0f / kGt7PqM1);
+
+  // Absolute luminance back into the frame buffer scale.
+  return (l * kGt7PqMaxLuminance) / kGt7ReferenceLuminance;
+}
+
+float gt7InverseEotfSt2084(float v)
+{
+  // Frame buffer scale into absolute luminance, then normalise for the ST-2084 curve.
+  const float y = (v * kGt7ReferenceLuminance) / kGt7PqMaxLuminance;
+
+  const float ym = pow(max(y, 0.0f), kGt7PqM1);
+  return exp2(kGt7PqM2 * (log2(kGt7PqC1 + kGt7PqC2 * ym) - log2(1.0f + kGt7PqC3 * ym)));
+}
+
+// -----------------------------------------------------------------------------
+// ICtCp. Reference: ITU-T T.302. Input and output are linear Rec.2020.
+// Note the LMS rows each sum to 4096, so a neutral maps to l == m == s; rtx_gt7.cpp relies on
+// that to compute the target intensity on the CPU with a single PQ evaluation.
+// -----------------------------------------------------------------------------
+float3 gt7RgbToICtCp(float3 rgb)
+{
+  const float l = (rgb.r * 1688.0f + rgb.g * 2146.0f + rgb.b * 262.0f) / 4096.0f;
+  const float m = (rgb.r * 683.0f + rgb.g * 2951.0f + rgb.b * 462.0f) / 4096.0f;
+  const float s = (rgb.r * 99.0f + rgb.g * 309.0f + rgb.b * 3688.0f) / 4096.0f;
+
+  const float lPQ = gt7InverseEotfSt2084(l);
+  const float mPQ = gt7InverseEotfSt2084(m);
+  const float sPQ = gt7InverseEotfSt2084(s);
+
+  return float3((2048.0f * lPQ + 2048.0f * mPQ) / 4096.0f,
+                (6610.0f * lPQ - 13613.0f * mPQ + 7003.0f * sPQ) / 4096.0f,
+                (17933.0f * lPQ - 17390.0f * mPQ - 543.0f * sPQ) / 4096.0f);
+}
+
+float3 gt7ICtCpToRgb(float3 ictCp)
+{
+  const float l = ictCp.x + 0.00860904f * ictCp.y + 0.11103f * ictCp.z;
+  const float m = ictCp.x - 0.00860904f * ictCp.y - 0.11103f * ictCp.z;
+  const float s = ictCp.x + 0.560031f * ictCp.y - 0.320627f * ictCp.z;
+
+  const float lLin = gt7EotfSt2084(l);
+  const float mLin = gt7EotfSt2084(m);
+  const float sLin = gt7EotfSt2084(s);
+
+  return float3(max(3.43661f * lLin - 2.50645f * mLin + 0.0698454f * sLin, 0.0f),
+                max(-0.79133f * lLin + 1.9836f * mLin - 0.192271f * sLin, 0.0f),
+                max(-0.0259499f * lLin - 0.0989137f * mLin + 1.12486f * sLin, 0.0f));
+}
+
+// -----------------------------------------------------------------------------
+// "GT Tone Mapping" curve with convergent shoulder.
+// alpha, midPoint, linearSection and toeStrength are the literals the reference passes in
+// initializeParameters(); only the peak varies, so they stay compile time here and kA/kB/kC are
+// precomputed on the CPU exactly as initializeCurve() does it.
+// -----------------------------------------------------------------------------
+static const float kGt7CurveMidPoint = 0.538f;
+static const float kGt7CurveLinearSection = 0.444f;
+static const float kGt7CurveToeStrength = 1.280f;
+
+// Fixed in the reference's initializeParameters(); see the note on Gt7Args.
+static const float kGt7BlendRatio = 0.6f;
+static const float kGt7FadeStart = 0.98f;
+static const float kGt7FadeEnd = 1.16f;
+
+float gt7EvaluateCurve(float x, Gt7Args args)
+{
+  if (x < 0.0f)
+  {
+    return 0.0f;
+  }
+
+  // Note the argument order: the reference's smoothStep(x, edge0, edge1) is HLSL's
+  // smoothstep(edge0, edge1, x).
+  const float weightLinear = smoothstep(0.0f, kGt7CurveMidPoint, x);
+  const float weightToe = 1.0f - weightLinear;
+
+  if (x < kGt7CurveLinearSection * args.peakIntensity)
+  {
+    const float toeMapped = kGt7CurveMidPoint * pow(x / kGt7CurveMidPoint, kGt7CurveToeStrength);
+    return weightToe * toeMapped + weightLinear * x;
+  }
+
+  return args.kA + args.kB * exp(x * args.kC);
+}
+
+// -----------------------------------------------------------------------------
+// The operator. color in and out are LINEAR REC.709.
+// -----------------------------------------------------------------------------
+float3 gt7ToneMapping(float3 color, Gt7Args args)
+{
+  // Scene referred to GT's frame buffer convention, then to the Rec.2020 primaries it works in.
+  float3 rgb = mul(kAgxLinearSRGBToRec2020, max(color, float3(0.0f)) * args.inputScale);
+
+  // Separate luminance and chroma from the ORIGINAL colour. Taking chroma from here rather than
+  // from the per-channel result below is the whole trick.
+  const float3 ucs = gt7RgbToICtCp(rgb);
+
+  // Per-channel tone mapping ("skewed" colour).
+  const float3 skewedRgb = float3(gt7EvaluateCurve(rgb.r, args),
+                                  gt7EvaluateCurve(rgb.g, args),
+                                  gt7EvaluateCurve(rgb.b, args));
+
+  const float3 skewedUcs = gt7RgbToICtCp(skewedRgb);
+
+  // chromaCurve(): full chroma until fadeStart, gone by fadeEnd.
+  const float chromaScale = 1.0f - smoothstep(kGt7FadeStart, kGt7FadeEnd, ucs.x / args.targetUcs);
+
+  const float3 scaledUcs = float3(skewedUcs.x,           // intensity from the skewed colour
+                                  ucs.y * chromaScale,   // chroma from the original
+                                  ucs.z * chromaScale);
+
+  const float3 scaledRgb = gt7ICtCpToRgb(scaledUcs);
+
+  // Final blend between the per-channel and UCS-reconstructed results.
+  float3 blended = lerp(skewedRgb, scaledRgb, kGt7BlendRatio);
+  blended = min(blended, float3(args.peakIntensity));
+
+  // Back to Rec.709, and out of GT's frame buffer convention. outputScale is the reference's
+  // sdrCorrectionFactor_ (1 in HDR mode).
+  return max(mul(kAgxRec2020ToLinearSRGB, blended * args.outputScale), float3(0.0f));
+}

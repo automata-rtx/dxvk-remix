@@ -22,6 +22,7 @@
 #include "rtx/pass/local_tonemap/local_tonemapping.slangh"
 #include "rtx/pass/tonemap/tonemapping.slangh"
 #include "rtx/pass/tonemap/agx.slangh"
+#include "rtx/pass/tonemap/gt7.slangh"
 
 [[vk::binding(FINAL_COMBINE_MIP_ASSEMBLE)]]
 Sampler2D MipAssembleTexture;
@@ -120,6 +121,10 @@ void main(uint2 threadId : SV_DispatchThreadID)
   else if (cb.tonemapOperator == tonemapOperatorAgX)
   {
     texelFinal = agxToneMapping(texelFinal, cb.agx);
+  }
+  else if (cb.tonemapOperator == tonemapOperatorGT7)
+  {
+    texelFinal = gt7ToneMapping(texelFinal, cb.gt7);
   }
 
   // sRGB conversion and dithering are now performed by the final output pass,
