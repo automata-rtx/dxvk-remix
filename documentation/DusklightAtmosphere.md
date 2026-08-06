@@ -641,7 +641,10 @@ row says otherwise.
 
 Note that `d3d9_device.cpp` was not an upstream file this fork touched before
 this change; a rebase reading an older copy of this list will not expect a
-conflict there.
+conflict there. **Verified rather than assumed** —
+`git diff origin/main...HEAD -- src/d3d9/d3d9_device.cpp` against the upstream
+tracker returns exactly two hunks, the include and `BindTexture`. That command
+is also how to re-check it after any future change.
 
 *Overlay, bloom and plumbing:*
 

@@ -134,9 +134,16 @@ namespace dxvk {
 
   namespace dusklightRamp {
 
-    // Aurora ships the ramp in the otherwise unused half of D3DMATERIAL9:
-    // Diffuse.rgb is the endpoint tFactor does not carry, Diffuse.a marks the
-    // material as a ramp, Ambient.r says which endpoint tFactor holds.
+    // Aurora ships the ramp through the D3DMATERIAL9 side channel: Diffuse.rgb
+    // is the endpoint tFactor does not carry, Diffuse.a marks the material as a
+    // ramp, Ambient.r says which endpoint tFactor holds.
+    //
+    // The struct is no longer "the otherwise unused half" it was described as
+    // here: Ambient.g/.b were claimed by HD texture packs on 2026-08-05
+    // (rtx_dusklight_texrep.h). Only Ambient.a and Power are spare now. The
+    // full field map lives in one place -
+    // aurora-ao/docs/dx9/remix-material-interface.md §2 - and any new claim on
+    // this struct should be added there rather than only in a comment.
     inline bool isRamp(const LegacyMaterialData& mat) {
       return DusklightRamp::rampMaterials() && mat.getLegacyMaterial().Diffuse.a >= 0.5f;
     }
