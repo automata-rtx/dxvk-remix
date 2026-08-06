@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx/pass/tonemap/tonemapping.slangh"
+#include "rtx/pass/tonemap/agx.slangh"
 #include "rtx/utility/math.slangh"
 #include "rtx/utility/color.slangh"
 
@@ -126,12 +127,16 @@ float3 applyToneMapping(float3 color, uint2 pixelPosition)
     {
       // Normal tone mapping
       color = dynamicToneMapper(color);
-      
-      if (cb.finalizeWithACES)
+
+      if (cb.tonemapOperator == tonemapOperatorACES)
       {
         color = ACESFilm(color, cb.useLegacyACES);
       }
-    } 
+      else if (cb.tonemapOperator == tonemapOperatorAgX)
+      {
+        color = agxToneMapping(color, cb.agx);
+      }
+    }
     else
     {
       // Debug mode

@@ -21,6 +21,7 @@
 */
 #include "rtx/pass/local_tonemap/local_tonemapping.slangh"
 #include "rtx/pass/tonemap/tonemapping.slangh"
+#include "rtx/pass/tonemap/agx.slangh"
 
 [[vk::binding(FINAL_COMBINE_MIP_ASSEMBLE)]]
 Sampler2D MipAssembleTexture;
@@ -92,6 +93,14 @@ void main(uint2 threadId : SV_DispatchThreadID)
 
   // Apply local exposure adjustment as a crude multiplier on all RGB channels.
   // This is... generally pretty wrong, but enough for the demo purpose.
+  //
+  // NOTE: this ACES call is deliberately NOT switched with the operator selection below. Here the
+  // operator is being used as a RULER - to measure this pixel's local intensity - not as a look.
+  // The exposure fusion this feeds decides per pixel which of three synthetic exposures wins, and
+  // it needs a contrasty ruler to tell them apart. Substituting AgX, whose whole virtue is being
+  // gentle, was measured to flatten the fusion weights and weaken local adaptation by roughly 4x
+  // in the midtones. The same applies to the ACES calls in luminance.comp.slang. Change the look
+  // below; leave the ruler alone.
   vec3 texelOriginal = linearToGamma(ACESFilm(originalColor.xyz, cb.useLegacyACES, true));
   float luminance = calcBt709Luminance(texelOriginal) + 0.00001;
   float finalMultiplier = max(A * luminance + B, 0.0) / luminance;
@@ -101,9 +110,13 @@ void main(uint2 threadId : SV_DispatchThreadID)
     mix(1.0, finalMultiplier, (luminance / lerpToUnityThreshold) * (luminance / lerpToUnityThreshold));
 
   vec3 texelFinal = originalColor.xyz * finalMultiplier;
-  if (cb.finalizeWithACES)
+  if (cb.tonemapOperator == tonemapOperatorACES)
   {
     texelFinal = ACESFilm(texelFinal, cb.useLegacyACES);
+  }
+  else if (cb.tonemapOperator == tonemapOperatorAgX)
+  {
+    texelFinal = agxToneMapping(texelFinal, cb.agx);
   }
 
   // sRGB conversion and dithering are now performed by the final output pass,

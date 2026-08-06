@@ -46,10 +46,23 @@ void main(uint2 threadId : SV_DispatchThreadID)
   float avgExposure = getExposure(AutoExposureTexture, cb.enableAutoExposure, cb.exposure);
 
   // Tonemap three syntetic exposures and produce their luminances.
+  //
+  // NOTE: ACES here is a RULER, not a look, and is deliberately not switched with the tone
+  // mapping operator selection - see the long comment in final_combine.comp.slang. These three
+  // values are scored against a well-exposedness target of 0.50 in exposure_weight.comp.slang,
+  // and the shipped shadows/highlights/exposurePreferenceSigma defaults are tuned against this
+  // curve's response. Swapping the operator silently invalidates that tuning.
+  //
+  // The 'true' third argument suppresses the ACES black level clamp. ACES.hlsl documents that
+  // the local tonemapper needs it - "will incorrectly crash the almost-black colors" - and
+  // final_combine.comp.slang passes it, but this site did not. It only bites when
+  // rtx.useLegacyACES is false, since the legacy curve ignores the flag; with the fitted curve
+  // the probe measured a flat 0.0 for every input below roughly 5 stops under mid grey, leaving
+  // the fusion unable to distinguish any deep shadow from any other.
   vec3 inpColor = OriginalTexture[threadId].xyz * avgExposure;
-  float highlights = calcBt709Luminance(linearToGamma(ACESFilm(inpColor * cb.highlights, cb.useLegacyACES)));
-  float midtones   = calcBt709Luminance(linearToGamma(ACESFilm(inpColor                , cb.useLegacyACES)));
-  float shadows    = calcBt709Luminance(linearToGamma(ACESFilm(inpColor * cb.shadows   , cb.useLegacyACES)));
+  float highlights = calcBt709Luminance(linearToGamma(ACESFilm(inpColor * cb.highlights, cb.useLegacyACES, true)));
+  float midtones   = calcBt709Luminance(linearToGamma(ACESFilm(inpColor                , cb.useLegacyACES, true)));
+  float shadows    = calcBt709Luminance(linearToGamma(ACESFilm(inpColor * cb.shadows   , cb.useLegacyACES, true)));
   vec3 cols = vec3(highlights, midtones, shadows);
 
   OutLuminanceTexture[threadId] = vec4(cols, 1.0);

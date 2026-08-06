@@ -132,7 +132,10 @@ namespace dxvk {
     RemixGui::DragInt("Display Mip", &displayMipObject(), 0.06f, 0, 16);
     RemixGui::Checkbox("Boost Local Contrast", &boostLocalContrastObject());
     RemixGui::Checkbox("Use Gaussian Kernel", &useGaussianObject());
-    RemixGui::Checkbox("Finalize With ACES", &finalizeWithACESObject());
+    RemixGui::Combo("Final Operator", &tonemapOperatorObject(), "None\0ACES\0AgX\0");
+    if (tonemapOperator() == TonemapOperator::AgX) {
+      AgxSettings::showImguiSettings();
+    }
     RemixGui::DragFloat("Exposure Level", &exposureObject(), 0.01f, 0.f, 1000.f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     RemixGui::DragFloat("Shadow Level", &shadowsObject(), 0.01f, -10.f, 10.f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     RemixGui::DragFloat("Highlight Level", &highlightsObject(), 0.01f, -10.f, 10.f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
@@ -151,6 +154,12 @@ namespace dxvk {
      const Resources::RaytracingOutput& rtOutput,
      const float frameTimeMilliseconds,
      bool enableAutoExposure) {
+
+    if (!m_migratedOperator) {
+      m_migratedOperator = true;
+      migrateFinalizeWithACES(finalizeWithACESObject(), tonemapOperatorObject(),
+                              "rtx.localtonemap.finalizeWithACES", "rtx.localtonemap.tonemapOperator");
+    }
 
     if (m_mips.views.size() == 0) {
       return;
@@ -271,8 +280,9 @@ namespace dxvk {
       pushArgs.resolution = uvec2 { finalResolution.width, finalResolution.height };
       pushArgs.debugView = debugView.debugViewIdx();
       pushArgs.enableAutoExposure = enableAutoExposure;
-      pushArgs.finalizeWithACES = finalizeWithACES();
+      pushArgs.tonemapOperator = static_cast<uint32_t>(tonemapOperator());
       pushArgs.useLegacyACES = RtxOptions::useLegacyACES();
+      pushArgs.agx = AgxSettings::buildArgs();
 
       ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 

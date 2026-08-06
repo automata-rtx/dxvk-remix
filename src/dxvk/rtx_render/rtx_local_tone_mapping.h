@@ -30,6 +30,7 @@
 #include "../spirv/spirv_code_buffer.h"
 #include "../util/util_matrix.h"
 #include "rtx_options.h"
+#include "rtx_agx.h"
 
 namespace dxvk {
 
@@ -61,12 +62,21 @@ namespace dxvk {
     RtxMipmap::Resource m_mipsWeights;
     RtxMipmap::Resource m_mipsAssemble;
 
+    bool m_migratedOperator = false;
+
     // Tone curve settings
     RTX_OPTION("rtx.localtonemap", int, mip, 3, "Top mip level of tone map pyramid.");
     RTX_OPTION("rtx.localtonemap", int, displayMip, 0, "Bottom mip level of tone map pyramid.");
     RTX_OPTION("rtx.localtonemap", bool, boostLocalContrast, false, "Boosts contrast on local features.");
     RTX_OPTION("rtx.localtonemap", bool, useGaussian, true, "Uses gaussian kernel to generate tone map pyramid.");
-    RTX_OPTION("rtx.localtonemap", bool, finalizeWithACES, true, "Applies ACES tone mapping on final result.");
+    // See the note on rtx.tonemap.tonemapOperator. Same migration, but note this path's boolean
+    // defaulted to true where the global path's defaulted to false, so the two operators have
+    // different defaults by design rather than by oversight.
+    RTX_OPTION("rtx.localtonemap", TonemapOperator, tonemapOperator, TonemapOperator::ACES,
+               "The operator applied as a final pass over the local tonemapper's result.\n"
+               "Supported enum values are 0 = None, 1 = ACES, 2 = AgX.\n"
+               "Superseded rtx.localtonemap.finalizeWithACES, whose value is migrated on load: false becomes None and true becomes ACES.");
+    RTX_OPTION("rtx.localtonemap", bool, finalizeWithACES, true, "Deprecated, superseded by rtx.localtonemap.tonemapOperator. Still read on load and migrated: false becomes None, true becomes ACES.");
     RTX_OPTION("rtx.localtonemap", float, exposure, 0.75, "Exposure factor applied on average exposure.");
     RTX_OPTION("rtx.localtonemap", float, shadows, 2.0, "Shadow area strength. Higher values cause brighter shadows.");
     RTX_OPTION("rtx.localtonemap", float, highlights, 4.0, "Highlight area strength. Higher values cause darker highlight.");

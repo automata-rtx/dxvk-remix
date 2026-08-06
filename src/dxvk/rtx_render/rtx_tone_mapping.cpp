@@ -113,7 +113,10 @@ namespace dxvk {
     RemixGui::Checkbox("Tonemapping Enabled", &tonemappingEnabledObject());
     if (tonemappingEnabled()) {
       ImGui::Indent();
-      RemixGui::Checkbox("Finalize With ACES", &finalizeWithACESObject());
+      RemixGui::Combo("Final Operator", &tonemapOperatorObject(), "None\0ACES\0AgX\0");
+      if (tonemapOperator() == TonemapOperator::AgX) {
+        AgxSettings::showImguiSettings();
+      }
 
       RemixGui::Checkbox("Tuning Mode", &tuningModeObject());
       if (tuningMode()) {
@@ -254,8 +257,9 @@ namespace dxvk {
     pushArgs.toneMappingEnabled = tonemappingEnabled();
     pushArgs.colorGradingEnabled = colorGradingEnabled();
     pushArgs.enableAutoExposure = autoExposureEnabled;
-    pushArgs.finalizeWithACES = finalizeWithACES();
+    pushArgs.tonemapOperator = static_cast<uint32_t>(tonemapOperator());
     pushArgs.useLegacyACES = RtxOptions::useLegacyACES();
+    pushArgs.agx = AgxSettings::buildArgs();
 
     // Tonemap args
     pushArgs.shadowContrast = shadowContrast();
@@ -291,6 +295,12 @@ namespace dxvk {
     bool autoExposureEnabled) {
 
     ScopedGpuProfileZone(ctx, "Tone Mapping");
+
+    if (!m_migratedOperator) {
+      m_migratedOperator = true;
+      migrateFinalizeWithACES(finalizeWithACESObject(), tonemapOperatorObject(),
+                              "rtx.tonemap.finalizeWithACES", "rtx.tonemap.tonemapOperator");
+    }
 
     m_resetState |= resetHistory;
 

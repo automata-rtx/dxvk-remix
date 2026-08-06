@@ -69,6 +69,20 @@ static const uint32_t ditherModeNone = 0;
 static const uint32_t ditherModeSpatialOnly = 1;
 static const uint32_t ditherModeSpatialTemporal = 2;
 
+// Final tone mapping operator selection. Mirrored by dxvk::TonemapOperator in rtx_agx.h, which
+// static_asserts against these.
+static const uint32_t tonemapOperatorNone = 0;
+static const uint32_t tonemapOperatorACES = 1;
+static const uint32_t tonemapOperatorAgX = 2;
+
+// AgX defaults, from Blender/Filament via three.js:
+//   LOG2_MIN = -10, LOG2_MAX = +6.5, MIDDLE_GRAY = 0.18
+//   minEv = log2(2^LOG2_MIN * 0.18), maxEv = log2(2^LOG2_MAX * 0.18)
+#define AGX_DEFAULT_MIN_EV                                (-12.47393f)
+#define AGX_DEFAULT_MAX_EV                                (4.026069f)
+// log2(0.18). The pivot the contrast control scales the EV range around.
+#define AGX_MIDDLE_GRAY_LOG2                              (-2.473931f)
+
 // Constant buffers
 
 struct ToneMappingAutoExposureArgs {
@@ -110,6 +124,17 @@ struct AutoExposureDebugStats {
   float hiPercentileEV;           // EV100 of the last bin inside the window.
   float exposure;                 // The linear multiplier actually written to the exposure texture.
   uint valid;
+};
+
+// AgX look transform and dynamic range, shared by the global and local tone mapping paths.
+struct AgxArgs {
+  vec3 lookSlope;
+  float lookOffset;
+
+  float lookPower;
+  float lookSaturation;
+  float minEv;                    // Log2 encode floor. Narrowing the range raises contrast.
+  float maxEv;
 };
 
 struct ToneMappingHistogramArgs {
@@ -155,8 +180,10 @@ struct ToneMappingApplyToneMappingArgs {
 
   float toneCurveMinStops;
   float toneCurveMaxStops;
-  uint finalizeWithACES;
+  uint tonemapOperator;   // tonemapOperatorNone / ACES / AgX
   uint useLegacyACES;
+
+  AgxArgs agx;
 };
 
 
