@@ -630,9 +630,15 @@ void applyFog(
 {
   if (cb.volumeArgs.enable)
   {
-    // Volumetric fog is applied in volume integration - but only as far as the froxel grid reaches, because the froxel
-    // lookup saturates past its last slice and stops accumulating there. Dusklight's fog regularly runs far beyond that,
-    // so the game's own ramp carries the rest of the distance. DusklightAtmosphere.md §5.2.
+    // The medium carries part of Dusklight's fog and this brings the total up to exactly the game's ramp.
+    //
+    // A homogeneous exponential medium cannot be the game's fog: the ramp is flat zero until rampStart and then linear
+    // in opacity, while exp(-sigma*d) starts accumulating at the camera and only asymptotes towards opaque. Matching
+    // the two at a single distance - which is what the medium's sigma does - leaves the near field visibly over-fogged
+    // and the far field short. DusklightAtmosphere.md §5.1.
+    //
+    // So the medium is deliberately run thinner than the ramp and the shortfall is made up here, per pixel, using the
+    // transmittance the medium actually produced. DusklightAtmosphere.md §5.2.
     if (cb.dusklightArgs.enable == 0)
     {
       return;
@@ -649,35 +655,38 @@ void applyFog(
 
     const float span = cb.dusklightArgs.rampEnd - cb.dusklightArgs.rampStart;
 
-    if (span <= 0.0f || viewDistance <= cb.dusklightArgs.handoverDistance)
+    if (span <= 0.0f)
     {
       return;
     }
 
-    // How much of the ramp the grid already covered, and how much of what it left is still to be fogged. Expressing the
-    // remainder as a fraction of the *remaining* clear signal is what stops the two halves counting the same air twice,
-    // and it reaches exactly 1 at the ramp's end - which is where the original went fully opaque and where an
-    // exponential medium never quite arrives.
-    const float fogAtHandover = saturate((cb.dusklightArgs.handoverDistance - cb.dusklightArgs.rampStart) / span);
-    const float fogAtDistance = saturate((viewDistance - cb.dusklightArgs.rampStart) / span);
-    const float remaining = 1.0f - fogAtHandover;
+    // What the game would have shown here, and what the medium already did.
+    //
+    // radianceOutput at this point is surface*T + inscatter, and volumeAttenuation is that same T. Blending towards the
+    // fog colour by t leaves the surface weighted by (1-t)*T, so asking for (1-t)*T == 1-alphaGame gives
+    //
+    //   t = (alphaGame - alphaMedium) / (1 - alphaMedium),   alphaMedium = 1 - T
+    //
+    // and the fog then lands at exactly alphaGame. This is why the old "scale by the near transmittance" fudge is gone:
+    // that was standing in for this term, which is the exact answer rather than an approximation of it. It also means
+    // in-scatter is handled correctly without being separated out - a medium whose own in-scatter is a flat alpha*fog
+    // colour comes out at exactly alphaGame*fog colour, and any excess over that (a shaft, a lit patch of air) survives
+    // scaled by the same weight instead of being flattened.
+    const float alphaGame = saturate((viewDistance - cb.dusklightArgs.rampStart) / span);
+    const float mediumTransmittance = saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
 
-    if (remaining <= 1e-4f)
+    // Clamped at zero rather than allowed to go negative: where the medium is already thicker than the ramp - the near
+    // field, since the ramp is flat zero until rampStart and the medium is not - there is no way to take fog back out
+    // of a signal that has already been attenuated. Keeping the medium thinner than the ramp is the atmosphere's job
+    // (rtx.dusklight.atmosphere.mediumFraction), and this is where that under-run is paid back.
+    const float t = saturate((alphaGame - (1.0f - mediumTransmittance)) / max(mediumTransmittance, 1e-4f));
+
+    if (t <= 0.0f)
     {
-      // The grid already reaches past the end of the ramp; there is nothing left to add.
       return;
     }
 
-    float t = saturate((fogAtDistance - fogAtHandover) / remaining);
-
-    // Scaled by how much light the near volume still lets past, since the far fog sits behind that volume and can only
-    // affect what survives it. It also stands in for a separation we cannot make here: radianceOutput already holds the
-    // surface radiance and the near in-scatter summed, and only the former is behind the far fog, so blending both would
-    // erase in-scatter that is in front of it. Weighting by the near transmittance keeps that error where the in-scatter
-    // is small, which is the same place the far fog is strong.
-    t *= saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
-
-    vec3 farFogRadiance = cb.dusklightArgs.fogColor;
+    vec3 rampFogRadiance = cb.dusklightArgs.fogColor;
 
     // Distant geometry fades towards the sky that is behind it, which is what aerial perspective
     // means and why the original's fog colour was authored in the same palette entry as its sky.
@@ -688,15 +697,15 @@ void applyFog(
       const vec3 skyRadiance = cb.domeLightArgs.radiance *
         sampleDomeLightTexture(SkyLight, worldDirection, cb.domeLightArgs.worldToLightTransform);
 
-      farFogRadiance = lerp(farFogRadiance, skyRadiance, saturate(cb.dusklightArgs.skyColorWeight));
+      rampFogRadiance = lerp(rampFogRadiance, skyRadiance, saturate(cb.dusklightArgs.skyColorWeight));
     }
 
     if (cb.sparseRenderingArgs.mode != SparseRenderingMode::Off)
     {
-      farFogRadiance *= radianceScale;
+      rampFogRadiance *= radianceScale;
     }
 
-    radianceOutput = lerp(radianceOutput, farFogRadiance, t);
+    radianceOutput = lerp(radianceOutput, rampFogRadiance, t);
 
     return;
   }

@@ -75,6 +75,10 @@ namespace dxvk {
       // one scalar ramp, so it dims every channel by the same fraction; a per channel extinction
       // pulled out of the fog colour would make the fog's *strength* channel dependent, which the
       // original never does. The colour arrives through scattering instead. DusklightAtmosphere.md §5.1.
+      //
+      // Solved so the medium carries mediumFraction of the game's own opacity at the far edge of the
+      // froxel grid, and no more. It is deliberately an under-run: the composite can only ever add
+      // fog, so anything the medium overshoots by is an error nothing downstream can take back.
       float   sigma = 0.0f;
       // Linear radiance the fog tends towards. The game authors this as a display colour.
       Vector3 fogRadiance = Vector3(0.0f, 0.0f, 0.0f);
@@ -86,6 +90,13 @@ namespace dxvk {
 
       // How far the froxel grid reaches this frame, in world units, after smoothing.
       float   froxelMaxDistance = 0.0f;
+
+      // What the game's ramp asks for at the far edge of the grid, and what the medium will actually
+      // deliver there. Reported rather than used: they are the two numbers that say whether the
+      // split between the medium and the composite's correction is where it was meant to be, and
+      // having them resolved once keeps the readout and the log from re-deriving them differently.
+      float   rampOpacityAtReach = 0.0f;
+      float   mediumOpacityAtReach = 0.0f;
 
       // 0 is the game's own gradient, 1 is the scattering model. See resolvePhysicalWeight for why
       // it is shaped the way it is.
@@ -135,6 +146,11 @@ namespace dxvk {
     Derived resolve() const;
     float resolvePhysicalWeight() const;
 
+    // One line per distinct derivation, capped. Rule 4 of the project notes: the medium and the
+    // game's ramp agreeing is a numeric question, and it should be answerable from a log rather
+    // than by asking someone whether the fog looks right.
+    void logFog(const Derived& d) const;
+
     // The two lookup tables depend on the medium and on nothing else - not the sun, not the view -
     // so they are rebuilt only when the medium actually changes. That is what makes a physically
     // based sky affordable per frame at all.
@@ -148,6 +164,13 @@ namespace dxvk {
     // following them rather than snapping is faithful as well as cheap on the denoiser. A large
     // jump - a room change or an area load - snaps instead; see resolve().
     mutable float m_smoothedFroxelMaxDistance = 0.0f;
+
+    // Fog log budget. A fixed array rather than a set, so the cap is structural rather than
+    // remembered - a log that can fill a disk is worse than no log.
+    static constexpr uint32_t kMaxFogLogLines = 24;
+    mutable uint64_t m_fogLogKeys[kMaxFogLogLines] = {};
+    mutable uint32_t m_fogLogCount = 0;
+    mutable bool m_fogLogCapped = false;
 
     // Owned once and kept alive for the process, not rebuilt per frame: the dome light holds a
     // bindless index into it, and dropping the image for even one frame drops the sky back to
@@ -168,16 +191,29 @@ namespace dxvk {
                "original and splitting them here is what makes fog and sky disagree. Off by default, and inert unless the game's bridge is running "
                "(rtx.dusklight.env.enable). The fog half additionally waits on rtx.dusklight.env.fogActive; the sky half does not, since an area can have a "
                "sky and no haze in it.");
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, mediumFraction, 0.5f,
+                    "How much of the game's fog the volumetric medium carries, with the composite making up the rest, 0..1.\n"
+                    "The medium and the game's fog are different functions and cannot be made equal: the game's ramp is flat zero out to its start distance and "
+                    "then linear in opacity, while an exponential medium begins accumulating at the camera and never quite closes. Whatever the medium overshoots "
+                    "by is permanent - the composite can add fog to a pixel but cannot take it back out - so the medium is run deliberately thin and the shortfall "
+                    "is paid back per pixel, which lands the total on the game's ramp exactly at every distance.\n"
+                    "This is the knob for that trade and it costs no accuracy either way. At 0 the fog is the game's ramp and nothing else: exactly right, with no "
+                    "light shafts in it. At 1 the medium carries as much as it can and near objects pick up haze the original did not have. The error it buys is "
+                    "worst just inside the ramp's start distance and scales with this number.\n"
+                    "UNVALIDATED: derived from the two functions, never measured against a running build.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, zHalfMin, 100.0f,
                     "Smallest half density distance the medium is allowed, in world units - one metre at this game's scale.\n"
-                    "The medium is solved by matching the game's linear ramp at the point where it is half opaque. Scripted fog banks put that point behind the "
-                    "camera, which would send the density to infinity, so it is clamped here. Raising it thins the very densest fog; lowering it lets a whiteout "
-                    "close in harder.\n"
+                    "A ceiling on density, reached when a scripted fog bank asks for a whiteout that is already opaque at the camera. Raising it thins the very "
+                    "densest fog; lowering it lets a whiteout close in harder. Only the medium is clamped: the composite still corrects to the game's ramp, so "
+                    "this changes how much of a whiteout is volumetric rather than how thick it looks.\n"
                     "UNVALIDATED: chosen analytically, never measured against a running build. See documentation/DusklightAtmosphere.md.",
                     args.minValue = 1.0f,
                     args.maxValue = 10000.0f);
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, densityScale, 1.0f,
-                    "Scales the derived extinction. 1.0 reproduces the density of the game's own ramp at its half opaque point; higher is thicker.",
+                    "Scales the derived extinction, after rtx.dusklight.atmosphere.mediumFraction. Above 1 the medium can overshoot the game's ramp, which the "
+                    "composite cannot correct - prefer mediumFraction unless you are deliberately looking for that.",
                     args.minValue = 0.0f,
                     args.maxValue = 8.0f);
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, fogRadianceScale, 1.0f,
@@ -191,19 +227,26 @@ namespace dxvk {
                     "How much of what the medium extinguishes is scattered rather than absorbed, per channel.\n"
                     "Near 1 gives a bright fog that carries light shafts well; lower values give a sooty, absorbing haze. The medium's hue comes from the game's "
                     "fog colour rather than from here, so this stays close to neutral by default.");
-    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, multiScatteringScale, 0.25f,
-                    "How strongly the game's fog colour is injected as a constant ambient term in the medium.\n"
-                    "Without it the fog is only as bright as the lights reaching it, which in an unlit interior is nothing - the game's fog is never black, "
-                    "because it was a colour blend rather than a simulation. This is what keeps a dark room's fog the colour the palette asked for.",
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, multiScatteringScale, 1.0f,
+                    "How much of the game's fog colour the medium reproduces on its own, before any real light reaches it.\n"
+                    "At 1 an unlit patch of the medium settles at exactly the colour the palette authored, which is the point: it is the same colour the "
+                    "composite's correction blends towards, so the two halves of the fog agree and there is no seam between them. The game's fog is never black - "
+                    "it was a colour blend rather than a simulation - so without this a dark interior's fog goes black while the correction's half stays orange.\n"
+                    "Divided through by the single scattering albedo on the way in, so the settled colour is that albedo's business and this number stays "
+                    "readable as a fraction of the authored colour. Light that genuinely reaches the medium adds on top, which is what makes a shaft a shaft.\n"
+                    "Was 0.25 before 2026-08-06, which left the medium's own colour at 0.225 of the authored one - a fog that read four times too dark wherever "
+                    "nothing was lighting it. documentation/DusklightAtmosphere.md §5.3.",
                     args.minValue = 0.0f,
                     args.maxValue = 4.0f);
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, froxelRangeScale, 0.6f,
                     "How much of the game's fog range the froxel grid is sized to cover.\n"
                     "The grid gets a fixed number of depth slices wherever it is pointed, so sizing it from the game's own fog range is what puts them where the "
                     "fog actually is: tight inside a dense interior, wide across an open field. Costs nothing - the slice count does not change, only its reach.\n"
-                    "Deliberately below 1. At 1 the grid swallows the whole ramp and the composite's far half has nothing left to do, so the fog never closes to "
-                    "fully opaque the way the original does - an exponential medium only asymptotes towards that. Leaving the last stretch to the ramp buys the "
-                    "closure and spends the slices on the near field where shafts live. documentation/DusklightAtmosphere.md section 5.2.\n"
+                    "Below 1 to spend the slices on the near field, where shafts live and where the grid's resolution is visible; the composite's correction "
+                    "reaches any distance and closes the fog exactly where the original did, so nothing is lost past the last slice. Until 2026-08-06 this had a "
+                    "second job - the composite only added fog beyond the grid, so a reach of 1 left it with nothing to do and the fog never closed - and that "
+                    "reason no longer applies. documentation/DusklightAtmosphere.md section 5.2.\n"
+                    "It also sets where the medium's density is solved: sigma is chosen so the medium hits mediumFraction of the game's opacity at this reach.\n"
                     "UNVALIDATED: never measured against a running build.",
                     args.minValue = 0.1f,
                     args.maxValue = 4.0f);
@@ -223,6 +266,15 @@ namespace dxvk {
                     "temporal history through a changing grid, and the game eases its own fog transitions anyway.",
                     args.minValue = 0.005f,
                     args.maxValue = 1.0f);
+    RTX_OPTION("rtx.dusklight.atmosphere", bool, fogLog, true,
+               "Logs one line per distinct fog derivation, so whether the medium and the game's ramp agree is answerable from a log rather than from looking at "
+               "pixels.\n"
+               "Each line carries the game's ramp, the solved density, and the two opacity curves sampled across the froxel grid's reach: what the game asks for "
+               "at that distance, what the medium delivers, and what the composite has to make up.\n"
+               "The field to read first is nearHaze: the worst fog the original did not have, at the ramp's own start distance, which is the one error the "
+               "correction cannot reach. It is what rtx.dusklight.atmosphere.mediumFraction trades, and documentation/DusklightAtmosphere.md section 5.1 tabulates "
+               "what to expect from it.\n"
+               "Bounded: at most 24 lines per run, deduplicated on the ramp and the settings that decide the split, with a single notice when the cap is hit.");
 
     RTX_OPTION("rtx.dusklight.atmosphere", bool, skyEnable, false,
                "Builds the sky from the colours the game paints its own sky dome with, and hands it to Remix as a dome light.\n"

@@ -41,6 +41,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace dxvk {
   // Defined within an unnamed namespace to ensure unique definition across binary
@@ -119,6 +120,40 @@ namespace dxvk {
       };
       return Vector3(clean(c.x), clean(c.y), clean(c.z));
     }
+
+    // The worst opacity the medium shows in excess of the game's own ramp - fog the original did
+    // not have, and the one error the composite's correction cannot take back out. Shared by the
+    // log and the readout so the two cannot drift apart. DusklightAtmosphere.md §5.1.
+    //
+    // Solved rather than sampled, because sampling misses it. The excess is
+    //
+    //   g(d) = (1 - exp(-sigma*d)) - saturate((d - start) / span)
+    //
+    // which below start is just the medium rising, so it peaks at start; and above start has
+    // g'(d) = sigma*exp(-sigma*d) - 1/span, giving an interior maximum at ln(sigma*span)/sigma
+    // whenever sigma*span > 1. Both candidates matter: with a ramp that begins at the camera the
+    // first is identically zero and only the second is real, and an earlier revision of this
+    // function reported that case as 0.000 when the true answer was 0.068.
+    float worstNearHaze(float sigma, float rampStart, float rampEnd) {
+      const float span = rampEnd - rampStart;
+
+      if (!(sigma > 0.0f) || !(span > 0.0f)) {
+        return 0.0f;
+      }
+
+      const float atRampStart = std::max(rampStart, 0.0f);
+      float worst = 1.0f - std::exp(-sigma * atRampStart);
+
+      if (sigma * span > 1.0f) {
+        const float peak = std::log(sigma * span) / sigma;
+
+        if (peak > atRampStart && peak < rampEnd) {
+          worst = std::max(worst, (1.0f - std::exp(-sigma * peak)) - (peak - rampStart) / span);
+        }
+      }
+
+      return std::max(worst, 0.0f);
+    }
   }
 
   DxvkDusklightAtmosphere::DxvkDusklightAtmosphere(DxvkDevice* device)
@@ -193,27 +228,19 @@ namespace dxvk {
       return out;
     }
 
-    // Match the game's ramp where it is half opaque. Scale free, so one expression covers a scripted
-    // whiteout closing in over two metres and an open field hazing out over two hundred, with no per
-    // area handling anywhere. DusklightAtmosphere.md §5.1.
-    //
-    // Scripted fog banks deliberately put the ramp's start behind the camera, which drags the half
-    // opaque point behind it too; the clamp is what stops the density running away there.
-    const float zHalf = std::max((start + end) * 0.5f, std::max(zHalfMin(), 1e-3f));
-
-    out.sigma = std::max(std::log(2.0f) / zHalf, 0.0f) * std::max(densityScale(), 0.0f);
     out.rampStart = start;
     out.rampEnd = end;
 
     // The game authors its fog colour to be blended over a finished, display referred image. Here
     // it is a quantity of light in a linear frame that has not been tone mapped yet, so it is
-    // decoded rather than used raw. The two halves of the range split share this, which is what
-    // keeps the near medium and the far ramp the same colour.
+    // decoded rather than used raw. The medium and the composite's correction share this, which is
+    // what keeps the two halves of the fog the same colour.
     out.fogRadiance = sRGBGammaToLinear(sanitizeColor(DusklightEnv::fogColor())) *
                       std::max(fogRadianceScale(), 0.0f);
 
     // Size the grid from the game's own fog range, so its fixed slice count lands where the fog
     // actually is. This costs nothing: the slice count does not change, only how far it reaches.
+    // Resolved before the density below, which is solved at this reach.
     const float meterToWorld = RtxOptions::getMeterToWorldUnitScale();
     const float minDistance = std::max(froxelMaxDistanceMinMeters(), 0.0f) * meterToWorld;
     const float maxDistance = std::max(froxelMaxDistanceMaxMeters() * meterToWorld, minDistance);
@@ -238,9 +265,131 @@ namespace dxvk {
     }
 
     out.froxelMaxDistance = m_smoothedFroxelMaxDistance;
+
+    // Solve the medium at the far edge of the grid. DusklightAtmosphere.md §5.1.
+    //
+    // The game's fog and a homogeneous medium are different functions of distance and no choice of
+    // density makes them equal: the ramp is flat zero out to its start and then linear in opacity,
+    // while exp(-sigma * d) starts accumulating at the camera and only asymptotes towards opaque.
+    // The previous derivation matched them where the ramp is half opaque and let the rest fall where
+    // it fell, which put the whole disagreement in the near field - measurably so: with a ramp
+    // starting at 0.3 of its end, the medium was 27% opaque at the distance the game shows no fog at
+    // all.
+    //
+    // So the medium is now solved to hit a *fraction* of the game's own opacity at the one distance
+    // that matters for the split - where the grid stops - and the composite pays back the rest at
+    // every distance. Under-running is the whole point: the composite can add fog to a pixel and
+    // cannot take it back out, so an overshoot is the one error that survives.
+    const float span = end - start;
+    const float reach = out.froxelMaxDistance;
+
+    out.rampOpacityAtReach = std::clamp((reach - start) / span, 0.0f, 1.0f);
+
+    // Capped short of the ramp itself. Reaching it exactly would want infinite density, and merely
+    // approaching it buys a little opacity at the edge of the grid for a density that dominates
+    // everything in front of it.
+    constexpr float kMaxMediumOpacityAtReach = 0.95f;
+
+    const float mediumTarget = std::min(std::clamp(mediumFraction(), 0.0f, 1.0f) * out.rampOpacityAtReach,
+                                        kMaxMediumOpacityAtReach);
+
+    float sigma = 0.0f;
+
+    if (mediumTarget > 0.0f && reach > 0.0f) {
+      sigma = -std::log(1.0f - mediumTarget) / reach;
+    }
+
+    sigma *= std::max(densityScale(), 0.0f);
+
+    // Ceiling on density rather than on the half opaque distance it used to clamp. A scripted
+    // whiteout is already opaque at the camera and would otherwise ask for a medium dense enough to
+    // swallow the near field whole; the composite still corrects to the game's ramp above this, so
+    // the clamp decides how much of a whiteout is volumetric rather than how thick it looks.
+    sigma = std::min(sigma, std::log(2.0f) / std::max(zHalfMin(), 1e-3f));
+
+    out.sigma = std::max(sigma, 0.0f);
+    out.mediumOpacityAtReach = 1.0f - std::exp(-out.sigma * reach);
     out.fogValid = true;
 
+    logFog(out);
+
     return out;
+  }
+
+  void DxvkDusklightAtmosphere::logFog(const Derived& d) const {
+    if (!fogLog() || !d.fogValid || m_fogLogCapped) {
+      return;
+    }
+
+    // Deduplicated on everything that decides the split, so a line appears when the answer changes
+    // and not when the player walks. Quantised so that the smoothing easing the grid's reach across
+    // a few frames does not spend the budget on a transition.
+    const auto quantise = [](float value, float step) -> int64_t {
+      return static_cast<int64_t>(std::lround(value / step));
+    };
+
+    uint64_t key = 1469598103934665603ull;
+
+    const auto mix = [&key](int64_t value) {
+      key = (key ^ static_cast<uint64_t>(value)) * 1099511628211ull;
+    };
+
+    mix(quantise(d.rampStart, 1.0f));
+    mix(quantise(d.rampEnd, 1.0f));
+    mix(quantise(d.froxelMaxDistance, 64.0f));
+    mix(quantise(d.sigma, 1e-7f));
+    mix(quantise(multiScatteringScale(), 0.01f));
+
+    for (uint32_t i = 0; i < m_fogLogCount; ++i) {
+      if (m_fogLogKeys[i] == key) {
+        return;
+      }
+    }
+
+    if (m_fogLogCount >= kMaxFogLogLines) {
+      m_fogLogCapped = true;
+
+      char notice[192];
+      std::snprintf(notice, sizeof(notice),
+                    "[Dusklight] fog: log capped at %u distinct derivations, no more will be written this run "
+                    "(rtx.dusklight.atmosphere.fogLog).",
+                    kMaxFogLogLines);
+      Logger::info(notice);
+      return;
+    }
+
+    m_fogLogKeys[m_fogLogCount++] = key;
+
+    // The single number worth grepping for: the worst fog the original did not have. Compare it
+    // against DusklightAtmosphere.md §5.1's table - it is the whole of what mediumFraction trades,
+    // and the composite cannot correct any of it. Solved, not read off the samples below, which are
+    // at fixed fractions of the grid and need not land anywhere near the peak.
+    const float nearHaze = worstNearHaze(d.sigma, d.rampStart, d.rampEnd);
+
+    char line[512];
+    int written = std::snprintf(line, sizeof(line),
+                                "[Dusklight] fog: ramp=[%.0f,%.0f] reach=%.0fu(%.1fm) sigma=%.3e/u frac=%.2f "
+                                "msScale=%.2f nearHaze=%.3f rampAtReach=%.3f medAtReach=%.3f",
+                                d.rampStart, d.rampEnd, d.froxelMaxDistance,
+                                d.froxelMaxDistance / RtxOptions::getMeterToWorldUnitScale(),
+                                d.sigma, std::clamp(mediumFraction(), 0.0f, 1.0f), multiScatteringScale(),
+                                nearHaze, d.rampOpacityAtReach, d.mediumOpacityAtReach);
+
+    // The two opacity curves sampled across the grid, plus what the composite makes up. A negative
+    // fix is the medium already past the ramp at that distance; it is expected inside the ramp's
+    // dead zone and nearHaze above is the honest measure of it.
+    for (int step = 1; step <= 4 && written > 0 && written < static_cast<int>(sizeof(line)); ++step) {
+      const float distance = d.froxelMaxDistance * (0.25f * static_cast<float>(step));
+      const float span = d.rampEnd - d.rampStart;
+      const float game = span > 0.0f ? std::clamp((distance - d.rampStart) / span, 0.0f, 1.0f) : 0.0f;
+      const float medium = 1.0f - std::exp(-d.sigma * distance);
+
+      written += std::snprintf(line + written, sizeof(line) - static_cast<size_t>(written),
+                               " | %d%%: game=%.3f med=%.3f fix=%+.3f",
+                               step * 25, game, medium, game - medium);
+    }
+
+    Logger::info(line);
   }
 
   float DxvkDusklightAtmosphere::resolvePhysicalWeight() const {
@@ -353,7 +502,20 @@ namespace dxvk {
     // The colour arrives here rather than through extinction. Without it the fog is only ever as
     // bright as the lights that reach it, and the game's fog is never black - it was a blend
     // towards an authored colour, not a simulation, so an unlit room still had coloured fog.
-    multiScatteringEstimate = d.fogRadiance * std::max(multiScatteringScale(), 0.0f);
+    //
+    // Divided through by the albedo because of where this lands: an unlit stretch of a homogeneous
+    // medium integrates to albedo * estimate * (1 - transmittance), so injecting the fog colour raw
+    // settles the medium at albedo times it - 0.9 here, and 0.225 with the multiplier this used to
+    // carry. Meanwhile the composite's correction blends towards the fog colour itself, so the two
+    // halves of the same fog were aiming at colours a factor of four apart and the seam between them
+    // was a colour seam as much as a density one. Dividing it out makes the medium's own settled
+    // colour exactly the authored one. DusklightAtmosphere.md §5.3.
+    const float ambientScale = std::max(multiScatteringScale(), 0.0f);
+    constexpr float kMinAlbedo = 1e-3f;
+
+    multiScatteringEstimate = Vector3(d.fogRadiance.x * ambientScale / std::max(albedo.x, kMinAlbedo),
+                                      d.fogRadiance.y * ambientScale / std::max(albedo.y, kMinAlbedo),
+                                      d.fogRadiance.z * ambientScale / std::max(albedo.z, kMinAlbedo));
   }
 
   void DxvkDusklightAtmosphere::fillCompositeArgs(DusklightCompositeArgs& args) const {
@@ -369,7 +531,6 @@ namespace dxvk {
     args.fogColor = d.fogRadiance;
     args.rampStart = d.rampStart;
     args.rampEnd = d.rampEnd;
-    args.handoverDistance = d.froxelMaxDistance;
     // The same weight the sky itself was blended with. Once the sky stops coming from the palette,
     // the palette's fog colour stops describing it, and letting the fog keep the old colour would
     // leave the horizon one weather and the air in front of it another.
@@ -552,10 +713,16 @@ namespace dxvk {
 
     RemixGui::Separator();
     ImGui::TextUnformatted("Fog");
+    RemixGui::DragFloat("Volumetric Share##dusklightAtmo", &mediumFractionObject(), 0.01f, 0.f, 1.f, "%.2f");
+    ImGui::TextWrapped("How much of the game's fog the medium carries; the composite makes up the rest and lands the "
+                       "total on the game's ramp either way. Down for a cleaner near field, up for stronger shafts. "
+                       "The error it buys sits just inside the ramp's start distance, where the original had no fog "
+                       "and an exponential medium always has some.");
     RemixGui::DragFloat("Half Density Floor##dusklightAtmo", &zHalfMinObject(), 1.0f, 1.f, 10000.f, "%.0f units");
     RemixGui::DragFloat("Density Scale##dusklightAtmo", &densityScaleObject(), 0.01f, 0.f, 8.f, "%.2f");
     RemixGui::DragFloat("Fog Radiance Scale##dusklightAtmo", &fogRadianceScaleObject(), 0.01f, 0.f, 16.f, "%.2f");
-    RemixGui::DragFloat("Multi Scattering##dusklightAtmo", &multiScatteringScaleObject(), 0.01f, 0.f, 4.f, "%.2f");
+    RemixGui::DragFloat("Medium Own Colour##dusklightAtmo", &multiScatteringScaleObject(), 0.01f, 0.f, 4.f, "%.2f");
+    RemixGui::Checkbox("Log Fog Derivation##dusklightAtmo", &fogLogObject());
 
     RemixGui::Separator();
     ImGui::TextUnformatted("Froxel grid");
@@ -645,6 +812,21 @@ namespace dxvk {
       ImGui::Text("fog radiance: %.3f, %.3f, %.3f", d.fogRadiance.x, d.fogRadiance.y, d.fogRadiance.z);
       ImGui::Text("froxel grid reaches %.0f units (%.1f m)",
                   d.froxelMaxDistance, d.froxelMaxDistance / RtxOptions::getMeterToWorldUnitScale());
+      ImGui::Text("at that reach: game %.3f   medium %.3f", d.rampOpacityAtReach, d.mediumOpacityAtReach);
+      ImGui::Text("near haze: %.3f  (worst fog the original did not have - lower Volumetric Share)",
+                  worstNearHaze(d.sigma, d.rampStart, d.rampEnd));
+
+      // The same three columns the log writes, so a screenshot and a log say the same thing.
+      const float span = d.rampEnd - d.rampStart;
+
+      for (int step = 1; step <= 4; ++step) {
+        const float distance = d.froxelMaxDistance * (0.25f * static_cast<float>(step));
+        const float game = span > 0.0f ? std::clamp((distance - d.rampStart) / span, 0.0f, 1.0f) : 0.0f;
+        const float medium = 1.0f - std::exp(-d.sigma * distance);
+
+        ImGui::Text("  %3d%% (%6.0f u): game %.3f   medium %.3f   composite adds %+.3f",
+                    step * 25, distance, game, medium, game - medium);
+      }
     }
     ImGui::Text("area: %s   colpat %d   sun %.1f deg %s",
                 d.outdoor ? "outdoor" : "no sky", DusklightEnv::colpat(),
