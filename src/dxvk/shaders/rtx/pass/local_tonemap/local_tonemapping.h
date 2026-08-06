@@ -65,9 +65,12 @@ struct LuminanceArgs
   uint debugView;
 
   uint useLegacyACES;
-  uint pad1;
+  uint tonemapOperator;   // The ruler follows the selected operator - see localTonemapRuler().
   uint pad2;
   uint enableAutoExposure;
+
+  AgxArgs agx;
+  Gt7Args gt7;
 };
 
 struct ExposureWeightArgs

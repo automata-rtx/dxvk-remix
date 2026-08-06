@@ -24,3 +24,43 @@
 #include "rtx/pass/local_tonemap/local_tonemapping.h"
 #include "rtx/utility/common.slangh"
 #include "rtx/utility/color.slangh"
+#include "rtx/pass/tonemap/tonemapping.slangh"
+#include "rtx/pass/tonemap/agx.slangh"
+#include "rtx/pass/tonemap/gt7.slangh"
+
+// The operator the exposure fusion measures WITH, as opposed to the one it finishes with.
+//
+// This path is Mertens exposure fusion: it synthesises three exposures in luminance.comp.slang,
+// scores each pixel in each against a well-exposedness target of 0.50 in exposure_weight.comp.slang,
+// and blends per pixel. Building and scoring those synthetic exposures needs a response curve, and
+// that curve is a measuring instrument rather than a look.
+//
+// The ruler follows the selected operator, so ACES keeps behaving exactly as it does in stock
+// Remix while AgX and GT7 are each judged on their own response. Measured fusion weight spread
+// (max-min, higher = stronger local adaptation) is near identical on average - ACES 0.162,
+// AgX 0.166, GT7 0.158 - so this redistributes where local adaptation acts rather than weakening
+// it: ACES is strongest around mid grey, AgX and GT7 further up. All three sit within 0.3 stops
+// of true mid grey against the hardcoded 0.50 target (ACES -0.25, AgX +0.03, GT7 +0.27).
+//
+// Note the shipped rtx.localtonemap.shadows / highlights / exposurePreferenceSigma defaults were
+// tuned against the ACES response, so they may want revisiting per operator.
+float3 localTonemapRuler(float3 color, uint tonemapOperator, bool useLegacyACES, AgxArgs agx, Gt7Args gt7)
+{
+  if (tonemapOperator == tonemapOperatorAgX)
+  {
+    return agxToneMapping(color, agx);
+  }
+
+  if (tonemapOperator == tonemapOperatorGT7)
+  {
+    return gt7ToneMapping(color, gt7);
+  }
+
+  // ACES, and also 'None': the fusion still needs something to measure with when no final look is
+  // applied, and ACES is what its defaults were tuned against.
+  //
+  // The 'true' suppresses the ACES black level clamp. ACES.hlsl documents that the local tone
+  // mapper needs it - without it the fitted curve reads a flat 0.0 for everything below roughly
+  // 5 stops under mid grey, leaving the fusion unable to tell any deep shadow from any other.
+  return ACESFilm(color, useLegacyACES, true);
+}

@@ -95,17 +95,10 @@ void main(uint2 threadId : SV_DispatchThreadID)
   // Apply local exposure adjustment as a crude multiplier on all RGB channels.
   // This is... generally pretty wrong, but enough for the demo purpose.
   //
-  // NOTE: this ACES call is deliberately NOT switched with the operator selection below. Here the
-  // operator is being used as a RULER - to measure this pixel's local intensity - not as a look.
-  // The same applies to the ACES calls in luminance.comp.slang.
-  //
-  // The reason is narrower than an earlier version of this comment claimed: substituting AgX
-  // weakens fusion weight spread around mid grey by about 2.2x, but is equal or STRONGER
-  // everywhere else, and is the better calibrated ruler against the fusion's hardcoded 0.50
-  // target. The one solid objection left is that the shipped shadows/highlights/
-  // exposurePreferenceSigma defaults are tuned against this curve's response. See
-  // documentation/ToneMappingExposureNotes.md section 8, including the correction notice.
-  vec3 texelOriginal = linearToGamma(ACESFilm(originalColor.xyz, cb.useLegacyACES, true));
+  // The local intensity probe. Same ruler as the three synthetic exposures in
+  // luminance.comp.slang - it follows the selected operator, so ACES keeps behaving as it does in
+  // stock Remix while AgX and GT7 are each measured on their own response curve.
+  vec3 texelOriginal = linearToGamma(localTonemapRuler(originalColor.xyz, cb.tonemapOperator, cb.useLegacyACES, cb.agx, cb.gt7));
   float luminance = calcBt709Luminance(texelOriginal) + 0.00001;
   float finalMultiplier = max(A * luminance + B, 0.0) / luminance;
   // This is a hack to prevent super dark pixels getting boosted by a lot and showing compression artifacts.

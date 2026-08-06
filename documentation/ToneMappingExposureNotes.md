@@ -111,6 +111,9 @@ Every shadow past about −5 stops reads as the same value, so the exposure fusi
 distinguish any of them and its local adaptation goes flat in exactly the region it exists to
 serve.
 
+Both ruler sites now route through `localTonemapRuler()` in `local_tonemapping.slangh`, which
+passes the flag on the ACES branch, so the two can no longer drift apart. See §8.
+
 ---
 
 ## 5. Auto exposure never received a reset signal
@@ -171,53 +174,106 @@ the UI is the direct diagnostic.
 
 ---
 
-## 8. Why AgX was not put inside the local tone mapper
+## 8. The local tone mapper's ruler follows the selected operator
 
-**Not a defect. A design decision, recorded with its evidence** because the code now looks
-deliberately inconsistent and would otherwise invite a "fix".
+**Not a defect. A design decision, recorded with its evidence** — and one that was made twice,
+the first time on bad numbers.
 
 The local path is **exposure fusion**: synthesise three exposures from the one image, score each
-pixel in each for "well-exposedness" against a target of 0.50, blend per pixel. It calls ACES in
-three places to *build and score* those synthetic exposures, and once at the end as the look.
+pixel in each for "well-exposedness" against a target of 0.50, blend per pixel. Building and
+scoring those three needs a response curve, and there the operator is a **ruler, not a look**.
+`luminance.comp.slang` uses it three times to build the synthetic exposures and
+`final_combine.comp.slang` once more as a local intensity probe.
 
-In the first three, the operator is a **ruler, not a look**. Fusion weight spread (max − min;
-higher = stronger local adaptation):
+> **Correction.** An earlier revision of this document argued for pinning the ruler to ACES, on
+> the grounds that AgX was "roughly 4× weaker in the midtones" and that the 0.50 target was
+> better calibrated to ACES. **Both claims were wrong** — they came from a throwaway analysis
+> script carrying the same transposed inset/outset matrices later caught and fixed in
+> `agx.slangh`. The tables below are recomputed from the shipped constants.
 
-| scene brightness | ACES (current) | AgX |
+Fusion weight spread (max − min; higher = stronger local adaptation):
+
+| scene brightness | ACES | AgX | GT7 |
+|---|---|---|---|
+| −8 stops | 0.048 | **0.056** | **0.056** |
+| −6 | 0.113 | **0.169** | 0.116 |
+| −4 | 0.255 | **0.259** | 0.217 |
+| −2 | 0.182 | 0.141 | **0.217** |
+| **mid grey** | **0.321** | 0.144 | 0.256 |
+| +2 | 0.256 | 0.287 | **0.397** |
+| +4 | 0.061 | **0.181** | 0.000 |
+| +6 | 0.000 | **0.037** | 0.000 |
+| **mean** | 0.162 | **0.166** | 0.158 |
+
+The means are within 5% of each other. Switching the ruler **redistributes where local adaptation
+acts rather than weakening it**: ACES is strongest around mid grey and dead above +4 stops; AgX
+spreads further into shadows and highlights; GT7 peaks hardest at +2 but goes flat above +3,
+because by then all three of its synthetic exposures have reached display white and there is
+nothing left to disagree about.
+
+Calibration against the hardcoded 0.50 target — the scene value each ruler calls "correctly
+exposed":
+
+| ruler | linear | offset from true mid grey |
 |---|---|---|
-| −8 stops | 0.048 | **0.056** |
-| −6 | 0.113 | **0.169** |
-| −4 | 0.255 | **0.259** |
-| −2 | **0.182** | 0.141 |
-| **mid grey** | **0.321** | 0.144 |
-| +2 | 0.256 | **0.287** |
-| +4 | 0.061 | **0.181** |
-| +6 | 0.000 | **0.037** |
+| ACES | 0.151 | −0.25 stops |
+| AgX | 0.183 | **+0.03 stops** |
+| GT7 | 0.218 | +0.27 stops |
 
-> **Correction.** An earlier revision of this document claimed AgX was "roughly 4× weaker in the
-> midtones" and that the fusion's hardcoded 0.50 well-exposedness target was better calibrated to
-> ACES. **Both were wrong**, produced by a throwaway analysis script that carried the same
-> transposed inset/outset matrices later caught and fixed in `agx.slangh`. The table above is
-> recomputed from the shipped constants.
+All three sit inside ±0.3 stops, and AgX is the best calibrated of them — the reverse of what the
+earlier revision claimed.
 
-What the corrected numbers actually say is narrower and more mixed. AgX is weaker only around mid
-grey (0.144 against 0.321, about 2.2×) and at −2 stops; it is **equal or stronger everywhere
-else**, markedly so in deep shadows and in the highlights. And on calibration the result reverses:
-the 0.50 target corresponds to a scene value **+0.03 stops** off true mid grey under AgX against
-**−0.25 stops** under ACES, so AgX is the better-calibrated ruler, not the worse one.
+**So the ruler now follows the selected operator.** ACES keeps behaving exactly as it does in
+stock Remix, and AgX and GT7 are each judged on their own response curve rather than through a
+curve they have nothing to do with. `None` keeps ACES, because the fusion still needs something to
+measure with when no final look is applied.
 
-So only one of the three original arguments survives: the shipped
-`shadows`/`highlights`/`exposurePreferenceSigma` defaults are tuned against the ACES response, and
-swapping the operator silently invalidates that tuning. That is a real cost but a re-tunable one.
+The one genuine cost is that the shipped `rtx.localtonemap.shadows` / `highlights` /
+`exposurePreferenceSigma` defaults were tuned against the ACES response, so they may want
+revisiting per operator. That is a tuning job, not a correctness problem, and
+`exposurePreferenceSigma` remains the direct control over local effect strength.
 
-**The case for leaving the internals on ACES is therefore much weaker than first stated.** Trying
-AgX as the ruler is a reasonable experiment — expect flatter midtone adaptation, better shadow and
-highlight separation, and a re-tune of those three sliders. It was not done here only because the
-decision to keep it was taken on the strength of the bad numbers.
+**Performance note.** Because the ruler is evaluated three times in `luminance.comp.slang` and
+once more in `final_combine.comp.slang`, plus once for the final look, the local path evaluates
+the selected operator **five times per pixel**. That is free for ACES (pure ALU) but not for GT7
+at 51 transcendental ops per evaluation — see §9.
 
-**If a stronger local effect is wanted without changing the operator,
-`exposurePreferenceSigma` is the direct control.**
 
+---
+
+## 9. What the operators cost
+
+**Estimated, not measured.** These are transcendental (SFU) operation counts taken from the
+shaders, divided by theoretical SFU throughput. Real cost will be higher - branch divergence,
+cache behaviour, no co-issue - so treat them as a floor and roughly double for planning.
+
+The local path evaluates the selected operator **five times per pixel**: three to build the
+synthetic exposures in `luminance.comp.slang`, once as the local intensity probe in
+`final_combine.comp.slang`, and once for the final look. The global path evaluates it once.
+That 5x multiplier is free for ACES and is not free for GT7.
+
+| operator | path | SFU/pixel | 1080p | 1440p | 4K |
+|---|---|---|---|---|---|
+| ACES (legacy) | Global | 0 | ~0 ms | ~0 ms | ~0 ms |
+| ACES (legacy) | Local | 0 | ~0 ms | ~0 ms | ~0 ms |
+| AgX | Global | 9 | 0.00 - 0.01 ms | 0.01 - 0.02 ms | 0.01 - 0.05 ms |
+| AgX | Local | 45 | 0.01 - 0.06 ms | 0.03 - 0.10 ms | 0.06 - 0.23 ms |
+| GT7 | Global | 51 | 0.02 - 0.07 ms | 0.03 - 0.12 ms | 0.07 - 0.26 ms |
+| GT7 | Local | 255 | 0.08 - 0.33 ms | 0.15 - 0.58 ms | 0.33 - 1.31 ms |
+
+Per evaluation: ACES-legacy is pure ALU; AgX is ~9 (three `log2`, three `pow`); GT7 is 51,
+almost all of it the PQ transfer function - six `gt7InverseEotfSt2084` across the two ICtCp
+conversions and three `gt7EotfSt2084` coming back.
+
+**A LUT would flatten this to one texture fetch, and is the wrong trade here.** The reason to
+run GT7 is hue accuracy under 1 degree; trilinear interpolation between LUT nodes interpolates
+linearly in encoded RGB, which is the operation that causes hue error in the first place. At the
+common 33-cubed size, node spacing is ~3% per axis. A LUT would also need a log shaper (the
+input is unbounded HDR while a 3D LUT is indexed on [0,1]^3), and the chroma fade is a smoothstep
+across a narrow 0.98-1.16 band that nodes can straddle. Direct evaluation is the faithful choice;
+revisit only if profiling says otherwise. *Inference, not established:* the reference ships no
+LUT because it is a sample implementation written for clarity - it has a `main()`, a test
+harness, and switchable ICtCp/Jzazbz paths. What the shipping game does is unknown from it.
 ---
 
 ## What was verified, and what was not

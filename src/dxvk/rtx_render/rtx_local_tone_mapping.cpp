@@ -42,6 +42,8 @@
 // See the matching note in rtx_tone_mapping.cpp - the push constant budget is full.
 static_assert(sizeof(FinalCombineArgs) <= dxvk::MaxPushConstantSize,
               "FinalCombineArgs no longer fits in the push constant budget.");
+static_assert(sizeof(LuminanceArgs) <= dxvk::MaxPushConstantSize,
+              "LuminanceArgs no longer fits in the push constant budget.");
 
 namespace dxvk {
   // Defined within an unnamed namespace to ensure unique definition across binary
@@ -198,6 +200,12 @@ namespace dxvk {
       pushArgs.debugView = debugView.debugViewIdx();
       pushArgs.enableAutoExposure = enableAutoExposure;
       pushArgs.useLegacyACES = RtxOptions::useLegacyACES();
+      // The fusion's ruler follows the selected operator - see localTonemapRuler() in
+      // local_tonemapping.slangh - so this pass needs the same operator parameters the final
+      // combine does.
+      pushArgs.tonemapOperator = static_cast<uint32_t>(tonemapOperator());
+      pushArgs.agx = AgxSettings::buildArgs();
+      pushArgs.gt7 = Gt7Settings::buildArgs();
       ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
       ctx->bindResourceView(LUMINANCE_ORIGINAL, rtOutput.m_finalOutput.view(Resources::AccessType::Read), nullptr);
       ctx->bindResourceView(LUMINANCE_OUTPUT, m_mips.views[0], nullptr);
