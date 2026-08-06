@@ -164,7 +164,7 @@ this runtime's half of the wire and does not go through the bridge.
 | Reproduce Two-Colour Ramps | `rtx.dusklight.rampMaterials` | whether `lerp(colourA, colourB, texture)` — this game's dominant material shape — is evaluated exactly (default) or approximated by one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints |
 | Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether self-lit surfaces emit. The rule needs no tuning: a surface qualifies when its GX colour program never reads the lit channel, it has a colour of its own (authored in GX constants, not from the vertex stream and not a bare texture pass-through), and that colour reads as a glow. Over one measured Goron Mines session that is 6 materials of 77 — every lava and fire surface, nothing else |
 | Emitted Colour | `…emissive.colorSource` | what a glowing surface glows. **Reconstructed Albedo (default)** is the two-colour ramp, so the texture drives the colour and neither overpowers the other — on the lava, `lerp(FF0000, FFFE63, texture)`. Albedo Texture pushes the texture through the material's single D3D9 op, which on the lava is an ADD against red: red pinned, bright end washed to white. Presented Colour is one flat colour |
-| Emissive Intensity | `…emissive.intensity` | the only dial worth touching — scales the surface's own colour into radiance |
+| Emissive Brightness | `…emissive.brightness` | the only dial worth touching, default **10.0**, measured in game rather than guessed. A **target brightness rather than a multiplier**: the emitted radiance is divided by the authored colour's luma, so a dark saturated emitter and a pale one reach the same brightness at one setting. A surface whose colour *sweeps* (the lava's red-to-yellow ramp) is normalised by its dark end, so its bright end overshoots into a white-hot core; a flat pickup glow stays even. Each material's resulting radiance is printed in the log |
 | Saturation / Brightness Counts As Glow | `…emissive.glowChroma` / `glowLuma` | **or**'d, not and'd: an authored glow is a strong colour or it is near-white-hot, while a muted mid-tone is a surface colour. This is what stopped the brown false positives. Should not need touching |
 | Log Emissive Candidates | `…emissive.log` | one bounded line per candidate, accepted **or** rejected. Colourless rejections are counted rather than enumerated, and moving any control on this page re-reports every candidate |
 | Log Material Translation Report | `rtx.dusklight.matrep` | one line per distinct reconstructed material |
@@ -186,6 +186,16 @@ measurement, §10 for the two-colour ramp.
 
 Then the game's own settings, in collapsible sections: Bridge, Sun / Moon
 Light, Local Point Lights, Geometry, Game, Bloom, Ambient Grade, Atmosphere.
+
+One of those is worth naming here because it is a rendering decision rather than
+a preference: **Geometry > Game's Blob Shadows** (`rtx.dusklight.game.blobShadows`,
+default **off**, tested in game 2026-08-06 and correct). Blob shadows are the flat discs the game paints under rupees,
+hearts and pots — an approximation of a shadow Remix traces for real from the
+same geometry, so drawing them puts a painted shadow on top of a correct one.
+The game drops them at registration (`dDlst_shadowControl_c::setSimple`), so no
+draw call is issued rather than one being hidden downstream. Its *projected*
+shadows — Link and the major actors, `dDlst_shadowReal_c` — are a separate
+system and are untouched.
 
 **Greying.** Sections whose Remix dependency is off are wrapped in
 `ImGui::BeginDisabled` *and* carry a line naming the option and where to find
