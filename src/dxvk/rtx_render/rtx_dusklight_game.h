@@ -296,7 +296,9 @@ namespace dxvk {
     RTX_OPTION_ARGS("rtx.dusklight.game", int, effectLightMaxLights, 32,
                     "Most lights this system will submit in one frame, brightest and nearest first.\n"
                     "A light that contributes nothing still costs a light manager entry and a slot in Remix's light sampling, so this bounds a room full of "
-                    "candles rather than trusting it to be reasonable.",
+                    "candles rather than trusting it to be reasonable.\n"
+                    "0 means no limit, matching rtx.dusklight.game.effectLightMaxDistance where 0 disables the distance cull. To turn the system off, use "
+                    "rtx.dusklight.game.effectLights - dragging this to 0 does the opposite of what it looks like.",
                     args.minValue = 0,
                     args.maxValue = 256);
     RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMaxDistance, 12000.0f,

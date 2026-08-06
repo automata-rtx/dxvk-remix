@@ -424,12 +424,28 @@ namespace dxvk {
         uint32_t newBufferIdx = range.offset + range.count;
         ++range.count;
 
+        // A buffer index is only meaningful if it was assigned during the PREVIOUS frame, because
+        // that is the range m_lightMappingData reserves for it (it is sized
+        // m_currentActiveLightCount + previousLightActiveCount). A light that was not written last
+        // frame still carries whatever index it last had.
+        //
+        // The else branch below resets any light that reached this loop and was skipped, but a
+        // light that leaves m_linearizedLights entirely is never reset at all - and an API light
+        // does exactly that whenever DrawLightInstance is not called for it, which for a light
+        // standing in for an effect is an ordinary frame, not an error. Trusting a stale index
+        // writes past the end of the mapping buffer, or maps this light's temporal history onto an
+        // unrelated one.
+        const uint32_t previousBufferIdx =
+          (light.getBufferIdx() != kNewLightIdx && light.getBufferIdx() < previousLightActiveCount)
+            ? light.getBufferIdx()
+            : kNewLightIdx;
+
         // RTXDI needs a mapping from previous light idx to current (to deal with light list reordering)
-        if (light.getBufferIdx() != kNewLightIdx)
-          m_lightMappingData[m_currentActiveLightCount + light.getBufferIdx()] = (uint16_t)newBufferIdx;
+        if (previousBufferIdx != kNewLightIdx)
+          m_lightMappingData[m_currentActiveLightCount + previousBufferIdx] = (uint16_t)newBufferIdx;
 
         // Also a mapping from current light idx to previous (for unbiased resampling)
-        m_lightMappingData[newBufferIdx] = light.getBufferIdx();
+        m_lightMappingData[newBufferIdx] = (uint16_t)previousBufferIdx;
 
         // Prepare data for GPU
         size_t dataOffset = newBufferIdx * kLightGPUSize;

@@ -3152,7 +3152,7 @@ namespace dxvk {
         "Above 1 a flame hazes the air around it without getting brighter on the walls. Reaches an "
         "existing light on its next update, not immediately.");
 
-      RemixGui::DragInt("Max Lights##dusklight", &DusklightGame::effectLightMaxLightsObject(), 1.f, 0, 256);
+      RemixGui::DragInt("Max Lights (0 = no limit)##dusklight", &DusklightGame::effectLightMaxLightsObject(), 1.f, 0, 256);
       RemixGui::DragFloat("Max Distance##dusklight", &DusklightGame::effectLightMaxDistanceObject(), 50.f, 0.f, 100000.f, "%.0f units");
       RemixGui::Checkbox("Light Explosions and One-Shots", &DusklightGame::effectLightBurstsObject());
 
@@ -3162,6 +3162,18 @@ namespace dxvk {
       ImGui::TextWrapped(
         "An effect earns a light when it is being drawn, blends additively, and its colour reads as a "
         "glow - saturated OR near white hot. These are the two halves of that last test.");
+
+      if (DusklightGame::effectLights() && DusklightGame::localLights()) {
+        // Both on is a legitimate comparison to make deliberately. Inheriting it is not: anyone
+        // who tuned the old mirror has localLights = True saved in their rtx.conf, and the first
+        // launch after this landed gives every fire two lights - one of them in the old, wrong
+        // place. That reads as the new placement being broken, which is the one conclusion the
+        // screenshot cannot distinguish.
+        ImGui::TextWrapped(
+          "Both light systems are on, so every fire has two lights and one of them is in the "
+          "position this system exists to stop using. If you did not mean to compare them, turn "
+          "off Local Point Lights below - it stays enabled from a saved config.");
+      }
 
       if (feedLive) {
         // The chain, in the order a light can be lost: alive -> drawn in a world pass -> passed the
