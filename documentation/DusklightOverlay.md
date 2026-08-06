@@ -189,7 +189,7 @@ Light, Local Point Lights, Geometry, Game, Bloom, Ambient Grade, Atmosphere.
 
 One of those is worth naming here because it is a rendering decision rather than
 a preference: **Geometry > Game's Blob Shadows** (`rtx.dusklight.game.blobShadows`,
-default **off**). Blob shadows are the flat discs the game paints under rupees,
+default **off**, tested in game 2026-08-06 and correct). Blob shadows are the flat discs the game paints under rupees,
 hearts and pots — an approximation of a shadow Remix traces for real from the
 same geometry, so drawing them puts a painted shadow on top of a correct one.
 The game drops them at registration (`dDlst_shadowControl_c::setSimple`), so no
