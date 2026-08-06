@@ -307,14 +307,14 @@ namespace dxvk {
                "Give explosions and other one-shot fire their own light.\n"
                "Off because a light that appears and vanishes inside a fifth of a second is a flash, which is sometimes exactly right - a bomb should flash "
                "- and sometimes a flicker artefact. This is the exclusion most likely to be wrong for this game; turn it on and look at a bomb.");
-    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMinChroma, 0.20f,
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMinChroma, 0.50f,
                     "How saturated an effect's colour has to be to read as a glow rather than as smoke or spray.\n"
                     "An effect earns a light when it is being drawn, blends additively, and its colour reads as a glow - saturated OR near white hot. This "
                     "is the saturated half; effectLightMinLuma is the white hot half. Thresholds rather than constants because they are a judgement about "
-                    "this game's palette, the same reasoning as the material self-illumination thresholds.",
+                    "this game's palette, the same reasoning as the material self-illumination thresholds - and the same two functions and the same defaults, because it is the same question asked of an effect rather than of a surface.",
                     args.minValue = 0.0f,
                     args.maxValue = 1.0f);
-    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMinLuma, 0.75f,
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMinLuma, 0.70f,
                     "How bright a desaturated effect's colour has to be to read as white hot rather than as smoke. See effectLightMinChroma.",
                     args.minValue = 0.0f,
                     args.maxValue = 1.0f);
