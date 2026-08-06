@@ -318,6 +318,14 @@ namespace dxvk {
                     "How bright a desaturated effect's colour has to be to read as white hot rather than as smoke. See effectLightMinChroma.",
                     args.minValue = 0.0f,
                     args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightVolumetric, 1.0f,
+                    "How much an effect light contributes to fog and haze, relative to what it contributes to surfaces.\n"
+                    "Remix applies this multiplier in the volumetrics passes only, so above 1 a flame hazes the air around it without getting any brighter "
+                    "on the walls - which is the cheapest way to get the glow a fire has in air with dust or smoke in it. 0 removes the light from the "
+                    "volumetrics entirely while leaving it lighting surfaces normally.\n"
+                    "Read when a light is created, so a change reaches existing lights on their next update rather than immediately.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 16.0f);
     RTX_OPTION_FLAG("rtx.dusklight.game", int, effectLightReportCommit, 0, RtxOptionFlags::NoSave,
                     "Incremented by the overlay to make the game log one line per distinct effect it has seen - name, blend configuration, colours, class "
                     "and whether the rule accepted it.\n"

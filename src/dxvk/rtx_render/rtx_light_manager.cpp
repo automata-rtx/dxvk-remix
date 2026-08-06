@@ -725,7 +725,19 @@ namespace dxvk {
     if (found != m_externalLights.end()) {
       // TODO: warn the user about id collision,
       //       or just overwriting existing one is fine?
+
+      // Carry the buffer index across the overwrite, exactly as the game light path does above.
+      // RtLight::copyFrom assigns m_bufferIdx wholesale, and a freshly constructed light has
+      // kNewLightIdx - so without this, updating a light drops it out of the previous-to-current
+      // index map, RAB_TranslateLightIndex returns RTXDI_INVALID_LIGHT_INDEX, and every temporal
+      // reservoir referencing it is discarded. One frame of noise per update.
+      //
+      // Upstream that costs little, because upstream's API lights are authored scene lights that
+      // rarely change. It costs a great deal here: a flame's radiance animates, so an effect light
+      // updates constantly and would never accumulate any temporal reuse at all.
+      const uint32_t bufferIdx = found->second.getBufferIdx();
       found->second = rtlight;
+      found->second.setBufferIdx(bufferIdx);
     } else {
       m_externalLights.emplace(handle, rtlight);
     }

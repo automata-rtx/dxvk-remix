@@ -48,7 +48,7 @@ readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
 compares it against a `kRequiredProtocol` constant and says so in the tab when
-the game is older. **Currently 6.**
+the game is older. **Currently 7.**
 
 > **Standing rule, already paid for twice:** the game and the Remix DLL are one
 > protocol. Build both from the same point. Both directions of skew have cost
@@ -409,6 +409,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
+| Effect Lights section | landed 2026-08-06, protocol 7 — **CI-green is not claimed and it has not run in game.** Replaces the local-light mirror as the default. Its readouts are the whole chain, so a light lost at any step is visible without asking anyone to describe a scene; two of them (`effLightsOrphans`, `effLightsVanilla`) exist to settle specific open questions rather than to be watched. `effectLightReportCommit` is the action counter that dumps the classifier's own inputs and verdicts. Design: `dusklight-ao/docs/effect-lights.md` |
 | Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the lava scores **0.00**, so no threshold could ever reach it. Rev 4 therefore drops the score from the decision entirely and cuts on three measured facts instead — the section now has no threshold in it, and only Emissive Intensity is expected to be touched. **CI-green, not run in game.** No protocol change: nothing in it is read by the game |
 
 Both of the two designs this document argues for at length are now confirmed in
@@ -416,7 +417,7 @@ practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 6** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab). `kRequiredProtocol`
+**Protocol is at 7** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open

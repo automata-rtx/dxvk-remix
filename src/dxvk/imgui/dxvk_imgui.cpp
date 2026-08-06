@@ -3051,7 +3051,7 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Connected, but the game build is older than this build of Remix: it does not read these "
         "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 6 or newer.");
+        "accurate. Update the game to a build that reports protocol 7 or newer.");
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "
@@ -3146,6 +3146,11 @@ namespace dxvk {
         "Merge groups the several emitters that make up one visible fire into one light - a bonfire "
         "is five. Adopt is how close one of the game's lights has to be for its colour and reach to "
         "be taken.");
+
+      RemixGui::DragFloat("Volumetric Boost##dusklight", &DusklightGame::effectLightVolumetricObject(), 0.05f, 0.f, 16.f, "%.2f");
+      ImGui::TextWrapped(
+        "Above 1 a flame hazes the air around it without getting brighter on the walls. Reaches an "
+        "existing light on its next update, not immediately.");
 
       RemixGui::DragInt("Max Lights##dusklight", &DusklightGame::effectLightMaxLightsObject(), 1.f, 0, 256);
       RemixGui::DragFloat("Max Distance##dusklight", &DusklightGame::effectLightMaxDistanceObject(), 50.f, 0.f, 100000.f, "%.0f units");
