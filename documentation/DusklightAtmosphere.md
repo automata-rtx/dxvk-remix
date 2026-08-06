@@ -607,7 +607,7 @@ row says otherwise.
 | `composite.comp.slang` `applyFog` | range split | `cb.dusklightArgs.enable` |
 | `composite_args.h` | one args struct added (`DusklightCompositeArgs`) | additive only |
 | `froxel.slangh` + `VolumeArgs` | `previousFroxelMaxDistance` | additive; also a genuine upstream fix |
-| `rtx_light_manager.cpp` | none — B1 supplies a real texture | — |
+| `rtx_light_manager.cpp` | `addExternalLight` preserves the light's buffer index across an overwrite, matching the game-light path a few lines above. Three lines, no reformatting | none — it is a straight correction, and it applies to every API light |
 
 *Materials — the 2026-08-04 work (see `aurora-ao/docs/dx9/remix-material-interface.md` §9–§10):*
 
@@ -644,10 +644,14 @@ The two API rows are the exception — they change upstream behaviour rather tha
 adding a branch, so a rebase has to re-apply intent there, and they are the two
 worth checking first.
 
-**Game side** (`dusklight-ao`): everything in `src/dusk/remix_*.{cpp,hpp}`.
-Churn in `d_kankyo.cpp` is limited to one capture call, matching the existing
-`dKy_celestial_orbit_z_ratio` pattern. Aurora's half of the material transport
-is in `extern/aurora/lib/dx9/` and rebases against aurora, not against Remix.
+**Game side** (`dusklight-ao`): everything in `src/dusk/remix_*.{cpp,hpp}` and
+`src/dusk/effect_lights.{cpp,hpp}`. Churn in `d_kankyo.cpp` is limited to one
+capture call, matching the existing `dKy_celestial_orbit_z_ratio` pattern;
+`d_particle.cpp` carries one guarded call at the tail of
+`dPa_simpleEcallBack::set`, which is the only point at which each instance of a
+shared "simple" effect is still distinguishable from the others. Aurora's half
+of the material transport is in `extern/aurora/lib/dx9/` and rebases against
+aurora, not against Remix.
 
 ---
 
