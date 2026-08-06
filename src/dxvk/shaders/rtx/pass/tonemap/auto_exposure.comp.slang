@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2022-2024, NVIDIA CORPORATION. All rights reserved.
+* Copyright (c) 2022-2026, NVIDIA CORPORATION. All rights reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -27,126 +27,198 @@ RWTexture1D<uint> InOutHistogram;
 layout(binding = AUTO_EXPOSURE_EXPOSURE_INPUT_OUTPUT)
 RWTexture1D<float> OutExposure;
 
-layout(binding = AUTO_EXPOSURE_EC_INPUT)
-Sampler1D<float> InExposureCompensation;
-
 layout(binding = AUTO_EXPOSURE_DEBUG_VIEW_OUTPUT)
 RWTexture2D<float4> DebugView;
+
+layout(binding = AUTO_EXPOSURE_DEBUG_STATS_OUTPUT)
+RWStructuredBuffer<AutoExposureDebugStats> OutDebugStats;
 
 layout(push_constant)
 ConstantBuffer<ToneMappingAutoExposureArgs> cb;
 
-groupshared float g_localData[EXPOSURE_HISTOGRAM_SIZE];
+groupshared float g_bins[EXPOSURE_HISTOGRAM_SIZE];
 
-// Computes the inclusive prefix sum of val across the entire group.
-// For instance, [3, 10, 5, 1, ...] maps to [3, 13, 18, 19, ...]
-float computePrefixSum(float val, const uint linearIndex)
+// EV100 at the centre of a histogram bin.
+float binCentreEV(uint index)
 {
-  GroupMemoryBarrierWithGroupSync();
-
-  // NOTE: WavePrefixSum computes an _ex_clusive prefix sum, so add the original 'val'
-  val = WavePrefixSum(val) + val;
-  g_localData[linearIndex] = val;
-  GroupMemoryBarrierWithGroupSync();
-
-  for (uint k = WaveGetLaneCount(); k < EXPOSURE_HISTOGRAM_SIZE; k *= 2)
-  {
-    uint blockIndex = linearIndex / k;
-    // Propagate prefixSum to the next block for every other block so as to avoid 
-    // writing into shared memory cells that are being read in this iteration.
-    // This way ith + 1 block will contain prefixSum considering ith block. 
-    // Then the next iteration will double the block size.    
-    if ((blockIndex % 2) == 1)
-        g_localData[linearIndex] += g_localData[k*blockIndex - 1];
-    
-    GroupMemoryBarrierWithGroupSync();
-  }
-
-  return g_localData[EXPOSURE_HISTOGRAM_SIZE-1];
-}
-
-float getHistogramWeight(uint index) {
-  float weightUV = (index + 0.5) / float(EXPOSURE_HISTOGRAM_SIZE);
-  return InExposureCompensation.SampleLevel(weightUV, 0).r;
+  return histogramOffsetToNormalizedEV(float(index) + 0.5f) * cb.evRange + cb.evMinValue;
 }
 
 [shader("compute")]
 [numthreads(EXPOSURE_HISTOGRAM_SIZE, 1, 1)]
 void main(uint2 threadId : SV_DispatchThreadID, uint linearIndex : SV_GroupIndex)
 {
-  float weight = cb.useExposureCompensation ? getHistogramWeight(linearIndex) : 1.0f;
+  // Pull the histogram into groupshared before anyone resets it, so the serial walk below
+  // reads a stable snapshot.
+  g_bins[linearIndex] = float(InOutHistogram[linearIndex]);
 
-  float countThisBucket = (float)InOutHistogram[linearIndex] * weight;
-  float totalWeight = computePrefixSum(countThisBucket, linearIndex);
+  GroupMemoryBarrierWithGroupSync();
 
-  float adaptedCountThisBucket = countThisBucket;
-  if (cb.averageMode == 0) // mean
-  {
-    adaptedCountThisBucket *= linearIndex; // factor in the index so we can compute the mean bucket quickly
-  }
-
-  // Populate the g_localData with   
-  const float weightedSum = computePrefixSum(adaptedCountThisBucket, linearIndex);
-
-  float normalizedEV = 0;
-  if (linearIndex == 0) 
-  {
-
-    uint discardSampleCount = countThisBucket; // discarded (e.g. black) pixel count, since this is the 0th bucket
-
-    float weightedAverage;
-
-    if (cb.averageMode == 1) 
-    {
-      float median = (weightedSum - discardSampleCount) / 2.f;
-      weightedAverage = 0.5f; // Start with the first bucket center
-
-      for (uint i=1 ; i<EXPOSURE_HISTOGRAM_SIZE ; i++) 
-      {
-        if (g_localData[i] > median)
-        {
-          break;
-        }
-        
-        weightedAverage = i + 0.5f; // +0.5 as we want the center of the bucket
-      }
-    }
-    else 
-    {
-      // Weight our sum by the number of pixels (account for the almost black pixels in bucket[0] - which shouldnt contribute to the average)
-      weightedAverage = weightedSum / totalWeight;
-    }
-
-    // Undo histogram transform
-    normalizedEV = histogramOffsetToNormalizedEV(weightedAverage);
-
-    const float currentEV100 = normalizedEV * cb.evRange + cb.evMinValue;
-    
-    const float currentLum = calcEV100Luminance(currentEV100);
-
-    // Map average luminance to middle grey
-    const float middleGrey = 0.18f;
-
-    const float currentExposure = middleGrey / max(0.001f, currentLum * (1.0 - middleGrey));
-
-    // Smooth out large exposure swings over time
-    const float previousExposure = OutExposure[0];
-    const float adaptedExposure = previousExposure + (currentExposure - previousExposure) * (1.f - exp2(-cb.autoExposureSpeed));
-
-    OutExposure[0] = adaptedExposure;
-  }
-  
+  // Draw the bars first; thread 0 overlays its marker after the barrier below.
   if (cb.debugMode)
   {
-    DebugView[uint2(linearIndex, 0)] = vec4(float(countThisBucket) / 10000, 0, weight, 1.0);
-    if (linearIndex == 0) 
+    const float barHeight = g_bins[linearIndex] / (10000.0f * float(EXPOSURE_HISTOGRAM_WEIGHT_SCALE));
+    DebugView[uint2(linearIndex, 0)] = float4(barHeight, 0.0f, 0.0f, 1.0f);
+  }
+
+  // Device-scope, because thread 0 overwrites some of the bar texels the other threads just
+  // wrote. A groupshared-only barrier orders execution but not those UAV writes.
+  AllMemoryBarrierWithGroupSync();
+
+  if (linearIndex == 0)
+  {
+    // The reference EV is the metered scene EV that needs no correction at all: the EV at which
+    // a surface already sits at the key value. Deriving it from keyValue rather than hardcoding
+    // it is what makes the stored exposure exactly exp2(referenceEV - currentEV), which in turn
+    // lets the 1x1 exposure texture carry the whole adaptation state.
+    const float referenceEV = calcLuminanceEV100(max(cb.keyValue, 1e-6f));
+
+    // Recover adaptation state from the exposure texture. That texture is also consumed by
+    // DLSS, DLSS-RR and XeSS as their exposure input, so it has to keep holding a plain linear
+    // multiplier - storing EV there instead would silently feed those upscalers a wrong value.
+    const float previousExposure = max(OutExposure[0], 1e-8f);
+    float currentEV = referenceEV - log2(previousExposure);
+
+    // Total weight over bins 1..N-1 only. Bin 0 holds sub-epsilon pixels.
+    //
+    // The old reduction disagreed with itself here: median mode looked for the halfway point of
+    // the non-black population but walked a CDF that still included bin 0, and mean mode divided
+    // by a total that included bin 0 while giving those pixels a numerator contribution of zero.
+    // Both pulled the metered EV down - i.e. exposed the image too bright - in proportion to how
+    // much black was on screen. Excluding bin 0 from both sides removes that class of error.
+    float total = 0.0f;
+    for (uint t = 1; t < EXPOSURE_HISTOGRAM_SIZE; ++t)
     {
-      // Remap exposure to bucket (1, size-1)
-      int avgIdx = uint(normalizedEVToHistogramOffset(normalizedEV));
-      DebugView[uint2(avgIdx, 0)] = float4(0,1,weight,1);
+      total += g_bins[t];
+    }
+
+    // Hold the previous value on a frame with nothing to meter (fully black frame, loading
+    // screen) rather than snapping to a fallback.
+    float sceneEV = currentEV;
+    float trimmedFraction = 0.0f;
+    float loPercentileEV = currentEV;
+    float hiPercentileEV = currentEV;
+
+    if (total > 0.0f)
+    {
+      const float loCount = total * cb.lowPercentile;
+      const float hiCount = total * cb.highPercentile;
+
+      float running = 0.0f;
+      float weightedSum = 0.0f;
+      float weight = 0.0f;
+      bool haveLo = false;
+
+      for (uint i = 1; i < EXPOSURE_HISTOGRAM_SIZE; ++i)
+      {
+        const float count = g_bins[i];
+        if (count <= 0.0f)
+        {
+          continue;
+        }
+
+        const float binLo = running;
+        running += count;
+
+        // How much of this bin falls inside the [loCount, hiCount] slice of the CDF. Trimming
+        // both ends is the main fix: it rejects sun and skybox pixels at the top and crushed
+        // blacks at the bottom, which is why the old system lurched when a light source came
+        // into frame.
+        const float take = min(running, hiCount) - max(binLo, loCount);
+        if (take <= 0.0f)
+        {
+          continue;
+        }
+
+        const float ev = binCentreEV(i);
+        if (!haveLo)
+        {
+          loPercentileEV = ev;
+          haveLo = true;
+        }
+        hiPercentileEV = ev;
+
+        weightedSum += take * ev;
+        weight += take;
+      }
+
+      if (weight > 0.0f)
+      {
+        // Bins are log2 luminance, so a count-weighted mean of bin centres is already the log
+        // of the geometric mean of the trimmed set. No extra work needed.
+        sceneEV = weightedSum / weight;
+        trimmedFraction = weight / total;
+      }
+    }
+
+    // Incomplete adaptation. At strength 0 the target never leaves the reference and auto
+    // exposure does nothing; at 1 every scene normalises to the same apparent brightness, which
+    // is the flat look this replaces. In between, dark rooms stay reading as dark.
+    float targetEV = lerp(referenceEV, sceneEV, saturate(cb.adaptationStrength));
+
+    // Soft limiter in place of a hard clamp. Monotonic, smooth, and asymptotically bounded to
+    // +/- range, so the response approaches its limit instead of hitting a wall and sticking.
+    {
+      const float range = max(cb.softLimitRangeEV, 1e-3f);
+      const float d = (targetEV - cb.softLimitCenterEV) / range;
+      targetEV = cb.softLimitCenterEV + range * tanh(d);
+    }
+
+    const float delta = targetEV - currentEV;
+
+    if (cb.resetState != 0 ||
+        (cb.cutSnapThresholdEV > 0.0f && abs(delta) > cb.cutSnapThresholdEV))
+    {
+      // First frame, resolution change, camera cut, or a single-frame jump too large to be an
+      // eye adapting. Snap, so load screens and cuts do not fade in over a second.
+      currentEV = targetEV;
+    }
+    else if (abs(delta) >= cb.deadbandEV)
+    {
+      // Direction convention, which is easy to get backwards: currentEV and targetEV are METERED
+      // SCENE EV, not applied exposure. A rising scene EV means the scene got brighter, so the
+      // IMAGE has to get darker - the fast, squint-in-sunlight direction. So targetEV > currentEV
+      // selects tauDarken. Reading this as "target is higher, so we are brightening" inverts the
+      // whole feel of the adaptation.
+      const float tau = (targetEV > currentEV) ? cb.tauDarken : cb.tauBrighten;
+      const float alpha = 1.0f - exp(-cb.deltaTimeSeconds / max(tau, 1e-4f));
+      currentEV = lerp(currentEV, targetEV, saturate(alpha));
+    }
+    // Otherwise inside the deadband: hold completely still. Without this the histogram's own
+    // sampling noise keeps the exposure permanently, visibly creeping.
+
+    const float exposure = exp2(referenceEV - currentEV);
+    OutExposure[0] = exposure;
+
+    if (cb.writeDebugStats != 0)
+    {
+      AutoExposureDebugStats stats;
+      stats.currentEV = currentEV;
+      stats.targetEV = targetEV;
+      stats.sceneEV = sceneEV;
+      stats.trimmedFraction = trimmedFraction;
+      stats.loPercentileEV = loPercentileEV;
+      stats.hiPercentileEV = hiPercentileEV;
+      stats.exposure = exposure;
+      stats.valid = 1;
+      OutDebugStats[0] = stats;
+    }
+
+    if (cb.debugMode)
+    {
+      // Mark where the settled exposure currently sits, plus the edges of the trimmed window.
+      const float normalizedCurrent = saturate((currentEV - cb.evMinValue) / cb.evRange);
+      const uint currentIdx = uint(normalizedEVToHistogramOffset(normalizedCurrent));
+      const uint loIdx = uint(normalizedEVToHistogramOffset(saturate((loPercentileEV - cb.evMinValue) / cb.evRange)));
+      const uint hiIdx = uint(normalizedEVToHistogramOffset(saturate((hiPercentileEV - cb.evMinValue) / cb.evRange)));
+
+      DebugView[uint2(loIdx, 0)] = float4(0.0f, 0.0f, 1.0f, 1.0f);
+      DebugView[uint2(hiIdx, 0)] = float4(0.0f, 0.0f, 1.0f, 1.0f);
+      DebugView[uint2(currentIdx, 0)] = float4(0.0f, 1.0f, 0.0f, 1.0f);
     }
   }
-  
-  // Reset the histogram
+
+  // Reset for the next frame. Safe to do unsynchronised against the walk above, which reads
+  // groupshared rather than the histogram image.
   InOutHistogram[linearIndex] = 0;
 }

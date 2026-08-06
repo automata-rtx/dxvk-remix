@@ -1787,12 +1787,16 @@ namespace dxvk {
     this->spillRenderPass(false);
     this->unbindComputePipeline();
 
+    const bool resetToneMapperHistory = m_resetHistory || getSceneManager().getCamera().isCameraCut();
+
+    // Auto exposure gets the same reset signal as the tone mapper. It previously never received
+    // one at all - dispatch() defaulted resetHistory to false - so eye adaptation eased across
+    // level loads and camera cuts instead of snapping.
     DxvkAutoExposure& autoExposure = m_common->metaAutoExposure();
     autoExposure.dispatch(this,
       getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER),
-      rtOutput, GlobalTime::get().deltaTimeMs());
+      rtOutput, GlobalTime::get().deltaTimeMs(), resetToneMapperHistory);
 
-    const bool resetToneMapperHistory = m_resetHistory || getSceneManager().getCamera().isCameraCut();
     setFramePassStage(RtxFramePassStage::ToneMapping);
     if (RtxOptions::tonemappingMode() == TonemappingMode::Global) {
       DxvkToneMapping& toneMapper = m_common->metaToneMapping();
