@@ -720,12 +720,26 @@ launch (`rtx_asset_data_manager.cpp:200,294-305`). The only in-memory dedupe is
 survive the process. So nothing in the runtime is warm on launch 2 that was
 cold on launch 1.
 
-**Therefore the difference is the operating system's file cache** — the pack's
-files are resident in RAM after the first run. *This is inference from the
-absence of any other mechanism, not a measurement.* It is also consistent with
-the shape: `MapViewOfFile` faults pages in lazily during upload, so a cold cache
-spreads its cost over a long period rather than into one stall, which is what
-"a long period of poor performance" describes.
+**But that does not make the OS file cache the cause, and an earlier revision of
+this section said it did.** Correction, same day: reasoning from "no *texture*
+cache" to "no durable cache" skipped one. **DXVK writes a pipeline state cache
+to disk** (`<exe>.dxvk-cache`, `dxvk_state_cache.cpp:1120-1128`, with
+`dxvk.enableStateCache` defaulting true at `dxvk_options.cpp:29`), and this
+runtime's own options describe the effect: a significant performance impact
+"whenever shaders are uncached (e.g. on first load)" (`rtx_options.h:397`).
+Every first launch is slow for that reason, pack or no pack.
+
+Two candidates, then, and only one of them survives a reboot:
+
+| Contributor | Cached where | Survives a reboot? |
+| :-- | :-- | :-- |
+| Pipeline/shader compilation | `<exe>.dxvk-cache` | **Yes** |
+| The pack's `.dds` reads | nowhere durable; OS page cache only | **No** |
+
+**Which dominates is unmeasured**, and the texture side is partly a symptom
+rather than a cause: creation is budgeted per frame, so slow frames from *any*
+source stretch how long the pack takes to finish arriving. Reboot and relaunch
+to separate them — that clears the page cache and keeps `.dxvk-cache`.
 
 **Our own contribution, and it is real:** the game creates materials at
 `kTexRepCreationsPerFrame = 16` per frame (`dusklight-ao/src/dusk/remix_bridge.cpp`),
@@ -740,10 +754,12 @@ per frame is a per-frame stall for as many frames as the pack has entries / 16.
 between those two lines, compared between a cold first launch and a warm second
 one, measures exactly this. No one has to describe how it felt.
 
-**If it needs fixing**, the cheap change is to make the budget time-based rather
-than count-based — spend a fixed millisecond budget per frame instead of a fixed
-count — so a cold cache stretches the ramp instead of stretching each frame.
-That was deliberately *not* done as part of the tested 2026-08-06 change.
+**If it needs fixing** — and only if the reboot test says texture I/O is the
+dominant term — the cheap change is a time budget instead of a count (bounds the
+per-frame stall rather than the per-frame count), and the better one is
+prefetching the pack on a worker thread so the CS thread never waits on cold
+reads. Neither was done as part of the tested 2026-08-06 change.
+`aurora-ao/docs/dx9/texture-replacements.md` §9.
 
 ### The live defect: the medium dims the generated sky
 
