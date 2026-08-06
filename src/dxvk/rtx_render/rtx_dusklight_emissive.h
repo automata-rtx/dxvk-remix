@@ -84,12 +84,16 @@ namespace dxvk {
                "authored in GX constants rather than a plain texture, and that colour reads as a glow. Nothing "
                "here needs tuning. Turn it off to compare against the non-emissive rendering - the dusklight.emis "
                "log lines are still written either way, so a test session is not wasted.");
-    RTX_OPTION("rtx.dusklight.emissive", float, brightness, 1.0f,
+    RTX_OPTION("rtx.dusklight.emissive", float, brightness, 10.0f,
                "How brightly an emissive surface glows - a target brightness, not a multiplier.\n"
                "A flat multiplier made a dark saturated colour glow dimly and a pale one glow fiercely, purely "
                "because of how bright the authored colour happened to be: the accepted materials in one measured "
                "scene span luma 0.30 to 0.92, a 3x spread nobody chose. This divides that out, so the dial means "
-               "the same thing on every surface. Raise it if emitters glow but do not light the room around them.");
+               "the same thing on every surface.\n"
+               "10.0 is measured, not guessed: it is the value the Goron Mines lava was dialled to in game on "
+               "2026-08-06 to read as properly molten. 1.0 would put an emitter at roughly the brightness of a "
+               "fully lit white surface, which is not what a self-lit surface in a dark cave should look like. "
+               "Calibrated in one dark interior, so a bright exterior may want less.");
     RTX_OPTION("rtx.dusklight.emissive", DusklightEmissiveSource, colorSource,
                DusklightEmissiveSource::ReconstructedAlbedo,
                "Where an accepted emitter takes the colour it glows.\n"
