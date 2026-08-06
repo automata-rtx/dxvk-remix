@@ -221,6 +221,109 @@ namespace dxvk {
                     "this from above - 10 was tested against the Forest Temple light posts and clears them.",
                     args.minValue = 0.5f,
                     args.maxValue = 64.0f);
+
+    // Effect lights. The replacement for the mirror above, and the reason it now defaults off.
+    // Full design, citations and exclusion policy: dusklight-ao/docs/effect-lights.md.
+    RTX_OPTION("rtx.dusklight.game", bool, effectLights, true,
+               "Puts a sphere light at the origin of the game's own fire and glow effects - the point the flame is generated from, not the position of "
+               "the light the game registered for it.\n"
+               "The game's own lights are placed wherever the original per-vertex shading looked best, which was free because a GameCube point light casts "
+               "no shadow. Under a path tracer the same placement is visibly wrong: the shadow comes from a point that is not the fire. This reads the "
+               "emitter table instead - the game already decides every frame where fire exists and whether it is on - and keeps only the colour and reach "
+               "from whatever light was authored nearby.\n"
+               "Not meant to run together with rtx.dusklight.game.localLights: every fire would get two lights, one of them in the wrong place.");
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightIntensity, 1.0f,
+                    "Master brightness for every light this system makes, whether or not it took its parameters from the game.\n"
+                    "The two multipliers below scale the derived and undetermined halves separately; this one moves both at once, so it is the knob to "
+                    "reach for when the whole scene is too hot or too dim.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 8.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightDerivedIntensity, 19.0f,
+                    "Scales only the lights whose reach and colour came from a light the game itself authored.\n"
+                    "At 1.0 such a light is as bright as Remix's own conversion would make a legacy light reaching exactly as far as the game's influence "
+                    "radius. That reading is too conservative: the game loads its attenuation so the radius is where brightness falls to about a ninth of "
+                    "peak, and the curve carries roughly four times further, which puts the honest figure near 19. Testing on the local light mirror "
+                    "picked the same number independently, and this starts there so that tuning carries over.\n"
+                    "Separate from effectLightUndeterminedIntensity on purpose: this one maps the game's units onto Remix's scale, that one picks a size "
+                    "out of nothing, and tying them together guarantees that tuning one breaks the other.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 64.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightDerivedRadius, 10.0f,
+                    "Emitter radius, in world units, for lights that took their reach from the game.\n"
+                    "Changes brightness as well as softness - the radiance is solved so the light still reaches the same distance, so a larger emitter "
+                    "needs less of it. Large radii on lights inside wall sconces clip through the geometry, which is what bounds this from above.",
+                    args.minValue = 0.5f,
+                    args.maxValue = 64.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightUndeterminedIntensity, 1.0f,
+                    "Scales only the lights the game gave us nothing to go on for - a fire arrow, a torch with no registered light, any effect that simply "
+                    "has no light authored beside it. Their colour still comes from the effect's own palette; only the strength is invented here.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 64.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightUndeterminedReach, 400.0f,
+                    "How far a light with no game-authored reach should carry, in world units.\n"
+                    "For scale: the game gives a bonfire an influence radius of 500 and a dungeon torch 500, and Link stands about 150 units tall.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 8000.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightUndeterminedRadius, 8.0f,
+                    "Emitter radius, in world units, for lights with no game-authored reach.",
+                    args.minValue = 0.5f,
+                    args.maxValue = 64.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightFireOffset, 15.0f,
+                    "How far above the effect's origin a fire light sits, in world units.\n"
+                    "An emitter is placed where the effect is generated from, which for a torch or a totem is the fuel at the base of the flame. The light "
+                    "belongs a little way up inside the flame instead. The game itself does the same thing where it bothers - a Forest Temple torch offsets "
+                    "its light by 10 units above the flame point.",
+                    args.minValue = -200.0f,
+                    args.maxValue = 200.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightGlowOffset, 0.0f,
+                    "How far above the effect's origin a non-fire glow light sits, in world units. Zero because a glow is usually centred on the thing "
+                    "that glows, unlike a flame which rises off its fuel.",
+                    args.minValue = -200.0f,
+                    args.maxValue = 200.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMergeRadius, 60.0f,
+                    "How close two effect origins must be to count as one light, in world units.\n"
+                    "A single visible fire is usually several emitters at one point - a bonfire is five, a flame core plus layers plus embers. Without this "
+                    "each would get its own light: five times the cost for none of the benefit, and their alphas animate independently so the sum flickers. "
+                    "Too large and two neighbouring torches collapse into one.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 500.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightAdoptRadius, 250.0f,
+                    "How close one of the game's own lights must be to an effect for its colour and reach to be adopted, in world units.\n"
+                    "Larger values catch lights the game deliberately offset from the flame; too large and a fire adopts the parameters of an unrelated "
+                    "light across the room.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 2000.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", int, effectLightMaxLights, 32,
+                    "Most lights this system will submit in one frame, brightest and nearest first.\n"
+                    "A light that contributes nothing still costs a light manager entry and a slot in Remix's light sampling, so this bounds a room full of "
+                    "candles rather than trusting it to be reasonable.",
+                    args.minValue = 0,
+                    args.maxValue = 256);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMaxDistance, 12000.0f,
+                    "Beyond this distance from the camera an effect gets no light, in world units. Zero disables the cull.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 100000.0f);
+    RTX_OPTION("rtx.dusklight.game", bool, effectLightBursts, false,
+               "Give explosions and other one-shot fire their own light.\n"
+               "Off because a light that appears and vanishes inside a fifth of a second is a flash, which is sometimes exactly right - a bomb should flash "
+               "- and sometimes a flicker artefact. This is the exclusion most likely to be wrong for this game; turn it on and look at a bomb.");
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMinChroma, 0.20f,
+                    "How saturated an effect's colour has to be to read as a glow rather than as smoke or spray.\n"
+                    "An effect earns a light when it is being drawn, blends additively, and its colour reads as a glow - saturated OR near white hot. This "
+                    "is the saturated half; effectLightMinLuma is the white hot half. Thresholds rather than constants because they are a judgement about "
+                    "this game's palette, the same reasoning as the material self-illumination thresholds.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMinLuma, 0.75f,
+                    "How bright a desaturated effect's colour has to be to read as white hot rather than as smoke. See effectLightMinChroma.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION_FLAG("rtx.dusklight.game", int, effectLightReportCommit, 0, RtxOptionFlags::NoSave,
+                    "Incremented by the overlay to make the game log one line per distinct effect it has seen - name, blend configuration, colours, class "
+                    "and whether the rule accepted it.\n"
+                    "That log is what turns 'additive blending means the effect emits light' from a reading of the format into a measurement of this game, "
+                    "so one play session settles the classifier for the whole game. The game acts on the change rather than the value and latches the first "
+                    "one it sees without acting, so connecting to a session that already has a non-zero count does not dump a report nobody asked for.");
   };
 
 }

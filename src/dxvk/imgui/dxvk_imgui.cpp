@@ -3042,7 +3042,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 6;
+    constexpr int kRequiredProtocol = 7;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -3109,8 +3109,107 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
-    if (RemixGui::CollapsingHeader("Local Point Lights", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (RemixGui::CollapsingHeader("Effect Lights", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::Indent();
+      RemixGui::Checkbox("Effect Lights Enabled", &DusklightGame::effectLightsObject());
+      ImGui::TextWrapped(
+        "Puts a light at the origin of the game's own fire and glow effects rather than where the "
+        "game registered a light. The game's placements were free of consequence under its original "
+        "shading - a point light there cast no shadow - so many of them sit nowhere near the flame, "
+        "which a path tracer shows immediately.");
+
+      RemixGui::DragFloat("Master Intensity##dusklight", &DusklightGame::effectLightIntensityObject(), 0.02f, 0.f, 8.f, "%.2f");
+
+      ImGui::TextUnformatted("From the game (a light was authored beside the effect)");
+      RemixGui::DragFloat("Derived Intensity##dusklight", &DusklightGame::effectLightDerivedIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
+      RemixGui::DragFloat("Derived Radius##dusklight", &DusklightGame::effectLightDerivedRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
+
+      ImGui::TextUnformatted("Invented (nothing authored - fire arrows, unlit torches)");
+      RemixGui::DragFloat("Undetermined Intensity##dusklight", &DusklightGame::effectLightUndeterminedIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
+      RemixGui::DragFloat("Undetermined Reach##dusklight", &DusklightGame::effectLightUndeterminedReachObject(), 5.f, 0.f, 8000.f, "%.0f units");
+      RemixGui::DragFloat("Undetermined Radius##dusklight", &DusklightGame::effectLightUndeterminedRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
+      ImGui::TextWrapped(
+        "The two intensities are separate on purpose. The derived one maps the game's units onto "
+        "Remix's scale; the invented one picks a size out of nothing. They will not want the same "
+        "number, and tying them together means tuning one breaks the other.");
+
+      RemixGui::Separator();
+      RemixGui::DragFloat("Fire Height Offset##dusklight", &DusklightGame::effectLightFireOffsetObject(), 0.5f, -200.f, 200.f, "%.1f units");
+      RemixGui::DragFloat("Glow Height Offset##dusklight", &DusklightGame::effectLightGlowOffsetObject(), 0.5f, -200.f, 200.f, "%.1f units");
+      ImGui::TextWrapped(
+        "An effect's origin is where it is generated from, which for a torch is the fuel at the base "
+        "of the flame. The light belongs a little way up inside it.");
+
+      RemixGui::DragFloat("Merge Radius##dusklight", &DusklightGame::effectLightMergeRadiusObject(), 1.f, 0.f, 500.f, "%.0f units");
+      RemixGui::DragFloat("Adopt Radius##dusklight", &DusklightGame::effectLightAdoptRadiusObject(), 5.f, 0.f, 2000.f, "%.0f units");
+      ImGui::TextWrapped(
+        "Merge groups the several emitters that make up one visible fire into one light - a bonfire "
+        "is five. Adopt is how close one of the game's lights has to be for its colour and reach to "
+        "be taken.");
+
+      RemixGui::DragInt("Max Lights##dusklight", &DusklightGame::effectLightMaxLightsObject(), 1.f, 0, 256);
+      RemixGui::DragFloat("Max Distance##dusklight", &DusklightGame::effectLightMaxDistanceObject(), 50.f, 0.f, 100000.f, "%.0f units");
+      RemixGui::Checkbox("Light Explosions and One-Shots", &DusklightGame::effectLightBurstsObject());
+
+      RemixGui::Separator();
+      RemixGui::DragFloat("Min Chroma##dusklight", &DusklightGame::effectLightMinChromaObject(), 0.01f, 0.f, 1.f, "%.2f");
+      RemixGui::DragFloat("Min Luminance##dusklight", &DusklightGame::effectLightMinLumaObject(), 0.01f, 0.f, 1.f, "%.2f");
+      ImGui::TextWrapped(
+        "An effect earns a light when it is being drawn, blends additively, and its colour reads as a "
+        "glow - saturated OR near white hot. These are the two halves of that last test.");
+
+      if (feedLive) {
+        // The chain, in the order a light can be lost: alive -> drawn in a world pass -> passed the
+        // rule -> merged into a site -> reached Remix. Printing all of it means the step something
+        // was lost at is visible without anyone having to describe a scene.
+        ImGui::Text("emitters %d  ->  considered %d  ->  candidates %d  ->  sites %d  ->  drawn %d",
+                    DusklightEnv::effLightsEmitters(), DusklightEnv::effLightsConsidered(),
+                    DusklightEnv::effLightsCandidates(), DusklightEnv::effLightsSites(),
+                    DusklightEnv::effLightsDrawn());
+        ImGui::Text("from the game: %d    game lights with no effect: %d    culled: %d",
+                    DusklightEnv::effLightsDerived(), DusklightEnv::effLightsOrphans(),
+                    DusklightEnv::effLightsCulled());
+        ImGui::Text("game lights available to copy (point/spot): %s",
+                    DusklightEnv::effLightsVanilla().c_str());
+
+        if (!DusklightEnv::effLightsRunning()) {
+          ImGui::TextWrapped(
+            "The game is not running this at all, so nothing here reaches Remix. Either the switch is "
+            "not reaching the game, or its D3D9 device never registered - the Bridge section above "
+            "says which.");
+        } else if (DusklightEnv::effLightsCandidates() == 0 && DusklightEnv::effLightsConsidered() > 0) {
+          ImGui::TextWrapped(
+            "Effects are being drawn but none passed the rule. If you are stood at a fire, the "
+            "classifier is wrong - press the report button and send the log, which names every effect "
+            "it saw and why it was rejected.");
+        } else if (DusklightEnv::effLightsOrphans() > 4 && DusklightEnv::effLightsSites() == 0) {
+          ImGui::TextWrapped(
+            "This room's lights are all ones the game registered with no effect beside them, and those "
+            "are dropped by default because their placement is exactly what this system exists to stop "
+            "trusting. If the room looks under-lit, that is the trade showing - worth reporting.");
+        }
+      }
+
+      // An action, so NoSave and a counter rather than a flag: a persisted request would fire on the
+      // next launch, and the game latches the first count it sees without acting so that connecting
+      // to a Remix that outlived a game restart does not dump a report nobody asked for.
+      if (ImGui::Button("Log Effect Classification Report", ImVec2(-1, 0))) {
+        DusklightGame::effectLightReportCommit.setDeferred(DusklightGame::effectLightReportCommit() + 1);
+      }
+      ImGui::TextWrapped(
+        "Writes one line per distinct effect the game has seen - name, blend configuration, colours, "
+        "class, and whether the rule accepted it. That log is what turns 'additive blending means the "
+        "effect emits light' from a reading of the file format into a measurement of this game.");
+      ImGui::Unindent();
+    }
+
+    if (RemixGui::CollapsingHeader("Local Point Lights (comparison)", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "The previous system: the game's registered lights, mirrored where the game put them. Kept as "
+        "the comparison path - turning this on and Effect Lights off reproduces the old behaviour, "
+        "which is the only way to judge whether a placement improved. Running both gives every fire "
+        "two lights, one of them in the wrong place.");
       RemixGui::Checkbox("Local Lights Enabled", &DusklightGame::localLightsObject());
       RemixGui::DragFloat("Local Intensity##dusklight", &DusklightGame::localLightIntensityObject(), 0.05f, 0.f, 32.f, "%.2f");
       RemixGui::DragFloat("Local Radius##dusklight", &DusklightGame::localLightRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
