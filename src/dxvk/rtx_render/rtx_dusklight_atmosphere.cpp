@@ -154,6 +154,16 @@ namespace dxvk {
 
       return std::max(worst, 0.0f);
     }
+
+    // Spelled out rather than numbered, per the logging rule: a reader without the source has to be
+    // able to follow the line.
+    const char* mediumLimitName(DxvkDusklightAtmosphere::Derived::MediumLimit limit) {
+      switch (limit) {
+      case DxvkDusklightAtmosphere::Derived::MediumLimit::NearHaze: return "nearHaze";
+      case DxvkDusklightAtmosphere::Derived::MediumLimit::Density:  return "zHalfMin";
+      default:                                                      return "gridReach";
+      }
+    }
   }
 
   DxvkDusklightAtmosphere::DxvkDusklightAtmosphere(DxvkDevice* device)
@@ -299,13 +309,51 @@ namespace dxvk {
       sigma = -std::log(1.0f - mediumTarget) / reach;
     }
 
+    out.mediumLimit = Derived::MediumLimit::Reach;
+
+    // Now give back whatever that costs above the near-haze budget.
+    //
+    // Stating the trade as an error budget rather than as a fraction is what makes it adapt: an
+    // area whose fog starts at the camera can carry a thick medium for almost nothing, while one
+    // that holds its fog back can carry very little, and neither has to be said by hand. Measured
+    // on 2026-08-06, matching the ramp at the grid's reach costs 0.006 in Hyrule Field and 0.074
+    // in an area with a ramp of [-10000, 110000] - two orders of magnitude apart under one setting.
+    //
+    // Solved by bisection because worstNearHaze is monotonic in sigma but piecewise in which of its
+    // two candidate maxima wins; twenty-odd halvings settle it to far below the precision anyone
+    // can act on, and it runs once per frame.
+    const float hazeBudget = std::max(maxNearHaze(), 0.0f);
+
+    if (worstNearHaze(sigma, start, end) > hazeBudget) {
+      float low = 0.0f;
+      float high = sigma;
+
+      for (int i = 0; i < 24; ++i) {
+        const float mid = (low + high) * 0.5f;
+
+        if (worstNearHaze(mid, start, end) > hazeBudget) {
+          high = mid;
+        } else {
+          low = mid;
+        }
+      }
+
+      sigma = low;
+      out.mediumLimit = Derived::MediumLimit::NearHaze;
+    }
+
     sigma *= std::max(densityScale(), 0.0f);
 
     // Ceiling on density rather than on the half opaque distance it used to clamp. A scripted
     // whiteout is already opaque at the camera and would otherwise ask for a medium dense enough to
     // swallow the near field whole; the composite still corrects to the game's ramp above this, so
     // the clamp decides how much of a whiteout is volumetric rather than how thick it looks.
-    sigma = std::min(sigma, std::log(2.0f) / std::max(zHalfMin(), 1e-3f));
+    const float densityCeiling = std::log(2.0f) / std::max(zHalfMin(), 1e-3f);
+
+    if (sigma > densityCeiling) {
+      sigma = densityCeiling;
+      out.mediumLimit = Derived::MediumLimit::Density;
+    }
 
     out.sigma = std::max(sigma, 0.0f);
     out.mediumOpacityAtReach = 1.0f - std::exp(-out.sigma * reach);
@@ -321,11 +369,19 @@ namespace dxvk {
       return;
     }
 
-    // Deduplicated on everything that decides the split, so a line appears when the answer changes
-    // and not when the player walks. Quantised so that the smoothing easing the grid's reach across
-    // a few frames does not spend the budget on a transition.
-    const auto quantise = [](float value, float step) -> int64_t {
-      return static_cast<int64_t>(std::lround(value / step));
+    // Deduplicated so a line appears when the answer changes and not when the player walks.
+    //
+    // Bucketed geometrically - 5% steps - rather than to a fixed step, which the first run of this
+    // log proved necessary. The game eases fogFar continuously, and it was observed drifting 8
+    // units per frame while everything that matters held still; against a 1-unit step every frame
+    // was a new derivation and the whole 24-line budget went in 0.23 seconds, in an area already
+    // logged. Relative buckets also behave across the four orders of magnitude these ramps span,
+    // from a dense interior to a 120,000 unit field, which no single absolute step does.
+    const auto bucket = [](float value) -> int64_t {
+      const float magnitude = std::max(std::fabs(value), 1e-9f);
+      const int64_t index = static_cast<int64_t>(std::lround(std::log(magnitude) / std::log(1.05f)));
+
+      return value < 0.0f ? -index : index;
     };
 
     uint64_t key = 1469598103934665603ull;
@@ -334,11 +390,16 @@ namespace dxvk {
       key = (key ^ static_cast<uint64_t>(value)) * 1099511628211ull;
     };
 
-    mix(quantise(d.rampStart, 1.0f));
-    mix(quantise(d.rampEnd, 1.0f));
-    mix(quantise(d.froxelMaxDistance, 64.0f));
-    mix(quantise(d.sigma, 1e-7f));
-    mix(quantise(multiScatteringScale(), 0.01f));
+    mix(bucket(d.rampStart));
+    mix(bucket(d.rampEnd));
+    mix(bucket(d.froxelMaxDistance));
+    mix(bucket(d.sigma));
+    mix(bucket(multiScatteringScale()));
+    mix(static_cast<int64_t>(d.mediumLimit));
+    // Discrete, so safe in a key. daytime deliberately is not: it advances every frame, and the
+    // ramp it drives is already in the key through rampStart/rampEnd.
+    mix(DusklightEnv::colpat());
+    mix(DusklightEnv::skyHidden() ? 1 : 0);
 
     for (uint32_t i = 0; i < m_fogLogCount; ++i) {
       if (m_fogLogKeys[i] == key) {
@@ -366,14 +427,25 @@ namespace dxvk {
     // at fixed fractions of the grid and need not land anywhere near the peak.
     const float nearHaze = worstNearHaze(d.sigma, d.rampStart, d.rampEnd);
 
+    // colpat/sky/time do not name the area - nothing pushed across the bridge does, and the first
+    // run of this log left two of its four rows unattributable because of it. They are here because
+    // they are free and they at least separate an interior from a field and a morning from a dusk.
+    // Naming the stage outright wants the game to push it, which is a protocol bump; recorded in
+    // DusklightOverlay.md rather than done here, so that it lands with the next change that already
+    // rebuilds both sides.
     char line[512];
     int written = std::snprintf(line, sizeof(line),
-                                "[Dusklight] fog: ramp=[%.0f,%.0f] reach=%.0fu(%.1fm) sigma=%.3e/u frac=%.2f "
-                                "msScale=%.2f nearHaze=%.3f rampAtReach=%.3f medAtReach=%.3f",
+                                "[Dusklight] fog: colpat=%d %s daytime=%.0f ramp=[%.0f,%.0f] reach=%.0fu(%.1fm) "
+                                "covers=%.0f%% sigma=%.3e/u limit=%s nearHaze=%.3f/%.3f msScale=%.2f "
+                                "rampAtReach=%.3f medAtReach=%.3f",
+                                DusklightEnv::colpat(), DusklightEnv::skyHidden() ? "indoor" : "outdoor",
+                                DusklightEnv::daytime(),
                                 d.rampStart, d.rampEnd, d.froxelMaxDistance,
                                 d.froxelMaxDistance / RtxOptions::getMeterToWorldUnitScale(),
-                                d.sigma, std::clamp(mediumFraction(), 0.0f, 1.0f), multiScatteringScale(),
-                                nearHaze, d.rampOpacityAtReach, d.mediumOpacityAtReach);
+                                100.0f * d.rampOpacityAtReach,
+                                d.sigma, mediumLimitName(d.mediumLimit),
+                                nearHaze, std::max(maxNearHaze(), 0.0f), multiScatteringScale(),
+                                d.rampOpacityAtReach, d.mediumOpacityAtReach);
 
     // The two opacity curves sampled across the grid, plus what the composite makes up. A negative
     // fix is the medium already past the ramp at that distance; it is expected inside the ramp's
@@ -713,11 +785,13 @@ namespace dxvk {
 
     RemixGui::Separator();
     ImGui::TextUnformatted("Fog");
+    RemixGui::DragFloat("Near Haze Budget##dusklightAtmo", &maxNearHazeObject(), 0.002f, 0.f, 1.f, "%.3f");
     RemixGui::DragFloat("Volumetric Share##dusklightAtmo", &mediumFractionObject(), 0.01f, 0.f, 1.f, "%.2f");
     ImGui::TextWrapped("How much of the game's fog the medium carries; the composite makes up the rest and lands the "
-                       "total on the game's ramp either way. Down for a cleaner near field, up for stronger shafts. "
-                       "The error it buys sits just inside the ramp's start distance, where the original had no fog "
-                       "and an exponential medium always has some.");
+                       "total on the game's ramp either way, so these change how much shaft and lit air is in the fog "
+                       "rather than how thick it is. The medium takes as much as the Share allows and then gives back "
+                       "whatever costs more than the Budget - fog the original did not have, near the camera, which is "
+                       "the one error nothing downstream can remove. Resolved below shows which of the two bound.");
     RemixGui::DragFloat("Half Density Floor##dusklightAtmo", &zHalfMinObject(), 1.0f, 1.f, 10000.f, "%.0f units");
     RemixGui::DragFloat("Density Scale##dusklightAtmo", &densityScaleObject(), 0.01f, 0.f, 8.f, "%.2f");
     RemixGui::DragFloat("Fog Radiance Scale##dusklightAtmo", &fogRadianceScaleObject(), 0.01f, 0.f, 16.f, "%.2f");
@@ -812,9 +886,11 @@ namespace dxvk {
       ImGui::Text("fog radiance: %.3f, %.3f, %.3f", d.fogRadiance.x, d.fogRadiance.y, d.fogRadiance.z);
       ImGui::Text("froxel grid reaches %.0f units (%.1f m)",
                   d.froxelMaxDistance, d.froxelMaxDistance / RtxOptions::getMeterToWorldUnitScale());
-      ImGui::Text("at that reach: game %.3f   medium %.3f", d.rampOpacityAtReach, d.mediumOpacityAtReach);
-      ImGui::Text("near haze: %.3f  (worst fog the original did not have - lower Volumetric Share)",
-                  worstNearHaze(d.sigma, d.rampStart, d.rampEnd));
+      ImGui::Text("grid covers %.0f%% of the ramp: game %.3f   medium %.3f",
+                  100.0f * d.rampOpacityAtReach, d.rampOpacityAtReach, d.mediumOpacityAtReach);
+      ImGui::Text("near haze: %.3f of %.3f budget   density set by: %s",
+                  worstNearHaze(d.sigma, d.rampStart, d.rampEnd), std::max(maxNearHaze(), 0.0f),
+                  mediumLimitName(d.mediumLimit));
 
       // The same three columns the log writes, so a screenshot and a log say the same thing.
       const float span = d.rampEnd - d.rampStart;

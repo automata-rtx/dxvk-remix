@@ -421,6 +421,24 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open
 
+- **Nothing on the wire names the area the player is in — protocol 7 when
+  something else already needs a rebuild.** `warpStage` is the overlay's warp
+  *target*, not the current stage, and `colpat`/`skyHidden` separate a field
+  from an interior without identifying either.
+
+  This is a logging defect in the sense of rule 2, and it has already cost:
+  the first fog measurement run (2026-08-06) produced four ramps and **two of
+  them could not be attributed to an area**, which is exactly the kind of gap
+  that turns a log into a question for the owner. Every atmosphere, fog and
+  emissive log line would gain from it.
+
+  The change is one `RTX_OPTION_FLAG("rtx.dusklight.env", std::string, stage,
+  ...)` plus a push from `remix_bridge.cpp`'s `tick()`, and a protocol bump on
+  both sides in the same commit. It is deliberately *not* done on its own,
+  because a protocol bump forces a rebuild of both halves and this fork's fog
+  work otherwise ships as a Remix DLL alone. Fold it into the next change that
+  already touches the game.
+
 - **Local point lights: RESOLVED 2026-07-29.** Forest Temple first room reads
   `Registered by the game: 5   drawn this frame: 4   tracked: 4`.
 

@@ -279,35 +279,67 @@ opaque, so distant terrain never dissolved into the sky the way it does in the
 original; §5.2 explains why the range split did not save it.
 
 **The current derivation** solves σ at the one distance where the split between
-the two systems is decided — the far edge of the froxel grid — and asks the
-medium for only a *fraction* of the game's own opacity there:
+the two systems is decided — the far edge of the froxel grid — and then gives
+back whatever that costs above an explicit error budget:
 
 ```
 reach   = froxelMaxDistance
 α_ramp  = saturate((reach - start) / (end - start))
 target  = min(mediumFraction · α_ramp, 0.95)
-σ       = -ln(1 - target) / reach          (then × densityScale, capped at ln2/zHalfMin)
+σ       = -ln(1 - target) / reach
+σ       = largest σ' ≤ σ with worstNearHaze(σ') ≤ maxNearHaze     (bisection)
+                                           (then × densityScale, capped at ln2/zHalfMin)
 ```
 
 Under-running is deliberate and load-bearing: the composite (§5.2) can *add* fog
 to a pixel but cannot take it back out, so anything the medium overshoots by is
-the one error nothing downstream can correct. `mediumFraction` is the knob for
-that trade and it costs no accuracy — the total lands on the game's ramp either
-way. What it buys, worst-case over-fog inside the dead zone:
+the one error nothing downstream can correct. `worstNearHaze` is that error,
+solved rather than sampled — the excess peaks either at the ramp's start or, if
+`σ·span > 1`, at `ln(σ·span)/σ`.
 
-| Ramp | `f=0` | `f=0.25` | `f=0.5` (default) | `f=0.75` | `f=1` |
+**Budgeting the error rather than the cause is what makes this adapt per area,
+and the first measured run is why it does.** Under a fixed `mediumFraction` of
+1.0 the same setting costs 0.006 in Hyrule Field and 0.074 in an area with a
+ramp of `[-10000, 110000]` — two orders of magnitude apart, so no single fraction
+is right everywhere. Stated as a budget, an area whose fog starts at the camera
+takes a thick medium for almost nothing and one that holds its fog back takes
+less, with nothing said by hand.
+
+Lake Hylia's negative `start`
+(`dusklight-ao/src/d/actor/d_a_kytag01.cpp:94`) means "already ~90% fogged at
+z=0"; `α_ramp` is then whatever the grid reaches, and the composite supplies the
+rest. (An earlier revision of this section said `start > end`; that was a recon
+claim nobody verified, and §14.7 records why it mattered.)
+
+#### What the game's ramps actually are — first measurement, 2026-08-06
+
+Every value in §5 before this was a worked example. These are read from a run
+(Hyrule Field → Lake Hylia → South Faron), and they change which of the faults
+above mattered:
+
+| Area | ramp | grid covers | σ then → now | nearHaze | bound by |
 | :-- | :-- | :-- | :-- | :-- | :-- |
-| `start = 0` | 0.000 | 0.000 | 0.000 | 0.000 | 0.068 |
-| `start = 0.3 · end` | 0.000 | 0.055 | 0.114 | 0.176 | 0.244 |
-| `start = 0.5 · end` | 0.000 | 0.042 | 0.084 | 0.127 | 0.170 |
+| Hyrule Field | `[0, 60000]` | 20% | 8.78e-6 → 1.86e-5 | 0.006 | grid reach |
+| (long-range) | `[500, 120000]` | 10% | 8.43e-6 → 8.43e-6 | 0.004 | grid reach |
+| (negative start) | `[-10000, 110000]` | 18% | 8.01e-6 → 1.43e-5 | 0.020 | **budget** |
+| Lake Hylia | `[-3000, 70000]` | 21% | 9.03e-6 → 1.92e-5 | 0.004 | grid reach |
 
-Still scale-free and still with no per-area handling. Lake Hylia's negative
-`start` (`dusklight-ao/src/d/actor/d_a_kytag01.cpp:94`) means "already ~90%
-fogged at z=0"; `α_ramp` is then near 1, the medium goes as dense as `zHalfMin`
-allows, and the composite supplies the rest — which is the first time that
-scripted whiteout has actually reached the screen. (An earlier revision of this
-section said `start > end`; that was a recon claim nobody verified, and §14.7
-records why it mattered.)
+Three things follow, and the first two were not what §5.1 predicted:
+
+1. **`start` is zero or negative in every area measured.** The dead-zone case
+   that produces +0.27 over-fog did not occur. In these ramps the old
+   derivation's near-field error was +0.02 to +0.04 — real, but the smaller of
+   the three faults. The colour fault (§5.3) and the failure to close (§5.2)
+   were the large ones here.
+2. **The froxel grid covers only 10–21% of the ramp**, because
+   `froxelMaxDistanceMaxMeters` (120 m) clamps it in every area while the game's
+   fog runs 600–1200 m. So even at `mediumFraction = 1` the medium carries at
+   most a fifth of the fog, and **that ceiling — not `mediumFraction` — is what
+   decides how volumetric the fog can be.** Raising it spends the same 48 depth
+   slices over a longer distance, which is a real cost in the far slices; it has
+   not been tried.
+3. The budget binds in exactly one of the four, which is the behaviour it was
+   added for.
 
 **This replaces `rtx.volumetrics.enableFogRemap` entirely for us.** We do not
 enable Remix's remap; we write the derived coefficients straight into
@@ -554,7 +586,7 @@ shows, and the first knob to reach for.
 | # | Compromise | How it will show | First knob |
 | :-- | :-- | :-- | :-- |
 | C0 | ~~The calibration pass was never run.~~ **Run 2026-07-28. Phase A/B confirmed good in-game.** One constant was wrong: `skyIntensity` at 1.0 gave a visibly dim sky. The analytic anchor was right but the arithmetic behind it was not — it ignored that the palette colours are decoded out of gamma before they are scaled, which takes a mid blue from 0.5 to about 0.2, so the multiplier needed to be ~6× larger to land the same sky-to-sun ratio. Now 6.0. `zHalfMin` and `froxelRangeScale` were not reported as wrong. | — | — |
-| C11 | **A homogeneous medium cannot be clear near the camera.** The game's ramp is exactly zero before `fogStartZ`; an exponential medium starts extinguishing at the camera. **Reduced, not closed, on 2026-08-06.** It used to be the whole error — measured at +0.27 to +0.37 opacity where the original showed none, because σ was matched at the ramp's half-density point and the composite could only add fog past the froxel grid. §5.2's correction now lands the total on the game's ramp everywhere the medium is *thinner* than the ramp, and §5.1 runs the medium deliberately thin so that is almost everywhere. What survives is the dead zone alone: 0.08–0.11 at the default `mediumFraction` of 0.5, and it is the one place the correction cannot reach, because fog already applied to a pixel cannot be taken back out. | Near-field haze in areas the original left crisp, now bounded and confined to distances shorter than `fogStartZ`. Logged: `rtx.dusklight.atmosphere.fogLog` prints `nearHaze=` per derivation - the excess at the ramp's own start distance, which is where it peaks - alongside a `fix=` column per sampled distance. | `rtx.dusklight.atmosphere.mediumFraction`. It scales the residual linearly and costs nothing but shaft strength — at 0 the fog is the game's ramp exactly, with no volumetrics in it. A genuinely heterogeneous density (`σ(d) = 1/(end - d)` reproduces the ramp exactly) would close it outright, but that lives in `submodules/rtxdi`'s `sampleDensityField` and would mean forking a fourth repo. |
+| C11 | **A homogeneous medium cannot be clear near the camera.** The game's ramp is exactly zero before `fogStartZ`; an exponential medium starts extinguishing at the camera. **Reduced, not closed, on 2026-08-06.** It used to be the whole error — measured at +0.27 to +0.37 opacity where the original showed none, because σ was matched at the ramp's half-density point and the composite could only add fog past the froxel grid. §5.2's correction now lands the total on the game's ramp everywhere the medium is *thinner* than the ramp, and §5.1 runs the medium deliberately thin so that is almost everywhere. What survives is bounded by `rtx.dusklight.atmosphere.maxNearHaze` (0.02) rather than left where a fraction puts it. **Measured 2026-08-06: 0.004–0.006 in three of the four areas logged, and exactly at the 0.020 budget in the fourth** — because `fogStartZ` turned out to be zero or negative everywhere measured, so the dead zone this entry was written about barely exists in those areas. | Near-field haze in areas the original left crisp, bounded by the budget and confined to distances shorter than `fogStartZ`. Logged: `fogLog` prints `nearHaze=x/budget` and `limit=` per derivation. | `maxNearHaze` - it bounds the error directly, so it adapts per area where a fixed fraction cannot. A genuinely heterogeneous density (`σ(d) = 1/(end - d)` reproduces the ramp exactly) would close it outright, but that lives in `submodules/rtxdi`'s `sampleDensityField` and would mean forking a fourth repo. |
 | C10 | **Fog is composited in linear HDR, not the game's display space.** The original blended fog over a finished, display-referred image; here both the medium and the correction happen pre-tonemap. | Fog reads with a different contrast curve than vanilla - typically holding its colour longer in the bright end. | `rtx.dusklight.atmosphere.fogRadianceScale`. The structural fix is moving the correction post-tonemap, the same change the bloom needed. |
 | C1 | **Dusk saturation.** Physical twilight is more graduated and less saturated than TP's authored dusk. | Sunsets read calmer / less punchy than vanilla. | Lower `physicalWeight`'s `elevationTerm` at low sun; or add a saturation push applied to the *medium's* Rayleigh/Mie tint, not to output pixels. |
 | C2 | ~~**Exponential never fully closes.**~~ **Closed 2026-08-06, and it had never actually been fixed before that.** The range split was supposed to close the fog at `fog_end_z` and did not: the far half was scaled by `t *= mean(volumeAttenuation)` to stop it double-counting the near volume, which capped total opacity at 0.75–0.81 instead of 1.0. §5.2's correction reaches 1 by construction. **Arithmetic only — not yet seen in game.** | Was: distant terrain never dissolving into the sky the way vanilla does. | — |
@@ -736,7 +768,7 @@ is in `extern/aurora/lib/dx9/` and rebases against aurora, not against Remix.
 | Phase C (C1-C3) | implemented 2026-07-28, **run 2026-07-29 — scattering confirmed, verdict blocked by the sky/fog defect below** |
 | Overlay, warp, input blocking | landed 2026-07-28, **tested good 2026-07-29** |
 | Time-of-day scrub + freeze | landed 2026-07-28, **tested good 2026-07-29** — `DusklightOverlay.md` §3.2.1 |
-| Fog falloff rework (§5.1–§5.3) | landed 2026-08-06, **UNTESTED in game.** Both paths evaluated arithmetically (§5.1's tables); never run |
+| Fog falloff rework (§5.1–§5.3) | landed 2026-08-06. **The derivation is measured from a run** (§5.1's table); how it *looks* is still unjudged |
 
 **The fog falloff rework, 2026-08-06.** The reported symptom was that the
 volumetric fog did not match the game's falloff while the depth-based fog did.
@@ -756,14 +788,32 @@ turn the composite's far half into a residual correction across the whole
 distance. Total opacity is then the game's ramp exactly, at every distance.
 
 **Regression signature, so it can be recognised rather than discovered:** if
-`mediumFraction` is too high, near geometry inside `fogStartZ` picks up haze the
-original did not have, and `rtx.dusklight.atmosphere.fogLog` tags that line
-`OVERSHOOT`. If the medium's transmittance is noisy in very dense fog, the
-correction divides by it and can amplify that noise — expect it as grain in a
-whiteout, not as a colour shift. And if `multiScatteringScale` is now too high
-for a brightly lit scene, fog near light sources will read hot, because real
-in-scatter is adding on top of a medium that already settles at the full
-authored colour.
+`maxNearHaze` is too high, near geometry inside `fogStartZ` picks up haze the
+original did not have, and `fogLog` reports it as `nearHaze=x/budget`. If the
+medium's transmittance is noisy in very dense fog, the correction divides by it
+and can amplify that noise — expect it as grain in a whiteout, not as a colour
+shift. And if `multiScatteringScale` is now too high for a brightly lit scene,
+fog near light sources will read hot, because real in-scatter is adding on top
+of a medium that already settles at the full authored colour.
+
+**The first run, 2026-08-06, and what it settled.** A walk through Hyrule Field,
+Lake Hylia and South Faron produced the ramp table in §5.1 — the first time this
+project has had real `fogStartZ`/`fogEndZ` values, which live in stage `.dzs`
+data and cannot be read from source. It corrected two things this document had
+wrong, both now folded into §5.1: the dead-zone case that produces the
+headline +0.27 over-fog **does not occur in any area measured**, and the froxel
+grid covers only 10–21% of the ramp, so the ceiling on how volumetric the fog can
+be is `froxelMaxDistanceMaxMeters` and not `mediumFraction`.
+
+**It also broke the log, which is worth recording as an instrumentation bug
+rather than a footnote.** The game eases `fogFar` continuously; it was observed
+drifting 8 units per frame with everything that matters holding still. The
+dedup key quantised the ramp to 1 unit, so every frame was a new derivation and
+the entire 24-line budget went in **0.23 seconds**, inside an area already
+logged. The key is now bucketed geometrically (5% steps), which both collapses
+that drift and behaves across the four orders of magnitude these ramps span. The
+general lesson: a dedup key on a continuously-eased quantity needs a *relative*
+tolerance, and "bounded" is not the same as "bounded usefully".
 
 Owner's verdict on A + B after testing: *"a massive, frankly monumental
 success."* Range, shape and per-area fog scaling all validated; see §13's

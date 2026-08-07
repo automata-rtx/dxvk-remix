@@ -98,6 +98,17 @@ namespace dxvk {
       float   rampOpacityAtReach = 0.0f;
       float   mediumOpacityAtReach = 0.0f;
 
+      // Which of the three constraints actually set the density. Reported so a log line says why
+      // the medium is as thick as it is and not only how thick, which is the difference between
+      // knowing which knob to reach for and guessing.
+      enum class MediumLimit : uint8_t {
+        Reach,      // the grid's own extent - the medium matches the ramp there and stops
+        NearHaze,   // the haze budget bit first, so the medium is thinner than the reach allows
+        Density,    // zHalfMin, which only bites in a scripted whiteout
+      };
+
+      MediumLimit mediumLimit = MediumLimit::Reach;
+
       // 0 is the game's own gradient, 1 is the scattering model. See resolvePhysicalWeight for why
       // it is shaped the way it is.
       float   physicalWeight = 0.0f;
@@ -191,16 +202,30 @@ namespace dxvk {
                "original and splitting them here is what makes fog and sky disagree. Off by default, and inert unless the game's bridge is running "
                "(rtx.dusklight.env.enable). The fog half additionally waits on rtx.dusklight.env.fogActive; the sky half does not, since an area can have a "
                "sky and no haze in it.");
-    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, mediumFraction, 0.5f,
-                    "How much of the game's fog the volumetric medium carries, with the composite making up the rest, 0..1.\n"
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, mediumFraction, 1.0f,
+                    "Ceiling on how much of the game's fog the volumetric medium carries, with the composite making up the rest, 0..1.\n"
                     "The medium and the game's fog are different functions and cannot be made equal: the game's ramp is flat zero out to its start distance and "
                     "then linear in opacity, while an exponential medium begins accumulating at the camera and never quite closes. Whatever the medium overshoots "
-                    "by is permanent - the composite can add fog to a pixel but cannot take it back out - so the medium is run deliberately thin and the shortfall "
-                    "is paid back per pixel, which lands the total on the game's ramp exactly at every distance.\n"
-                    "This is the knob for that trade and it costs no accuracy either way. At 0 the fog is the game's ramp and nothing else: exactly right, with no "
-                    "light shafts in it. At 1 the medium carries as much as it can and near objects pick up haze the original did not have. The error it buys is "
-                    "worst just inside the ramp's start distance and scales with this number.\n"
-                    "UNVALIDATED: derived from the two functions, never measured against a running build.",
+                    "by is permanent - the composite can add fog to a pixel but cannot take it back out - so the shortfall is paid back per pixel instead, which "
+                    "lands the total on the game's ramp exactly at every distance.\n"
+                    "Because the total is pinned either way, this costs no accuracy in either direction: it decides how much of the fog is *volumetric* - how "
+                    "much shaft and locally-lit air is in it - not how thick it looks. 1 asks for as much as the froxel grid's own extent allows; 0 leaves the "
+                    "fog as the game's ramp and nothing else, exactly right and with no shafts in it.\n"
+                    "A ceiling rather than a setting, because rtx.dusklight.atmosphere.maxNearHaze can and does hold the density below it. Prefer that knob: it "
+                    "bounds the actual error rather than a proxy for it, and it adapts per area where this cannot.\n"
+                    "Measured 2026-08-06: in every area logged so far the froxel grid reaches only 10-20% of the way along the game's fog ramp, so even at 1 the "
+                    "medium carries a fifth of the fog at most. Was 0.5 until that measurement showed the near-haze cost of 1.0 to be 0.006 in Hyrule Field.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, maxNearHaze, 0.02f,
+                    "How much fog the original did not have is tolerable near the camera, as an opacity, 0..1.\n"
+                    "The medium is then made as dense as that budget allows and no denser, which is the same trade as mediumFraction stated in terms of the error "
+                    "instead of the cause - so it adapts per area rather than being tuned per area. An area whose fog starts at the camera can afford a thick "
+                    "medium; one that holds its fog back for fifty metres cannot, and neither needs saying by hand.\n"
+                    "The error is bounded but never zero above 0: a homogeneous medium extinguishes from the camera and the game's ramp does not, and the "
+                    "composite's correction can add fog to a pixel but not remove it. 0 disables the medium entirely wherever the game's fog does not start at "
+                    "the camera.\n"
+                    "The log reports the resulting figure as nearHaze, and reports which of the two constraints actually bound as limit=.",
                     args.minValue = 0.0f,
                     args.maxValue = 1.0f);
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, zHalfMin, 100.0f,
