@@ -132,13 +132,22 @@ namespace dxvk {
                "This covers the game's *simple* shadows only. Its projected shadows (Link, major actors) are a "
                "separate system and are not touched.");
 
-    // Local point lights.
+    // Local point lights - superseded 2026-08-06 by rtx.dusklight.game.effectLights, kept as
+    // the comparison path. Its description has to say so: this option's tooltip and its row in
+    // RtxOptions.md are where somebody setting the game up will read about it, and until
+    // 2026-08-07 both still told them to turn it on.
     RTX_OPTION("rtx.dusklight.game", bool, localLights, false,
-               "Mirrors the game's own point lights - torches, braziers, lanterns, campfires and the dungeon lights - into Remix as sphere lights.\n"
-               "The game's D3D9 path does not forward its lights, so without this Remix sees no light from the game at all: outdoors the sun covers "
-               "that, but interiors and night fall through to Remix's fallback light.");
+               "Mirrors the game's own point lights - torches, braziers, lanterns, campfires and the dungeon lights - into Remix as sphere lights, at the "
+               "positions the game gave them.\n"
+               "SUPERSEDED by rtx.dusklight.game.effectLights, which is on by default. Those positions are the problem: a GameCube point light casts no "
+               "shadow, so the artists could put one wherever the shading looked best - offset from the flame, sunk into geometry, one light standing in "
+               "for three - and none of it reads as wrong until a path tracer casts a real shadow from the exact point it occupies. The replacement puts "
+               "the light at the origin of the effect that draws the fire and keeps only the game's colour and reach.\n"
+               "Kept so the two can be compared. Running both gives every fire two lights, one of them in the old place - which looks exactly like the new "
+               "placement being broken, so the Dusklight tab warns when both are on.");
     RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightIntensity, 19.0f,
-                    "Scales the game's local lights.\n"
+                    "Scales the game's local lights. Applies to the superseded mirror only - the equivalent for effect lights is "
+                    "rtx.dusklight.game.effectLightDerivedIntensity, which starts from this same 19 and for the same reason.\n"
                     "At 1.0 each light is as bright as Remix's own conversion would make a legacy light that reached exactly as far as the game's "
                     "influence radius. That reading is too conservative, because the radius is not where the light ends: the game loads its attenuation "
                     "so that the radius is where brightness falls to about a ninth of peak, and the curve carries roughly four times further. Applying "

@@ -502,7 +502,7 @@ Expected fidelity by scenario, as a reference for judging results:
 | Night | ~100% | Stylised, unchanged |
 | Rain / storm | ~90% | Stylised-dominant — see C4 |
 | Twilight Realm | 100% | Physics bypassed entirely |
-| Interiors | n/a | No sky; fog from palette; local lights own the rest |
+| Interiors | n/a | No sky; fog from palette; **effect lights own the rest** - and they are the only NEE-sampled source there, since the sun/moon is gated off indoors and Remix has no dome light type |
 
 ---
 
@@ -677,6 +677,16 @@ time-of-day slider and Freeze Time all work; local point lights work (they need
 `dusklight-ao/docs/remix-open-issues.md` open issue 3); and `hideSkyBillboards`
 **fixed the night shadow wandering**, confirming the moon-quad cause rather than
 merely masking it.
+
+**Local point lights were superseded on 2026-08-06** and now default off — not
+because they stopped working but because working exposed what was wrong with
+them: they place the light where the *game* put it, and a GameCube point light
+casts no shadow, so those positions were never meant to survive a path tracer.
+**Effect lights** replace them, anchored at the origin of the effect that draws
+the fire, and inherit both numbers above as `effectLightDerivedIntensity` and
+`effectLightDerivedRadius`. Run in game 2026-08-07. Design:
+`dusklight-ao/docs/effect-lights.md`; overlay surface and status:
+`DusklightOverlay.md` §6.
 
 **Still untested, as of 2026-08-04:** the ambient grade — which should stay
 untested until the defect below is fixed, because grading on a wrongly-lit sky

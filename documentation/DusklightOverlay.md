@@ -185,7 +185,16 @@ score is still logged; nothing decides on it.
 measurement, §10 for the two-colour ramp.
 
 Then the game's own settings, in collapsible sections: Bridge, Sun / Moon
-Light, Local Point Lights, Geometry, Game, Bloom, Ambient Grade, Atmosphere.
+Light, **Effect Lights**, Local Point Lights (comparison), Geometry, Game,
+Bloom, Ambient Grade, Atmosphere - Fog and Sky. The first three are open by
+default; the rest start collapsed.
+
+**A name collision worth knowing about before you go looking.** Remix's *own*
+Lighting tab has a section also called **Effect Light** — singular — which is
+upstream's `rtx.effectLight*` / `rtx.lightConverter` feature for attaching a
+light to a tagged texture. It has nothing to do with ours. Ours is
+`rtx.dusklight.game.effectLight*` and lives in the Dusklight window's Game tab.
+Searching either doc or the source for "effectLight" hits both.
 
 One of those is worth naming here because it is a rendering decision rather than
 a preference: **Geometry > Game's Blob Shadows** (`rtx.dusklight.game.blobShadows`,
@@ -422,7 +431,16 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open
 
-- **Local point lights: RESOLVED 2026-07-29.** Forest Temple first room reads
+- **Local point lights: RESOLVED 2026-07-29, then SUPERSEDED 2026-08-06.** The
+  entry below is kept because the settings it derived carry straight over to
+  effect lights and the diagnostics lesson is the template — but the mirror
+  itself now defaults **off**. What replaced it and why is the Effect Lights row
+  above: the mirror worked, and working is what exposed the problem, which is
+  that a GameCube point light's *position* was never meant to survive a real
+  shadow. The loose end at the bottom of this entry — `found 5` but `drawn 4` —
+  is therefore no longer on anyone's path.
+
+  Forest Temple first room reads
   `Registered by the game: 5   drawn this frame: 4   tracked: 4`.
 
   The diagnostics did their job — the visit that used them took minutes and
