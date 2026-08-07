@@ -3150,6 +3150,14 @@ namespace dxvk {
       RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
       RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
       RemixGui::Checkbox("Per-Blade Grass", &DusklightGame::perBladeGrassObject());
+      RemixGui::Checkbox("Hide Epona Dash Effect", &DusklightGame::hideDashEffectObject());
+      ImGui::TextWrapped(
+        "The dash speed effect is placed in front of the camera rather than in the world, so Remix "
+        "captures it as a translucent wall travelling with the view. On by default, and that default "
+        "is a hypothesis rather than a measurement: it is the leading suspect for water changing "
+        "appearance while dashing, but the cause is unconfirmed. Turn it off, enable the Dusklight "
+        "material report and compare the water's matrep.rmx lines across a dash - if the material "
+        "shape still changes, the dash effect was not the cause.");
       RemixGui::Checkbox("Game's Blob Shadows", &DusklightGame::blobShadowsObject());
       ImGui::TextWrapped(
         "Blob shadows are the flat discs the game paints under rupees, hearts and pots. Off by "

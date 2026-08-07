@@ -1151,13 +1151,41 @@ namespace dxvk {
     // See aurora-ao/docs/dx9/material-report.md.
     if (DusklightMatrep::matrep()) {
       const LegacyMaterialData& mat = m_activeDrawCallState.materialData;
-      // Keyed on the reconstruction *shape* -- texture, ops and arg sources --
-      // deliberately excluding tFactor's value. computeIdentityHash() includes
-      // it, and because the game's tints track fog and time of day, the
-      // 2026-08-03 session produced 828 distinct tFactor values and burned the
-      // whole 1024 cap on a few dozen materials inside 14 seconds. The value is
-      // still printed; it just does not multiply the number of reports.
-      const XXH64_hash_t identity = matrep::shapeKey(mat);
+      // Texcoord generation and transform for the stage the material came from.
+      // Read from d3d9State rather than from transformData so the line shows what
+      // the game asked for beside what Remix resolved it to - those differ silently
+      // for projected and for camera-space-reflection texgen, which is the whole
+      // reason these fields exist. See matrep::StageXform.
+      matrep::StageXform xform;
+      {
+        const DWORD ttff = d3d9State().textureStages[firstStage][DXVK_TSS_TEXTURETRANSFORMFLAGS];
+        // 0x7, not the 0x3 that setTextureStageState uses: D3DTTFF_COUNT4 is 4, so the
+        // narrower mask reports it as DISABLE. Logging the count the game actually
+        // requested keeps that failure visible instead of reproducing it.
+        xform.elementCount = static_cast<uint8_t>(ttff & 0x7);
+        xform.projected = (ttff & D3DTTFF_PROJECTED) != 0 ? 1u : 0u;
+
+        // Explicit mapping rather than arithmetic on the D3DTSS_TCI_* encoding. Masked
+        // to the flag bits because the low half of this field is the coordinate index.
+        switch (d3d9State().textureStages[firstStage][DXVK_TSS_TEXCOORDINDEX] & 0xFFFF0000) {
+        case D3DTSS_TCI_PASSTHRU:                    xform.tci = matrep::TciClass::PassThru; break;
+        case D3DTSS_TCI_CAMERASPACEPOSITION:         xform.tci = matrep::TciClass::CameraSpacePosition; break;
+        case D3DTSS_TCI_CAMERASPACENORMAL:           xform.tci = matrep::TciClass::CameraSpaceNormal; break;
+        case D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR: xform.tci = matrep::TciClass::CameraSpaceReflectionVector; break;
+        case D3DTSS_TCI_SPHEREMAP:                   xform.tci = matrep::TciClass::SphereMap; break;
+        default:                                     xform.tci = matrep::TciClass::Unknown; break;
+        }
+
+        xform.texgen = m_activeDrawCallState.getTransformData().texgenMode;
+      }
+
+      // Keyed on the reconstruction *shape* -- texture, ops, arg sources and the
+      // texcoord state above -- deliberately excluding tFactor's value.
+      // computeIdentityHash() includes it, and because the game's tints track fog
+      // and time of day, the 2026-08-03 session produced 828 distinct tFactor values
+      // and burned the whole 1024 cap on a few dozen materials inside 14 seconds. The
+      // value is still printed; it just does not multiply the number of reports.
+      const XXH64_hash_t identity = matrep::shapeKey(mat, xform);
       if (matrep::shouldEmit(identity)) {
         Logger::info(str::format(
           "matrep.rmx id=", std::hex, identity, std::dec,
@@ -1183,6 +1211,19 @@ namespace dxvk {
           // The second endpoint, without which "ramp=1" says the lerp happened
           // but not between what. Same 0x00RRGGBB packing the shader unpacks.
           " rampOther=", std::hex, dusklightRamp::otherColor(mat), std::dec,
+          // Texcoord state. "xform" is the element count the game requested; Remix
+          // clamps anything above 2. "proj=1" means the stage wanted a projective
+          // divide that Remix does not implement, so its UVs are wrong regardless of
+          // anything else on this line - that is the MA02/MA10 water reflection layer.
+          // "tci" is what the game asked for, "texgen" what Remix resolved it to; a
+          // dropped mode shows as the two disagreeing.
+          " xform=", static_cast<uint32_t>(xform.elementCount),
+          " proj=", static_cast<uint32_t>(xform.projected),
+          " tci=", matrep::tciName(xform.tci),
+          " texgen=", matrep::texgenName(xform.texgen),
+          // Swapped per-frame by dKy_bg_MAxx_proc on the water-in fog materials.
+          " alphaTest=", mat.alphaTestEnabled,
+          " alphaRef=", static_cast<uint32_t>(mat.alphaTestReferenceValue),
           " albedo=\"", matrep::albedoExpression(mat), "\""));
       }
     }
