@@ -196,6 +196,22 @@ namespace dxvk {
                     "How many of the game's own point lights were submitted to Remix this frame. Written by the game's kankyo bridge.");
     RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsTracked, 0, RtxOptionFlags::NoSave,
                     "How many of the game's own point lights currently hold a live Remix light. Written by the game's kankyo bridge.");
+
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, texrepEnabled, false, RtxOptionFlags::NoSave,
+                    "True when the game is handing its HD texture replacement pack to Remix. Written by the game's kankyo bridge.\n"
+                    "False means the pack is off, empty, or the game build predates this - which are different from the pack being handed over and "
+                    "then ignored on this side. Read it together with the fork's own texrep counters before debugging a pack that is not showing up.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, texrepEntries, 0, RtxOptionFlags::NoSave,
+                    "How many replacements the game's registry selected, before any were handed over. Written by the game's kankyo bridge.\n"
+                    "Zero with texrepEnabled true means the pack directory is empty or nothing in it parsed as a replacement filename.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, texrepCreated, 0, RtxOptionFlags::NoSave,
+                    "How many Remix materials the game has created for those replacements so far. Written by the game's kankyo bridge.\n"
+                    "Creation is spread over frames, so this climbs after launch and then stops. This counter versus the fork's applied count is what "
+                    "separates 'the game never sent it' from 'the fork ignored it'.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, texrepSkipped, 0, RtxOptionFlags::NoSave,
+                    "How many replacements the game could not hand over. Written by the game's kankyo bridge.\n"
+                    "Almost always PNG files: Remix's asset loader accepts .dds only, while the game's own registry accepts both. The game logs one "
+                    "bounded line per skipped entry with the reason.");
   };
 
 }

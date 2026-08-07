@@ -584,6 +584,8 @@ design keeps the upstream diff to a checklist.
 - `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` — the ambient grade stage.
 - `src/dxvk/rtx_render/rtx_dusklight_emissive.h` — self-illumination cut and the
   two-colour ramp, which shares the same `D3DMATERIAL9` transport.
+- `src/dxvk/rtx_render/rtx_dusklight_texrep.{h,cpp}` — HD texture packs: handle
+  decode, residency tracking, both substitution sites' logic, counters.
 - `src/dxvk/rtx_render/rtx_dusklight_{env,game}.h` — the two option surfaces.
 - `src/d3d9/d3d9_rtx_matrep.h` — the material translation report.
 - `src/dxvk/shaders/rtx/pass/dusklight/*` and
@@ -627,6 +629,22 @@ row says otherwise.
 | :-- | :-- | :-- |
 | `rtx_remix_api.cpp` | API mesh hashes derived from the submitted vertex/index data; upstream's `hack_getNextGeomHash` removed | unconditional — a behaviour change against upstream, not a guarded hook |
 | `rtx_scene_manager.cpp` `submitExternalDraw` | consults `getReplacementMaterial` before using the supplied material | unconditional, same |
+
+*HD texture packs — 2026-08-05 (`aurora-ao/docs/dx9/texture-replacements.md`):*
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_scene_manager.cpp` `determineMaterialData` | one call at the tail, after `as<OpaqueMaterialData>()`, overwriting only the albedo texture. **Order matters:** the conversion is what sets the sampler override and the ignore-alpha flag, and it must not become a merge | `rtx.dusklight.texrep.enable` |
+| `rtx_scene_manager.cpp` `usePreservePath` | one extra `&&` term, same shape as the existing `terrainCascadesJustChanged` | same |
+| `rtx_scene_manager.cpp` `onFrameEnd` | two counter calls | same |
+| `d3d9_device.cpp` `BindTexture` | the rasterized/HUD site: the emitted CS lambda gains a captured handle and may swap the bound view. **This is the only place the fork touches `d3d9_device.cpp`** — a rebase that drops it loses the HUD half silently, with the world half still working | `rtx.dusklight.texrep.applyToRaster` |
+
+Note that `d3d9_device.cpp` was not an upstream file this fork touched before
+this change; a rebase reading an older copy of this list will not expect a
+conflict there. **Verified rather than assumed** —
+`git diff origin/main...HEAD -- src/d3d9/d3d9_device.cpp` against the upstream
+tracker returns exactly two hunks, the include and `BindTexture`. That command
+is also how to re-check it after any future change.
 
 *Overlay, bloom and plumbing:*
 
@@ -674,6 +692,11 @@ time-of-day slider and Freeze Time all work; local point lights work (they need
 **fixed the night shadow wandering**, confirming the moon-quad cause rather than
 merely masking it.
 
+**HD texture packs: tested good 2026-08-06**, first try. The pack reaches Remix
+without its bytes entering D3D9, so texture tagging is unchanged. One known
+characteristic: a long first-launch warm-up (§12.1 below). Design and failure
+modes live in `aurora-ao/docs/dx9/texture-replacements.md`.
+
 **Still untested, as of 2026-08-04:** the ambient grade — which should stay
 untested until the defect below is fixed, because grading on a wrongly-lit sky
 is tuning against a moving target — and everything built since 2026-07-29 and
@@ -684,6 +707,62 @@ self-illumination rule) is likewise CI-green and unrun; it is tracked in
 
 `disableFrustumCulling` **is** tested: it works and it visibly helps with
 light leakage.
+
+### 12.1 The HD texture pack's first-launch warm-up
+
+**Observed 2026-08-06:** with a pack installed, the first launch spends a long
+period at poor performance before the replacements appear; every later launch
+has them essentially immediately. Not a defect — but it is a real cost, and it
+is worth knowing it is expected rather than rediscovering it.
+
+**What is verified in source:** Remix keeps **no on-disk cache of loaded
+textures.** `AssetDataManager::findAsset` opens the `.dds` with `std::fopen`
+for the header and `CreateFileMapping`/`MapViewOfFile` for the data, every
+launch (`rtx_asset_data_manager.cpp:200,294-305`). The only in-memory dedupe is
+`m_assetHashToTextures` (`rtx_texture_manager.cpp:1435-1448`), which does not
+survive the process. So nothing in the runtime is warm on launch 2 that was
+cold on launch 1.
+
+**But that does not make the OS file cache the cause, and an earlier revision of
+this section said it did.** Correction, same day: reasoning from "no *texture*
+cache" to "no durable cache" skipped one. **DXVK writes a pipeline state cache
+to disk** (`<exe>.dxvk-cache`, `dxvk_state_cache.cpp:1120-1128`, with
+`dxvk.enableStateCache` defaulting true at `dxvk_options.cpp:29`), and this
+runtime's own options describe the effect: a significant performance impact
+"whenever shaders are uncached (e.g. on first load)" (`rtx_options.h:397`).
+Every first launch is slow for that reason, pack or no pack.
+
+Two candidates, then, and only one of them survives a reboot:
+
+| Contributor | Cached where | Survives a reboot? |
+| :-- | :-- | :-- |
+| Pipeline/shader compilation | `<exe>.dxvk-cache` | **Yes** |
+| The pack's `.dds` reads | nowhere durable; OS page cache only | **No** |
+
+**Which dominates is unmeasured**, and the texture side is partly a symptom
+rather than a cause: creation is budgeted per frame, so slow frames from *any*
+source stretch how long the pack takes to finish arriving. Reboot and relaunch
+to separate them — that clears the page cache and keeps `.dxvk-cache`.
+
+**Our own contribution, and it is real:** the game creates materials at
+`kTexRepCreationsPerFrame = 16` per frame (`dusklight-ao/src/dusk/remix_bridge.cpp`),
+and each `remixapi_CreateMaterial` reads the DDS header **synchronously on the
+CS thread** — the `// async load` comment above it notwithstanding, both
+`preloadTextureAsset` branches pass `async=false`. Sixteen cold-cache file opens
+per frame is a per-frame stall for as many frames as the pack has entries / 16.
+
+**How to confirm it rather than argue about it:** the game logs
+`texrep: N replacement(s) selected by the registry` when it starts and
+`texrep: N material(s) created, M skipped` when it finishes. The wall-clock gap
+between those two lines, compared between a cold first launch and a warm second
+one, measures exactly this. No one has to describe how it felt.
+
+**If it needs fixing** — and only if the reboot test says texture I/O is the
+dominant term — the cheap change is a time budget instead of a count (bounds the
+per-frame stall rather than the per-frame count), and the better one is
+prefetching the pack on a worker thread so the CS thread never waits on cold
+reads. Neither was done as part of the tested 2026-08-06 change.
+`aurora-ao/docs/dx9/texture-replacements.md` §9.
 
 ### The live defect: the medium dims the generated sky
 

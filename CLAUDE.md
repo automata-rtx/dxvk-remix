@@ -150,7 +150,7 @@ implying it was tested.
 **The game and this DLL are a single protocol.** The game pushes
 `rtx.dusklight.env.protocol`; this fork compares it against `kRequiredProtocol`
 in `showDusklightRemixTab` (`src/dxvk/imgui/dxvk_imgui.cpp`).
-**Protocol is at 6.** Build both sides from the same commit point, and bump
+**Protocol is at 7.** Build both sides from the same commit point, and bump
 both in the same commit. Skew in either direction has cost an evening twice.
 The Dusklight tab reports which side is old — read it before debugging
 anything else.
@@ -164,6 +164,7 @@ anything else.
 | `src/dxvk/rtx_render/rtx_dusklight_atmosphere.{h,cpp}` | one medium driving fog, sky and sky-light; Hillaire physical sky |
 | `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` | the ambient grade stage |
 | `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. **A rule, not a score**: self-lit (no TEV colour stage reads the rasterized channel) AND a colour of its own (authored in GX constants, not the vertex stream and not a bare texture pass-through) AND that colour reading as a glow (saturated **or** near-white-hot). Aurora ships the three facts in `D3DMATERIAL9::Specular.{a,b}` and `Emissive.rgb`; `Emissive.a` still carries the old evidence score but **nothing decides on it** — three revisions cut on it and all three missed the lava, which scores 0.00. Applied at one site in `rtx_instance_manager.cpp`. **Note the trap around the emissive colour: by default the shader re-applies the albedo's texture op to it** — `RtSurface::emissiveSource` (`textureFlags` bits 19–20) is what selects out of that. Also holds `rtx.dusklight.rampMaterials`, the two-colour ramp, which shares the same `D3DMATERIAL9` transport: the fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints rather than squeezing it into one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork can |
+| `src/dxvk/rtx_render/rtx_dusklight_texrep.{h,cpp}` | `rtx.dusklight.texrep.*` — HD texture packs. The game loads its pack through `remixapi_CreateMaterial` (used purely as a file loader) and tags each draw with a 1-based index in `D3DMATERIAL9::Ambient.g`, with the stage it refers to in `Ambient.b`; this substitutes the loaded albedo at the **two** places a draw can consume a texture — `determineMaterialData` for ray-traced draws, `D3D9DeviceEx::BindTexture` for rasterized ones. Both are needed: UI draws never reach material resolution. **The pack never travels through D3D9**, so the game's own textures stay what Remix hashes — tagging, `rtx.conf` categories and USD bindings are unaffected by installing or changing a pack. **Tested good 2026-08-06.** Note `d3d9_device.cpp` `BindTexture` is the *only* place this fork touches that file: a rebase that drops it loses the HUD half silently while the world half keeps working |
 | `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
 | `src/d3d9/d3d9_rtx_matrep.h` | the material translation report (`rtx.dusklight.matrep`), one guarded call at the tail of `D3D9Rtx::processTextures` |
 
@@ -202,6 +203,61 @@ thresholds are options rather than constants; §10 covers the two-colour ramp.
   `BeginDisabled`/`EndDisabled` are available.
 - `dxvk_imgui.cpp` does **not** include `<cmath>`. Do not rely on a transitive
   one across three compilers.
+
+## Merges that succeed and are still wrong
+
+**A clean `git merge` is not a correct merge.** Several Dusklight features are
+developed on parallel branches that edit the same documents, and git only
+compares *lines* — it cannot see that two branches have made the same sentence
+false, or that a conflict's obvious resolution is the wrong one.
+
+Two instances, both real:
+
+- **The protocol double-bump.** Two branches independently took protocol 6 → 7,
+  each editing `kRequiredProtocol` and the registry line. Git *did* conflict —
+  which made it worse: both sides said `7`, so keeping either looks correct and
+  ships two features claiming one version. The conflict was flagged; the
+  **resolution** was the trap.
+- **The side-channel map.** A feature claimed `D3DMATERIAL9::Ambient.g` and
+  `.b`, updating three of the four places that describe the struct. The
+  canonical table merged cleanly and kept advertising both as spare, so the next
+  feature to want a channel would have taken one already in use — surfacing as a
+  material bug nowhere near either change.
+
+**So, after any merge — and before pushing one:**
+
+```
+python3 scripts/check_dusklight_invariants.py
+```
+
+It checks `kRequiredProtocol` against the prose and the version registry
+(including **duplicate protocol numbers**, which is the double-bump), every
+`D3DMATERIAL9` channel the fork reads against
+`documentation/DusklightSideChannels.md`, `RtxOptions.md` coverage of every
+declared `rtx.dusklight.*` option, and leftover conflict markers. The
+`Invariants` workflow runs it on **every** push and PR, unfiltered by path or
+branch — doc-only commits and `Fixed-Function-dev` merges are exactly when these
+drift, and `build.yml` covers neither.
+
+`RtxOptions.md` drift is reported as a **warning, not a failure**: it is
+generated by running the runtime on Windows, and a check that blocks a merge on
+something the author cannot do from their checkout gets disabled the first time
+it is inconvenient.
+
+**What it cannot check, and therefore what a human still has to:**
+
+- whether a "tested in game" claim survived the change underneath it
+- whether a document's *prose* still describes reality, as opposed to its
+  numbers agreeing with the code
+- whether two in-flight branches are about to take the same spare side channel
+  or protocol number — nothing can see an unmerged branch, so **check the other
+  live `claude/*` branches before taking either**
+
+**When auditing documentation after a merge, re-derive the file list from the
+diff, not from memory.** On the merge that prompted all of this, every gap found
+on the thorough pass was in a document nobody had edited — precisely the set
+recall does not surface. `documentation/DusklightAtmosphere.md` §11, the rebase
+surface, is the highest-consequence one to keep current.
 
 ## Two tripwires that only fire in CI
 
