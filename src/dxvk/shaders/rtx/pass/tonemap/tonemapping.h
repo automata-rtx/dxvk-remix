@@ -155,7 +155,7 @@ struct Gt7Args {
   float targetUcs;        // framebufferLuminanceTargetUcs_
   float inputScale;       // scene referred (mid grey at keyValue) -> GT frame buffer units
   float outputScale;      // sdrCorrectionFactor_; 1.0 in HDR mode
-  float pad0;
+  float saturationBoost;  // 1.0 = untouched reference behaviour. See gt7SaturationBoost.
 };
 
 struct ToneMappingHistogramArgs {

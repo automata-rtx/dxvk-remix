@@ -53,6 +53,10 @@ float3 localTonemapRuler(float3 color, uint tonemapOperator, bool useLegacyACES,
 
   if (tonemapOperator == tonemapOperatorGT7)
   {
+    // The saturation boost is a look control, so it must not move the measuring instrument -
+    // otherwise turning it up would quietly change how the fusion decides local adaptation.
+    // gt7 is a by-value parameter, so this only affects the ruler.
+    gt7.saturationBoost = 1.0f;
     return gt7ToneMapping(color, gt7);
   }
 

@@ -84,6 +84,8 @@ namespace dxvk {
     // to a single PQ evaluation - no need for the full matrix here.
     args.targetUcs = inverseEotfSt2084(target);
 
+    args.saturationBoost = std::max(gt7SaturationBoost(), 1.0f);
+
     return args;
   }
 
@@ -98,6 +100,12 @@ namespace dxvk {
                        args.inputScale, args.outputScale);
     ImGui::TextWrapped("Chroma is left untouched until a pixel reaches 98%% of display peak, which "
                        "is what keeps sky hue stable.");
+
+    RemixGui::DragFloat("GT7 Saturation Boost", &gt7SaturationBoostObject(), 0.01f, 1.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    if (gt7SaturationBoost() > 1.0f) {
+      ImGui::TextWrapped("Lifts lit surfaces only; sky and bright emissives are gated out by "
+                         "intensity. 1.0 restores the reference operator exactly.");
+    }
     ImGui::Unindent();
   }
 

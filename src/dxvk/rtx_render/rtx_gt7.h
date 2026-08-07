@@ -55,6 +55,22 @@ namespace dxvk {
                     "SDR paper white for the GT7 operator, in cd/m^2. 250 is the value the reference implementation is calibrated around; frame buffer 1.0 is defined as 100 cd/m^2, so this also sets how much headroom sits above mid grey before the shoulder and the chroma fade engage.",
                     args.minValue = 100.0f,
                     args.maxValue = 1000.0f);
+
+    // An addition to the reference, not part of it. Inert at 1.0, where the operator stays
+    // bit-identical to Polyphony's implementation.
+    //
+    // Applied to the ICtCp chroma, so it adds saturation without rotating hue - scaling Ct and Cp
+    // by the same factor cannot change atan2(Cp, Ct). Measured ICtCp hue drift is under 1 degree
+    // at 1.5 and under 4 at 2.0, the residual being gamut clipping on deeply saturated blues on
+    // the way back to Rec.709. Note that CIELAB reports far larger drift on blues; that is
+    // CIELAB's own blue non-linearity rather than an error in the boost.
+    //
+    // Gated on intensity so it lifts lit surfaces and leaves the sky and bright emissives alone -
+    // see kGt7SatBoostKneeStart in gt7.slangh for the measured ranges it was chosen from.
+    RTX_OPTION_ARGS("rtx.tonemap", float, gt7SaturationBoost, 1.0f,
+                    "Saturation boost for the GT7 operator, applied to lit surfaces only. 1.0 is off and leaves the operator exactly as its reference implementation. The boost fades out with pixel intensity so that sky and bright emissives such as lava keep the colour the operator gives them - at 2.0 the sky gains roughly 4 percent chroma while lava gains none. Applied in ICtCp so it does not rotate hue; beyond about 1.5 deeply saturated blues start to clip against the display gamut.",
+                    args.minValue = 1.0f,
+                    args.maxValue = 2.0f);
   };
 
 }

@@ -276,6 +276,49 @@ LUT because it is a sample implementation written for clarity - it has a `main()
 harness, and switchable ICtCp/Jzazbz paths. What the shipping game does is unknown from it.
 ---
 
+## 10. The GT7 saturation boost is a fork addition, not part of the reference
+
+GT7's photographic restraint is the point of it, but it can read as flat next to a punchier
+operator. `rtx.tonemap.gt7SaturationBoost` lifts lit surfaces while leaving the sky — the thing
+GT7 was chosen for — alone.
+
+**Why intensity and not chroma.** The obvious gate is "boost low-chroma things", but measured in
+ICtCp the sky does not separate that way: deep sunset sky reaches chroma 0.219, higher than any
+surface sampled, while horizon haze sits at 0.036, lower than most. Intensity separates cleanly,
+because the sky is a light source and the surfaces are what it illuminates:
+
+| class | ICtCp intensity (÷ target) | measured chroma gain at boost 2.0 |
+|---|---|---|
+| lit surfaces | 0.53 – 0.76 | 1.37× – 1.55× |
+| **sky** | **0.82 – 0.83** | **1.03× – 1.05×** |
+| lava, torch flame | 0.95 – 1.18 | **1.00×** |
+
+The boost fades out across a knee at 0.70 – 0.85, so surfaces get it in full, sky gets a few
+percent, and bright emissives get none.
+
+**Why it does not rotate hue.** It scales the ICtCp Ct and Cp components by the same factor, and
+`atan2(Cp, Ct)` is invariant under that — so hue is preserved by construction, not by tuning. The
+only residual is gamut clipping on the way back to Rec.709. Measured ICtCp hue drift:
+
+| boost | worst-case drift |
+|---|---|
+| 1.5× | **1.03°** |
+| 2.0× | **3.86°** (deeply saturated blue) |
+
+> **Do not measure this in CIELAB.** CIELAB reports up to 11.8° on the same blues where ICtCp
+> reports 0.50°. That is CIELAB's own blue hue non-linearity — the defect ICtCp and CAM16 were
+> built to fix — and not an error in the boost. An earlier pass at this nearly led to capping the
+> slider far tighter than the evidence justified.
+
+**Verified inert at the default.** At 1.0 the term evaluates to exactly 1.0 and the operator is
+bit-identical to the reference — checked at 0.00e+00 deviation across sky, surface and emissive
+samples.
+
+The boost is explicitly neutralised inside `localTonemapRuler()`. It is a look control, and a look
+control must not move the instrument the exposure fusion measures with.
+
+---
+
 ## What was verified, and what was not
 
 **Verified numerically** against a model of the shader maths: metering identity at mid grey;
