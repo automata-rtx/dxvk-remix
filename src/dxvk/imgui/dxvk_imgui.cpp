@@ -3210,13 +3210,24 @@ namespace dxvk {
       // An action, so NoSave and a counter rather than a flag: a persisted request would fire on the
       // next launch, and the game latches the first count it sees without acting so that connecting
       // to a Remix that outlived a game restart does not dump a report nobody asked for.
-      if (ImGui::Button("Log Effect Classification Report", ImVec2(-1, 0))) {
+      if (ImGui::Button("Log Full Effect Light Report", ImVec2(-1, 0))) {
         DusklightGame::effectLightReportCommit.setDeferred(DusklightGame::effectLightReportCommit() + 1);
       }
       ImGui::TextWrapped(
-        "Writes one line per distinct effect the game has seen - name, blend configuration, colours, "
-        "class, and whether the rule accepted it. That log is what turns 'additive blending means the "
-        "effect emits light' from a reading of the file format into a measurement of this game.");
+        "One press, five sections, every open question answered - send the log and nothing else is "
+        "needed.\n\n"
+        "COUNTERS: the whole chain plus the bridge's own create/destroy counts, which nothing has ever "
+        "printed before.\n"
+        "EFFECTS: one line per distinct effect seen since the last press - name, blend configuration, "
+        "colours, the MEASURED chroma and luma the rule cut on, which keyword picked its class, and a "
+        "verdict that names the clause that refused it rather than just saying no. Plus whether its "
+        "colour is even capable of animating, and how long it lives.\n"
+        "SITES: every light this frame - where it is, how many emitters merged into it, and how far it "
+        "was from the game light it adopted.\n"
+        "GAME LIGHTS: every light the game registered and which effect took it. Adoption is exclusive, "
+        "so this is what shows a short-lived effect stealing a torch's light.\n"
+        "TRACE: a rolling window of how each light changed over the last few seconds. It is "
+        "RETROSPECTIVE - do the thing you want to look at first, THEN press this.");
       ImGui::Unindent();
     }
 
