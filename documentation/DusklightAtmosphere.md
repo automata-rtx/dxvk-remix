@@ -607,7 +607,19 @@ row says otherwise.
 | `composite.comp.slang` `applyFog` | range split | `cb.dusklightArgs.enable` |
 | `composite_args.h` | one args struct added (`DusklightCompositeArgs`) | additive only |
 | `froxel.slangh` + `VolumeArgs` | `previousFroxelMaxDistance` | additive; also a genuine upstream fix |
-| `rtx_light_manager.cpp` | `addExternalLight` preserves the light's buffer index across an overwrite, matching the game-light path a few lines above. Three lines, no reformatting | none — it is a straight correction, and it applies to every API light |
+| `rtx_light_manager.cpp` | **two** related corrections, both unguarded, both about the RTXDI buffer index on API lights — a rebase that re-applies one and not the other gets the worse half of each. See the row below and *Effect lights* | none — straight corrections, and they apply to every API light |
+
+*Effect lights (2026-08-06) — design in `dusklight-ao/docs/effect-lights.md`.
+Almost all of this system is game-side; the fork's share is small and listed
+here in full:*
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_light_manager.cpp` `addExternalLight` | preserves the light's buffer index across an overwrite, matching the game-light path a few lines above. Three lines, no reformatting | none |
+| `rtx_light_manager.cpp` `prepareSceneData` | range-checks `previousBufferIdx` before using it. An index is only meaningful if it was assigned **last** frame, and a light that leaves `m_linearizedLights` entirely — which an API light does on any frame `DrawLightInstance` is not called for it — is never reset by the loop's else branch. Trusting it wrote past the end of `m_lightMappingData` or mapped one light's temporal history onto another | none |
+| `rtx_dusklight_game.h` | the 18 `effectLight*` options | additive |
+| `rtx_dusklight_env.h` | the 10 `effLights*` readouts | additive |
+| `dxvk_imgui.cpp` | the **Effect Lights** section of the Game tab, and the warning shown when both light systems are on | own block |
 
 *Materials — the 2026-08-04 work (see `aurora-ao/docs/dx9/remix-material-interface.md` §9–§10):*
 
