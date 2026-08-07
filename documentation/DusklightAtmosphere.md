@@ -769,6 +769,7 @@ is in `extern/aurora/lib/dx9/` and rebases against aurora, not against Remix.
 | Overlay, warp, input blocking | landed 2026-07-28, **tested good 2026-07-29** |
 | Time-of-day scrub + freeze | landed 2026-07-28, **tested good 2026-07-29** — `DusklightOverlay.md` §3.2.1 |
 | Fog falloff rework (§5.1–§5.3) | landed 2026-08-06. **The derivation is measured from a run** (§5.1's table); how it *looks* is still unjudged |
+| Volumetric shell sizing (§14.12) | landed 2026-08-07 in response to a reported height cutoff in Lake Hylia. Mechanism read from source, **attribution inferred**, fix untested |
 
 **The fog falloff rework, 2026-08-06.** The reported symptom was that the
 volumetric fog did not match the game's falloff while the depth-based fog did.
@@ -1241,6 +1242,67 @@ i.e. in a fourth repository. The hook is real and clean (it already returns a
 per-step density scalar, used for both extinction and out-scatter), so the
 constraint is ownership, not capability. §5.2 works around it instead by
 correcting in the composite, which is ours.
+
+### 14.12 The volumetric shell's ceiling is an absolute world height
+
+Reported 2026-08-07: in Lake Hylia, *"it felt like the volumetrics were
+different based on a height cutoff… a harsh transition that didn't look
+natural,"* not always present and **worst in the morning when the fog gets
+hugely intense.** Mechanism below is read from source; that this is what was
+seen is inference, and the two tripwires added with the fix are what would
+settle it.
+
+Outdoors this fork forces Remix's planet-atmosphere mode on, which bounds the
+medium with a sphere:
+
+```cpp
+planetCenter = project(cameraPos, origin, up) - up * planetRadius;
+atmosphereRadius = planetRadius + atmosphereHeight;
+```
+
+The centre is a planet radius below the **origin plane**, so the shell's ceiling
+sits at world height `atmosphereHeight` *regardless of where the camera is* —
+`project` only removes the camera's up-component. It is not a height above the
+player, and nothing in the derivation knew that.
+
+The height came from `max(atmosphereHeightMeters · scale, rampEnd)`, and that is
+where it breaks. **A scripted fog bank drives `fogEndZ` down, not up.** kytag01
+calls `dKy_fog_startendz_set(-2000, 200, ratio)`
+(`dusklight-ao/src/d/actor/d_a_kytag01.cpp:94`) and `mFogFar` blends toward that
+`200` — two metres — through `float_kankyo_color_ratio_set`
+(`d_kankyo.cpp:2510`). So as the bank engages the ceiling *falls*:
+
+| kytag01 strength | `fogEndZ` | ceiling | shell meets ground at |
+| :-- | :-- | :-- | :-- |
+| off (area fog) | 70000 | 700 m | 3742 m |
+| half | 35000 | 350 m | 2646 m |
+| **full** | **200** | **30 m** (the option's floor) | **775 m** |
+
+A 30 m ceiling is below most of Lake Hylia's terrain and below the camera from
+anywhere but the shoreline, so the medium becomes a 30 m slab in a 775 m bubble
+that travels with the player. Everything above it has no medium: no extinction
+and, more visibly, **no in-scatter.** §5.2's correction hides the density half
+of that — total opacity is pinned to the game's ramp either way — which is
+exactly why it would present as a brightness and colour step rather than as one
+side being foggier, matching the report.
+
+**The fix, and why it is a fix rather than a bigger number.** The game's fog has
+no altitude term at all — `GX_FOG_PERSP_LIN` is a function of distance and
+nothing else — so *any* height structure in this medium is invented rather than
+translated. The shell is kept only because it is what stops an infinitely
+distant light being extinguished by an infinite medium, and it can do that job
+entirely outside the fog's own range: ceiling at `cameraHeight + fogDepth`, and
+a planet radius large enough that the sphere's horizon
+(`sqrt(2·radius·height)`) also clears the fog. Both conditions are then
+impossible to violate, so both are asserted with `ONCE` warnings — either one
+firing means this reasoning is wrong, not that a setting is unlucky.
+
+**Regression signature.** The bank at full strength now genuinely extinguishes
+the sun, because the medium finally reaches the camera's altitude and a
+two-metre whiteout is opaque. Expect the scene inside it to be lit by the fog's
+own colour rather than by the sun; that is the correct answer for a whiteout,
+but if it reads as *dark* rather than as *white*, `zHalfMin` is the cap on how
+dense the medium is allowed to get and is the knob for it.
 
 ---
 

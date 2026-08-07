@@ -37,6 +37,12 @@
 #include "rtx_context.h"
 #include "rtx_imgui.h"
 
+// Note: std::log has compiled here transitively for a long time; the shell sizing below adds std::max and std::sqrt
+// and these are spelled out rather than inherited, per CLAUDE.md - three compilers, and a transitive include is not a
+// guarantee on any of them.
+#include <algorithm>
+#include <cmath>
+
 namespace dxvk {
 
   // Defined within an unnamed namespace to ensure unique definition across binary
@@ -643,12 +649,47 @@ namespace dxvk {
     // one: the medium gets clipped at the shell's ceiling and an open field's fog stops partway up. The option's own
     // default is 30 m, which is shorter than most of this game's fog ranges.
     float atmosphereHeight = atmosphereHeightMeters() * RtxOptions::getMeterToWorldUnitScale();
+    float planetRadius = atmospherePlanetRadiusMeters() * RtxOptions::getMeterToWorldUnitScale();
 
     if (dusklight && dusklightAtmosphere.outdoor()) {
-      atmosphereHeight = std::max(atmosphereHeight, dusklightAtmosphere.derived().rampEnd);
-    }
+      // The shell's ceiling is an absolute world height, not a height above the player: the sphere is centred a planet
+      // radius below the *origin* plane, so its top sits at world height atmosphereHeight wherever the camera is. Taking
+      // the fog's range as that height was wrong twice over. It ignored where the ground actually is - stages put it at
+      // whatever height they like - and it collapsed exactly when it mattered, because a scripted fog bank drives
+      // fogEndZ down (kytag01 blends it to 200 units, two metres), which drops the ceiling to the option's 30 m floor.
+      // A 30 m ceiling over an area whose terrain reaches higher is a hard horizontal edge across the frame, and it
+      // arrives as the fog thickens. DusklightAtmosphere.md §14.12.
+      //
+      // The game's fog has no altitude term at all - GX_FOG_PERSP_LIN is a function of distance and nothing else - so
+      // any height structure in this medium is invented rather than translated. The shell is kept only because it is
+      // what stops an infinitely distant light being extinguished by an infinite medium, and it earns that while
+      // staying outside the fog's own range: put the ceiling a full fog depth above the camera, and nothing the fog can
+      // still be seen through is ever above it.
+      const float cameraHeight = std::max(dot(mainCamera.getPosition(), sceneUpDirection), 0.0f);
+      const float fogDepth = std::max(dusklightAtmosphere.derived().rampEnd, atmosphereHeight);
 
-    const float planetRadius = atmospherePlanetRadiusMeters() * RtxOptions::getMeterToWorldUnitScale();
+      atmosphereHeight = cameraHeight + fogDepth;
+
+      // The same argument sideways. The shell is a sphere, so it also curves down to meet the ground at roughly
+      // sqrt(2 * radius * height) - a horizontal edge to the medium, at a distance that shrinks with the ceiling. The
+      // 10 km default put that edge at 775 m with a 30 m ceiling, inside the range of every fog measured. Solving
+      // radius >= depth^2 / (2 * height) keeps it beyond the fog instead.
+      planetRadius = std::max(planetRadius, (fogDepth * fogDepth) / std::max(2.0f * atmosphereHeight, 1.0f));
+
+      // Both of these are now impossible by construction, so either one firing means the reasoning above is wrong
+      // rather than the setting being unlucky. Left in as tripwires; neither can repeat, being ONCE.
+      if (cameraHeight > atmosphereHeight) {
+        ONCE(Logger::warn(str::format("[Dusklight] The volumetric shell's ceiling (", atmosphereHeight,
+                                      ") is below the camera (", cameraHeight,
+                                      "). The medium has a visible horizontal edge across the frame.")));
+      }
+
+      if (2.0f * planetRadius * atmosphereHeight < fogDepth * fogDepth) {
+        ONCE(Logger::warn(str::format("[Dusklight] The volumetric shell meets the ground at ",
+                                      std::sqrt(2.0f * planetRadius * atmosphereHeight), " but the fog reaches ",
+                                      fogDepth, ". The medium ends before the fog does.")));
+      }
+    }
     // Create a virtual planet center by projecting the camera position onto the plane defined by the origin and scene up direction.
     // Todo: Consider pre-transforming this planet center into the various volume camera translated world spaces to avoid needing to do this translation on the GPU constantly. May be just as costly however
     // to do an additional indexed lookup rather than a simple subtraction however, but depends on how well the compiler can optimize such things.
