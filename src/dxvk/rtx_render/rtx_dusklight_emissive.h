@@ -84,11 +84,16 @@ namespace dxvk {
                "authored in GX constants rather than a plain texture, and that colour reads as a glow. Nothing "
                "here needs tuning. Turn it off to compare against the non-emissive rendering - the dusklight.emis "
                "log lines are still written either way, so a test session is not wasted.");
-    RTX_OPTION("rtx.dusklight.emissive", float, intensity, 2.0f,
-               "Radiance multiplier applied to an emissive surface's own colour.\n"
-               "The colour already carries the game's idea of how bright the surface looks, so this is a flat "
-               "scale rather than a per-material value. 2.0 matches what Remix already uses to make a world space "
-               "UI surface read as self-lit; raise it if a big emitter glows but does not light the room around it.");
+    RTX_OPTION("rtx.dusklight.emissive", float, brightness, 10.0f,
+               "How brightly an emissive surface glows - a target brightness, not a multiplier.\n"
+               "A flat multiplier made a dark saturated colour glow dimly and a pale one glow fiercely, purely "
+               "because of how bright the authored colour happened to be: the accepted materials in one measured "
+               "scene span luma 0.30 to 0.92, a 3x spread nobody chose. This divides that out, so the dial means "
+               "the same thing on every surface.\n"
+               "10.0 is measured, not guessed: it is the value the Goron Mines lava was dialled to in game on "
+               "2026-08-06 to read as properly molten. 1.0 would put an emitter at roughly the brightness of a "
+               "fully lit white surface, which is not what a self-lit surface in a dark cave should look like. "
+               "Calibrated in one dark interior, so a bright exterior may want less.");
     RTX_OPTION("rtx.dusklight.emissive", DusklightEmissiveSource, colorSource,
                DusklightEmissiveSource::ReconstructedAlbedo,
                "Where an accepted emitter takes the colour it glows.\n"
@@ -220,6 +225,33 @@ namespace dxvk {
       return std::max(std::max(c.x, c.y), c.z) - std::min(std::min(c.x, c.y), c.z);
     }
 
+    // Radiance for an accepted emitter.
+    //
+    // GX records nothing about how brightly a surface should glow, so this is a
+    // derivation rather than a translation - but it is derived from the one
+    // thing GX does say, which is how bright the authored colour is.
+    //
+    // Dividing by that luma makes `brightness` a target rather than a
+    // multiplier. Two consequences, and the second is the point:
+    //
+    //  - a dark saturated emitter and a pale one reach the same brightness at
+    //    the same setting, instead of the pale one being 3x hotter for free;
+    //  - a surface whose colour *sweeps* - the lava's lerp(FF0000, FFFE63,
+    //    texture) - is normalised by its dark end, so its bright end overshoots
+    //    and reads as a white-hot core. A flat colour like a pickup glow has
+    //    nothing to overshoot with and stays even. That is the lava-versus-heart
+    //    difference falling out of the data rather than being tagged in.
+    //
+    // The floor is a constant rather than an option because it exists only to
+    // stop a near-black colour asking for an unbounded multiplier; 0.20 caps
+    // the boost at 5x. Nothing is expected to sit near it - the glow test
+    // already requires a colour that is saturated or bright.
+    static constexpr float kLumaFloor = 0.20f;
+
+    inline float radianceFor(const Vector3& color) {
+      return DusklightEmissive::brightness() / std::max(lumaOf(color), kLumaFloor);
+    }
+
     // The rule. Three structural facts and one colour test - no score, no
     // threshold, nothing to dial to get a correct picture.
     //
@@ -268,9 +300,11 @@ namespace dxvk {
       const struct {
         float glowChroma;
         float glowLuma;
+        float brightness;
         uint32_t source;
         uint32_t enabled;
       } settings = { DusklightEmissive::glowChroma(), DusklightEmissive::glowLuma(),
+                     DusklightEmissive::brightness(),
                      static_cast<uint32_t>(DusklightEmissive::colorSource()),
                      DusklightEmissive::enable() ? 1u : 0u };
       const XXH64_hash_t settingsHash = XXH3_64bits(&settings, sizeof(settings));
@@ -332,6 +366,9 @@ namespace dxvk {
         " tFactor=", mat.tFactor, std::dec,
         " glowChroma=", DusklightEmissive::glowChroma(),
         " glowLuma=", DusklightEmissive::glowLuma(),
+        // What this surface will actually emit at, after the per-material
+        // derivation - so "why is that one dimmer" is answered by the log.
+        " radiance=", radianceFor(color),
         " src=", sourceName(DusklightEmissive::colorSource()),
         " verdict=", accepted ? "emissive" : "rejected",
         " applied=", (accepted && DusklightEmissive::enable()) ? 1 : 0));
