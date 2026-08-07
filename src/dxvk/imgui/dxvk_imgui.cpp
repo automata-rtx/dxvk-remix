@@ -3042,7 +3042,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 7;
+    constexpr int kRequiredProtocol = 8;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -3183,9 +3183,9 @@ namespace dxvk {
                     DusklightEnv::effLightsEmitters(), DusklightEnv::effLightsConsidered(),
                     DusklightEnv::effLightsCandidates(), DusklightEnv::effLightsSites(),
                     DusklightEnv::effLightsDrawn());
-        ImGui::Text("from the game: %d    game lights with no effect: %d    culled: %d",
+        ImGui::Text("from the game: %d    game lights with no effect: %d    culled: %d    refused by name: %d",
                     DusklightEnv::effLightsDerived(), DusklightEnv::effLightsOrphans(),
-                    DusklightEnv::effLightsCulled());
+                    DusklightEnv::effLightsCulled(), DusklightEnv::effLightsExcluded());
         ImGui::Text("game lights available to copy (point/spot): %s",
                     DusklightEnv::effLightsVanilla().c_str());
 

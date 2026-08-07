@@ -223,6 +223,14 @@ namespace dxvk {
                     "dark. A consistently high count in rooms that look under-lit is the signal that the policy needs an escape hatch.");
     RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsCulled, 0, RtxOptionFlags::NoSave,
                     "How many sites were dropped by the distance cull or the per frame budget.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsExcluded, 0, RtxOptionFlags::NoSave,
+                    "How many effects passed the additive-and-glow rule and were then refused because the game names them as a substance that is never a "
+                    "light source.\n"
+                    "The list behind this is deliberately narrow - drool and body fluid, two words - and it exists because the Deku Baba was seen lighting "
+                    "rooms from its jaw joints on 2026-08-07. That is the case that showed additive blending alone does not mean 'emits light': a wet "
+                    "surface is authored additively too, so that it reads as glossy.\n"
+                    "Watch this rather than trust it. A non zero count in a room that looks under lit is the signal that the list is too wide, and the "
+                    "classification report names every effect it refused.");
     RTX_OPTION_FLAG("rtx.dusklight.env", std::string, effLightsVanilla, "", RtxOptionFlags::NoSave,
                     "The game's own lights available to copy parameters from this frame, as point/spot.\n"
                     "The game keeps two registries and many torches use the second one, so both have to be read. The spot half depends on a per frame flag "
