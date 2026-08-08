@@ -24,6 +24,7 @@
 #include "../../util/log/log.h"
 #include "../../util/util_once.h"
 #include "../../util/util_string.h"
+#include "../../util/xxHash/xxhash.h"
 
 #include <algorithm>
 #include <mutex>
@@ -111,6 +112,14 @@ namespace dxvk {
           }
         }
       }
+    }
+
+    XXH64_hash_t groupMeshHash(uint64_t modelKey) {
+      // Salted so a group hash cannot accidentally equal a per-draw geometry hash, which would let
+      // a replacement authored for one bind to the other.
+      constexpr uint64_t kGroupSalt = 0xD05C11'A7'5CE1E70Full;
+      const uint64_t salted = modelKey ^ kGroupSalt;
+      return XXH64(&salted, sizeof(salted), kGroupSalt);
     }
 
     const DrawBinding& currentDrawBinding() {

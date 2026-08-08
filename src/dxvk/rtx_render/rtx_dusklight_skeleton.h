@@ -61,6 +61,7 @@
 
 #include "rtx_option.h"
 #include "../../util/util_matrix.h"
+#include "../../util/xxHash/xxhash.h"
 
 #include <array>
 #include <cstdint>
@@ -138,6 +139,21 @@ namespace dxvk {
     // Looked up during capture, on a different thread from the declaration, so this takes the
     // registry lock and returns a copy rather than a pointer into a container that can rehash.
     bool findSkeleton(uint64_t modelKey, Skeleton& skeletonOut);
+
+    // The hash a whole character is known by: the name a capture gives its merged mesh, and the
+    // name a replacement for that character has to be authored against.
+    //
+    // Derived from the model key ALONE, and that constraint is the point rather than a
+    // simplification. A replacement is looked up per draw at runtime, where only the model key is
+    // known - the set of draws the character will turn out to consist of this frame is not known
+    // until the frame is over. Any hash that depends on that set can be computed by the capture and
+    // never by the runtime, so a replacement authored against it could not bind to anything.
+    //
+    // The first revision of the merge did exactly that: it mixed in the ordered member mesh hashes
+    // to keep two instances showing different packets from colliding. It produced stable, correct,
+    // completely unusable hashes. Collisions are handled by the merge refusing the second instance
+    // instead - see mergeGroup.
+    XXH64_hash_t groupMeshHash(uint64_t modelKey);
 
     // Called once per submitted draw so the report can say how much of a frame is actually bound.
     // A scene where boundDraws stays zero while the game insists it is publishing is the first

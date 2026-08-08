@@ -1244,6 +1244,12 @@ namespace dxvk {
       return;
     }
 
+    // One merged mesh per model key, because that is what the hash now names. Two instances of a
+    // model normally produce identical member sets and correctly share it; one showing a different
+    // set of packets (an LOD, a hidden piece) would be different geometry under the same name, so
+    // the second is refused rather than silently overwriting the first.
+    std::map<uint64_t, std::vector<XXH64_hash_t>> signatureByModel;
+
     uint32_t merged = 0;
     uint32_t rejected = 0;
     uint32_t drawsReplaced = 0;
@@ -1251,6 +1257,25 @@ namespace dxvk {
     std::string firstRejectReason;
 
     for (MergedGroup& group : groups) {
+      std::vector<XXH64_hash_t> signature;
+      signature.reserve(group.memberInstanceIds.size());
+      for (const XXH64_hash_t instanceId : group.memberInstanceIds) {
+        signature.push_back(cap.instances.at(instanceId).meshHash);
+      }
+      const auto seen = signatureByModel.find(group.modelKey);
+      if (seen != signatureByModel.end()) {
+        if (seen->second != signature) {
+          ++rejected;
+          if (firstRejectReason.empty()) {
+            firstRejectReason = "a second instance of this model drew a different set of packets";
+          }
+          continue;
+        }
+        // An identical second instance: it shares the merged mesh that is already there, and only
+        // needs its own instance entry. Falls through to the merge, which overwrites with the same
+        // geometry - wasteful, not wrong, and far simpler than a separate path.
+      }
+
       lss::Mesh mergedMesh;
       std::string rejectReason;
       if (!mergeGroup(cap, group, mergedMesh, rejectReason)) {
@@ -1290,6 +1315,7 @@ namespace dxvk {
       exportPrep.meshes[group.mergedMeshHash] = std::move(mergedMesh);
       exportPrep.instances[group.mergedMeshHash] = std::move(mergedInstance);
 
+      signatureByModel[group.modelKey] = std::move(signature);
       ++merged;
       drawsReplaced += static_cast<uint32_t>(group.memberInstanceIds.size());
       largestGroup = std::max(largestGroup, static_cast<uint32_t>(group.memberInstanceIds.size()));
@@ -1357,16 +1383,18 @@ namespace dxvk {
       group.instanceKey = key.second;
       group.memberInstanceIds = members;
 
-      // Keyed on the model plus the exact set of draws that made it up, not on the model alone:
-      // two instances of one model showing different packets (an LOD, a hidden piece) are
-      // genuinely different geometry and must not collide. Two identical instances hash the same
-      // and correctly share one mesh.
-      XXH64_hash_t hash = XXH64(&group.modelKey, sizeof(group.modelKey), 0);
-      for (const XXH64_hash_t instanceId : members) {
-        const XXH64_hash_t meshHash = cap.instances.at(instanceId).meshHash;
-        hash = XXH64(&meshHash, sizeof(meshHash), hash);
-      }
-      group.mergedMeshHash = hash;
+      // The model key alone, through the shared helper - NOT the model plus its member set.
+      //
+      // This is the difference between a capture you can look at and a capture you can replace
+      // against. A replacement is resolved per draw at runtime, where the only thing known is the
+      // model key; which draws the character will turn out to consist of this frame is not known
+      // until the frame is over. A hash mixing the member set is therefore computable by the
+      // capture and by nothing else, so an asset authored against it would bind to nothing.
+      //
+      // The first revision did mix in the members, to stop two instances showing different packets
+      // from colliding. mergeGroup handles that by refusing the second instance instead, which
+      // costs a merge rather than the entire point of the feature.
+      group.mergedMeshHash = dusklightSkeleton::groupMeshHash(group.modelKey);
       groups.push_back(std::move(group));
     }
     return groups;
