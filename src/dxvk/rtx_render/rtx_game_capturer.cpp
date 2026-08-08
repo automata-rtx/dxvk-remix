@@ -30,10 +30,12 @@
 #include "rtx_instance_manager.h"
 #include "rtx_scene_manager.h"
 #include "rtx_materials.h"
+#include "rtx_dusklight_texrep.h"
 
 #include "../dxvk_device.h"
 
 #include "../../util/log/log.h"
+#include "../../util/util_once.h"
 #include "../../util/config/config.h"
 #include "../../util/util_filesys.h"
 #include "../../util/util_vector.h"
@@ -226,6 +228,7 @@ namespace dxvk {
     if (m_pCap->bCaptureInstances) {
       captureCamera();
       captureLights();
+      captureSkyDomeLight(ctx);
     }
     captureInstances(ctx);
     ++m_pCap->numFramesCaptured;
@@ -309,44 +312,49 @@ namespace dxvk {
   }
 
   void GameCapturer::captureLights() {
-    auto captureLight = [&](const RtLight& rtLight) {
+    auto captureLight = [&](const RtLight& rtLight, const XXH64_hash_t key) {
       assert(rtLight.getInitialHash() != 0);
       switch (rtLight.getType()) {
       default:
       case RtLightType::Sphere:
-        captureSphereLight(rtLight.getSphereLight());
+        captureSphereLight(rtLight.getSphereLight(), key);
         break;
       case RtLightType::Rect:
         // Todo: Handle Rect lights
-        Logger::err("[GameCapturer][" + m_pCap->idStr + "] RectLight not implemented");
-        assert(false);
+        // Note: bounded rather than per-frame - API lights reach this every frame, and an
+        // unimplemented type used to be able to fill a log on its own.
+        ONCE(Logger::err("[GameCapturer][" + m_pCap->idStr + "] RectLight not implemented"));
         break;
       case RtLightType::Disk:
         // Todo: Handle Disk lights
-        Logger::err("[GameCapturer][" + m_pCap->idStr + "] DiskLight not implemented");
-        assert(false);
+        ONCE(Logger::err("[GameCapturer][" + m_pCap->idStr + "] DiskLight not implemented"));
         break;
       case RtLightType::Cylinder:
         // Todo: Handle Cylinder lights
-        Logger::err("[GameCapturer][" + m_pCap->idStr + "] CylinderLight not implemented");
-        assert(false);
+        ONCE(Logger::err("[GameCapturer][" + m_pCap->idStr + "] CylinderLight not implemented"));
         break;
       case RtLightType::Distant:
-        captureDistantLight(rtLight.getDistantLight());
+        captureDistantLight(rtLight.getDistantLight(), key);
         break;
       }
     };
 
     for (auto&& pair : m_sceneManager.getLightManager().getLightTable()) {
-      captureLight(pair.second);
+      captureLight(pair.second, pair.second.getHash());
     }
     for (auto&& pair : m_sceneManager.getLightManager().getExternallyTrackedLightTable()) {
-      captureLight(pair.second);
+      captureLight(pair.second, pair.second.getHash());
+    }
+    // Lights the application submitted through remixapi_CreateLight/remixapi_DrawLightInstance.
+    // Keyed by the application's handle rather than the light's parameter hash: a game that
+    // re-submits a moving light every frame changes the latter and would otherwise write one
+    // light per frame into the capture instead of one light.
+    for (const auto& [handle, rtLight] : m_sceneManager.getLightManager().getActiveExternalLights()) {
+      captureLight(rtLight, static_cast<XXH64_hash_t>(handle));
     }
   }
 
-  void GameCapturer::captureSphereLight(const dxvk::RtSphereLight& rtLight) {
-    const auto hash = rtLight.getHash();
+  void GameCapturer::captureSphereLight(const dxvk::RtSphereLight& rtLight, const XXH64_hash_t hash) {
     pxr::GfRotation  rotation;
     rotation.SetIdentity();
     if (m_pCap->sphereLights.count(hash) == 0) {
@@ -379,9 +387,13 @@ namespace dxvk {
     sphereLight.finalTime = m_pCap->currentFrameNum;
   }
 
-  void GameCapturer::captureDistantLight(const RtDistantLight& rtLight) {
-    const auto hash = rtLight.getHash();
-    if (m_pCap->sphereLights.count(hash) == 0) {
+  void GameCapturer::captureDistantLight(const RtDistantLight& rtLight, const XXH64_hash_t hash) {
+    // Note: this consulted `sphereLights` before 2026-08-08, so the "is this light new" test could
+    // never be false for a distant light and the block below re-ran every frame. The damage was to
+    // `firstTime`, which ended up holding the *last* captured frame; exportDistantLights then wrote
+    // an intensity of zero from t=0 up to that frame, so a multi-frame capture opened in the
+    // toolkit with no sun at all. Single-frame captures were unaffected, which is why it survived.
+    if (m_pCap->distantLights.count(hash) == 0) {
       const std::string name = dxvk::hashToString(hash);
       lss::DistantLight& distantLight = m_pCap->distantLights[hash];
       distantLight.lightName = name;
@@ -397,6 +409,43 @@ namespace dxvk {
     }
     lss::DistantLight& distantLight = m_pCap->distantLights[hash];
     distantLight.finalTime = m_pCap->currentFrameNum;
+  }
+
+  void GameCapturer::captureSkyDomeLight(const Rc<DxvkContext> ctx) {
+    // A sky probe baked from geometry drawn with a sky camera is the better source when it exists -
+    // it is the sky the game itself drew, at whatever resolution it drew it. This is the fallback
+    // for runtimes whose sky is an API dome light and never reaches the rasterizer at all, which
+    // until now produced captures with no sky and no sky lighting.
+    if (m_pCap->bSkyProbeBaked || !captureApiDomeLightAsSky()) {
+      return;
+    }
+
+    DomeLight domeLight;
+    if (!m_sceneManager.getLightManager().getActiveExternalDomeLight(domeLight)) {
+      return;
+    }
+    // A dome light whose texture has not finished uploading resolves to a null view; dumping that
+    // would write a black sky and then latch bSkyProbeBaked so the real one never lands.
+    if (!domeLight.texture.isValid() || domeLight.texture.isImageEmpty()) {
+      return;
+    }
+
+    const std::string skyProbeFilename = getBakedSkyProbeName(m_pCap->instance.stageName);
+    m_exporter.dumpImageToFile(ctx, BASE_DIR + lss::commonDirName::texDir,
+                               skyProbeFilename,
+                               domeLight.texture.getImageView()->image());
+    m_pCap->bSkyProbeBaked = true;
+    m_pCap->bSkyFromDomeLight = true;
+    // The texture is authored in the light's own space; the exporter needs the other direction to
+    // place it back in the capture's world.
+    m_pCap->skyDomeLightToWorld = inverse(domeLight.worldToLight);
+    m_pCap->skyDomeRadiance = domeLight.radiance;
+
+    const VkExtent3D extent = domeLight.texture.getImageView()->image()->info().extent;
+    Logger::info(str::format(
+      "[GameCapturer][", m_pCap->idStr, "][SkyDomeLight] Captured API dome light as the sky: ",
+      skyProbeFilename, " ", extent.width, "x", extent.height,
+      " radiance=(", domeLight.radiance.x, ", ", domeLight.radiance.y, ", ", domeLight.radiance.z, ")"));
   }
 
   void GameCapturer::captureInstances(const Rc<DxvkContext> ctx) {
@@ -510,9 +559,26 @@ namespace dxvk {
     lssMat.matName = matName;
     // Export Textures
     const std::string albedoTexFilename(matName + lss::ext::dds);
+
+    // Dusklight HD texture packs: the material is named after the game's own texture, because that
+    // is what Remix hashes, and that must not move - every tag, rtx.conf category and USD binding
+    // hangs off it. What lands in the .dds is a separate question, and the answer is the texture
+    // the runtime actually shows: a normal, roughness or displacement map authored from a capture
+    // has to be derived from the albedo it will sit next to, and deriving it from art the player
+    // never sees is silently wrong in a way that only shows up once the maps are baked.
+    // rtx.dusklight.texrep.captureReplaced turns this off; the hashes are identical either way.
+    Rc<DxvkImage> albedoImage = materialData.getColorTexture().getImageView()->image();
+    const TextureRef* replacement = nullptr;
+    const auto outcome = dusklightTexRep::resolveAlbedoForCapture(
+      m_sceneManager.getAssetReplacer().get(), materialData, &replacement);
+    if (outcome == dusklightTexRep::CaptureAlbedo::Substituted) {
+      albedoImage = replacement->getImageView()->image();
+    }
+    ++m_pCap->texRepCapture[static_cast<size_t>(outcome)];
+
     m_exporter.dumpImageToFile(ctx, BASE_DIR + lss::commonDirName::texDir,
                                albedoTexFilename,
-                               materialData.getColorTexture().getImageView()->image());
+                               albedoImage);
     const std::string albedoTexPath = str::format(BASE_DIR + lss::commonDirName::texDir, albedoTexFilename);
     lssMat.albedoTexPath = albedoTexPath;
     // Opacity
@@ -1069,6 +1135,13 @@ namespace dxvk {
     exportPrep.bExportInstanceStage = cap.bCaptureInstances;
     exportPrep.instanceStagePath = cap.instance.stagePath;
     exportPrep.bakedSkyProbePath = cap.bSkyProbeBaked ? (BASE_DIR + lss::commonDirName::texDir + getBakedSkyProbeName(cap.instance.stageName)) : "";
+    exportPrep.bSkyFromDomeLight = cap.bSkyFromDomeLight;
+    if (cap.bSkyFromDomeLight) {
+      exportPrep.skyDomeLightToWorld = matrix4ToGfMatrix4d(cap.skyDomeLightToWorld);
+      exportPrep.skyDomeRadiance =
+        pxr::GfVec3f(cap.skyDomeRadiance.x, cap.skyDomeRadiance.y, cap.skyDomeRadiance.z);
+      exportPrep.skyDomeYawDegrees = static_cast<double>(skyDomeYawDegrees());
+    }
   }
 
   void GameCapturer::prepExportMaterials(const Capture& cap,
@@ -1076,6 +1149,22 @@ namespace dxvk {
     for (auto& [hash, material] : cap.materials) {
       exportPrep.materials[hash] = material.lssData;
     }
+
+    using CaptureAlbedo = dusklightTexRep::CaptureAlbedo;
+    const auto count = [&cap](const CaptureAlbedo outcome) {
+      return cap.texRepCapture[static_cast<size_t>(outcome)];
+    };
+    // notResident and missing are the two that matter: both mean the .dds on disk is the game's own
+    // art while the running game was showing the pack, so anything derived from the capture would
+    // not line up. Retaking the capture a few seconds later is the fix for notResident.
+    Logger::info(str::format(
+      "capture.texrep enabled=", DusklightTexRep::captureReplaced() ? 1 : 0,
+      " materials=", cap.materials.size(),
+      " untagged=", count(CaptureAlbedo::NoReplacement),
+      " replaced=", count(CaptureAlbedo::Substituted),
+      " notResident=", count(CaptureAlbedo::NotResident),
+      " missing=", count(CaptureAlbedo::Missing),
+      "  (notResident/missing wrote the game's texture, not the pack's)"));
   }
 
   void GameCapturer::prepExportMeshes(const Capture& cap, lss::Export& exportPrep) {
@@ -1130,6 +1219,19 @@ namespace dxvk {
     for (auto& [hash, distantLight] : cap.distantLights) {
       exportPrep.distantLights.emplace(hash, distantLight);
     }
+
+    // One bounded line saying what lighting the capture actually ended up with. A capture that
+    // opens dark in the toolkit is otherwise indistinguishable from a scene that was dark, and
+    // telling those apart used to need the owner to describe what they saw.
+    Logger::info(str::format(
+      "capture.lights sphere=", cap.sphereLights.size(),
+      " distant=", cap.distantLights.size(),
+      " sky=", cap.bSkyProbeBaked ? (cap.bSkyFromDomeLight ? "domeLight" : "skyProbe") : "none",
+      cap.bSkyFromDomeLight
+        ? str::format(" skyRadiance=(", cap.skyDomeRadiance.x, ", ", cap.skyDomeRadiance.y, ", ",
+                      cap.skyDomeRadiance.z, ") skyYawDeg=", skyDomeYawDegrees())
+        : std::string(),
+      "  (a capture with sky=none and no distant light is lit by nothing but its sphere lights)"));
   }
 
   void GameCapturer::flattenExport(const lss::Export& exportPrep) {

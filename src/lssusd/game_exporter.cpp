@@ -1162,8 +1162,42 @@ void GameExporter::exportSky(const Export& exportData, ExportContext& ctx) {
   pxr::GfRotation rotation = pxr::GfRotation(pxr::GfVec3d::XAxis(), exportData.camera.proj.bInv ? pxr::GfVec3d::ZAxis() : pxr::GfVec3d::YAxis());
   pxr::GfMatrix4d xform(rotation, pxr::GfVec3f(0.f, 0.f, 0.f));
   xform[1][1] *= exportData.camera.view.bInv ? -1.0 : 1.0;
+  if (exportData.bSkyFromDomeLight) {
+    // The sky came from an API dome light rather than from a probe baked out of sky geometry. Its
+    // texture is authored in the light's own space, so the light has to be put back where the
+    // runtime had it; the basis correction above still applies on top, because it is describing
+    // the capture's world, not the texture.
+    //
+    // UNVERIFIED, and worth knowing how it fails. The one thing that is certain about the source
+    // image is its vertical axis: the generator writes v = acos(dir.z)/pi in light space, so the
+    // top row is the zenith, which is what every latlong consumer expects. The horizontal axis is
+    // where the risk sits - the generator uses atan2(x, y) while Remix's own cube_to_latlong pass
+    // uses atan2(y, x), and those differ by a mirror as well as a quarter turn. So:
+    //   - sky rotated about the vertical axis  -> set rtx.capture.skyDomeYawDegrees
+    //   - sky mirrored (the sun's glow tracks the wrong way as the day runs) -> the two atan2
+    //     orders above are the cause, and the fix belongs in the generator, not here.
+    // Either way the sky's brightness, colour and vertical structure are already right, which is
+    // most of what a capture is being opened for.
+    const pxr::GfRotation yaw(pxr::GfVec3d::YAxis(), exportData.skyDomeYawDegrees);
+    xform = exportData.skyDomeLightToWorld * pxr::GfMatrix4d(yaw, pxr::GfVec3d(0.0)) * xform;
+  }
   domeLightXformOp.Set(xform);
   domeLightSchema.SetResetXformStack(true);
+
+  if (exportData.bSkyFromDomeLight) {
+    // Carry the dome light's radiance across, so the capture lights the scene at the brightness the
+    // runtime was using rather than at USD's default of 1.
+    const pxr::GfVec3f& radiance = exportData.skyDomeRadiance;
+    const float peak = std::max(std::max(radiance[0], radiance[1]), std::max(radiance[2], 0.f));
+    if (peak > 0.f) {
+      auto colorAttr = domeLightSchema.CreateColorAttr();
+      assert(colorAttr);
+      colorAttr.Set(radiance / peak);
+      auto intensityAttr = domeLightSchema.CreateIntensityAttr();
+      assert(intensityAttr);
+      intensityAttr.Set(peak);
+    }
+  }
 
   dxvk::Logger::debug("[GameExporter][" + exportData.debugId + "][exportSky] End");
 }

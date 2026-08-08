@@ -153,6 +153,47 @@ namespace dxvk {
       return &albedo;
     }
 
+    CaptureAlbedo resolveAlbedoForCapture(AssetReplacer* replacer,
+                                          const LegacyMaterialData& legacy,
+                                          const TextureRef** textureOut) {
+      if (textureOut != nullptr) {
+        *textureOut = nullptr;
+      }
+      if (!DusklightTexRep::enable() || !DusklightTexRep::captureReplaced() || replacer == nullptr) {
+        return CaptureAlbedo::NoReplacement;
+      }
+      const uint64_t handle = handleFromLegacyMaterial(legacy);
+      if (handle == 0) {
+        return CaptureAlbedo::NoReplacement;
+      }
+
+      const MaterialData* material =
+        replacer->accessExternalMaterial(reinterpret_cast<remixapi_MaterialHandle>(handle));
+      if (material == nullptr || material->getType() != MaterialDataType::Opaque) {
+        return CaptureAlbedo::Missing;
+      }
+
+      auto& opaque = const_cast<MaterialData*>(material)->getOpaqueMaterialData();
+      TextureRef& albedo = opaque.getAlbedoOpacityTexture();
+      albedo.tryRequestMips(kFullMipRequest);
+
+      if (!albedo.isValid() || albedo.isImageEmpty()) {
+        return CaptureAlbedo::NotResident;
+      }
+      // m_currentMip_begin is the first mip level present in the streamed image, so anything other
+      // than zero means the top of the chain is still missing. A TextureRef built straight from an
+      // image view rather than a managed texture has no streaming state and is always complete.
+      const Rc<ManagedTexture>& managed = albedo.getManagedTexture();
+      if (managed.ptr() != nullptr && managed->m_currentMip_begin != 0) {
+        return CaptureAlbedo::NotResident;
+      }
+
+      if (textureOut != nullptr) {
+        *textureOut = &albedo;
+      }
+      return CaptureAlbedo::Substituted;
+    }
+
     void applyAlbedo(AssetReplacer* replacer, const LegacyMaterialData& legacy, MaterialData& renderMaterialData) {
       if (renderMaterialData.getType() != MaterialDataType::Opaque) {
         return;

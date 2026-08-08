@@ -220,6 +220,14 @@ struct Export {
   bool bExportInstanceStage;
   std::string instanceStagePath;
   std::string bakedSkyProbePath;
+  // Set when bakedSkyProbePath is an API dome light's texture rather than a probe baked from
+  // geometry drawn with a sky camera. The two arrive in different spaces, so exportSky orients
+  // them differently: a baked probe is already in the capture's world basis, while a dome light's
+  // texture is authored in the light's own space and carries skyDomeLightToWorld to get back.
+  bool bSkyFromDomeLight = false;
+  pxr::GfMatrix4d skyDomeLightToWorld = pxr::GfMatrix4d{1.0};
+  pxr::GfVec3f skyDomeRadiance = pxr::GfVec3f{1.f, 1.f, 1.f};
+  double skyDomeYawDegrees = 0.0;
   pxr::SdfPath omniDefaultCameraSdfPath;
   IdMap<Material> materials;
   IdMap<Mesh> meshes;

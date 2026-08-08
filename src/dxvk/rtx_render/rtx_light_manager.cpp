@@ -22,6 +22,7 @@
 #include <vector>
 #include <cmath>
 #include <cassert>
+#include <algorithm>
 
 #include "rtx_light_manager.h"
 #include "rtx_context.h"
@@ -498,6 +499,27 @@ namespace dxvk {
         }
       }
     }
+
+    // Snapshot the API-submitted lights before the active lists are reset, so that consumers which
+    // run later in the frame can still see them. GameCapturer is the one that matters: SceneManager
+    // calls its step at the tail of prepareSceneData, well after this point, so without the
+    // snapshot a capture silently contains none of the lights the application created through
+    // remixapi_CreateLight - for Dusklight that is the sun, the sky dome and every analytical
+    // light the game places. See getActiveExternalLights.
+    m_activeExternalLights.clear();
+    m_activeExternalLights.reserve(m_externalActiveLightList.size());
+    for (const remixapi_LightHandle handle : m_externalActiveLightList) {
+      const auto found = m_externalLights.find(handle);
+      if (found != m_externalLights.end()) {
+        m_activeExternalLights.emplace_back(reinterpret_cast<uint64_t>(handle), found->second);
+      }
+    }
+    // Deterministic order: m_externalActiveLightList is an unordered_set, and a capture that
+    // reorders its lights between runs is needlessly hard to diff.
+    std::sort(m_activeExternalLights.begin(), m_activeExternalLights.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    m_activeExternalDomeLightValid = getActiveDomeLight(m_activeExternalDomeLight);
 
     // Reset external active light list.
     m_externalActiveDomeLight = nullptr;

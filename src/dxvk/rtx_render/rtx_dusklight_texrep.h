@@ -79,6 +79,12 @@ namespace dxvk {
                "Hold substituted textures at full resolution.\n"
                "Rasterized draws generate no sampler feedback, so without this a HUD texture can sit at the low-mip\n"
                "tail the streamer loaded and look softer than the game's own.");
+    RTX_OPTION("rtx.dusklight.texrep", bool, captureReplaced, true,
+               "Write the substituted texture, rather than the game's own, into scene captures.\n"
+               "The capture's material names and every hash keyed on them are unaffected either way - they come from the\n"
+               "game's texture, which is still what Remix hashes. This only decides which pixels land in the .dds, and\n"
+               "the substituted ones are what a normal, roughness or displacement map has to be derived from if it is\n"
+               "going to line up with the albedo the game actually shows. Turn it off to capture the original art.");
     RTX_OPTION_FLAG("rtx.dusklight.texrep", bool, report, false, RtxOptionFlags::NoSave,
                     "Log a bounded texrep.* summary of what was substituted. Clears itself after one report.");
   };
@@ -111,6 +117,27 @@ namespace dxvk {
     // or the texture is not resident yet. Deliberately falls back to the game's texture while a
     // load is in flight rather than binding an empty slot, which reads as solid black.
     const TextureRef* resolveAlbedo(AssetReplacer* replacer, uint64_t handle, bool forRaster);
+
+    // What a capture should write for a draw's albedo. Separate from resolveAlbedo above for two
+    // reasons, and both were nearly missed:
+    //
+    //   - it does not touch the per-frame counters. A capture is not a frame of rendering, and
+    //     folding it in would have texrep.rmx report substitutions that never reached a pixel.
+    //   - it insists the *top* mip is resident. The streamer sizes a texture from what the renderer
+    //     asked for, so a texture that looks right on screen can still be sitting several mips
+    //     down; substituting that into a capture writes a quietly half-resolution "HD" texture,
+    //     which is the kind of thing nobody notices until the normal maps are already baked off it.
+    //
+    // The outcome is returned rather than just the texture so the capture can report what it did.
+    enum class CaptureAlbedo {
+      NoReplacement,  // this draw carries no replacement index; the game's texture is correct
+      Substituted,    // *textureOut is the replacement, at full resolution
+      NotResident,    // tagged, but the top mip has not streamed in - fell back to the game's
+      Missing,        // tagged, but the game never registered a material for that index
+    };
+    CaptureAlbedo resolveAlbedoForCapture(AssetReplacer* replacer,
+                                          const LegacyMaterialData& legacy,
+                                          const TextureRef** textureOut);
 
     // Ray-traced path: overwrite just the albedo on an already-converted legacy material.
     // Called after MaterialData::as<OpaqueMaterialData>() so the sampler override and the

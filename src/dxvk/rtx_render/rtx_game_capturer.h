@@ -82,6 +82,7 @@
 #include "../../util/xxHash/xxhash.h"
 #include "../imgui/dxvk_imgui.h"
 
+#include <array>
 #include <vector>
 #include <unordered_map>
 #include <mutex>
@@ -114,6 +115,18 @@ public:
                 "to all have identity xform matrices, enabling will attempt to correct this and\n"
                 "improve stage + mesh viewability in tools.\n"
                 "Hashes are unaffected.");
+  RTX_OPTION("rtx.capture", bool, captureApiDomeLightAsSky, true,
+                "Write the active API dome light's texture into the capture as its sky.\n"
+                "Only used when the game draws no sky geometry for a sky probe to be baked from, which is the case for\n"
+                "any runtime whose sky is a dome light submitted through the Remix API. Without this such a capture has\n"
+                "no sky and no sky lighting, so assets opened in the toolkit are lit by nothing but the analytical\n"
+                "lights.");
+  RTX_OPTION("rtx.capture", float, skyDomeYawDegrees, 0.f,
+                "Rotation about the up axis applied to a sky captured from an API dome light.\n"
+                "The dome texture's vertical mapping is unambiguous, but its azimuth depends on the convention the\n"
+                "generating runtime used, and that cannot be recovered from the image. If the captured sky's sun sits\n"
+                "somewhere other than where the captured distant light points, set this rather than editing the\n"
+                "capture. No effect on a sky baked from sky geometry.");
 
   GameCapturer(DxvkDevice* const pDevice, SceneManager& sceneManager, AssetExporter& exporter);
   ~GameCapturer();
@@ -205,8 +218,15 @@ private:
   void captureFrame(const Rc<DxvkContext> ctx);
   void captureCamera();
   void captureLights();
-  void captureSphereLight(const dxvk::RtSphereLight& rtLight);
-  void captureDistantLight(const RtDistantLight& rtLight);
+  // `key` names the captured light across frames. It is the RtLight's own hash for lights Remix
+  // tracks itself, and the application's handle for API-submitted lights, whose parameter hash
+  // changes whenever the application moves them - see LightManager::getActiveExternalLights.
+  void captureSphereLight(const dxvk::RtSphereLight& rtLight, const XXH64_hash_t key);
+  void captureDistantLight(const RtDistantLight& rtLight, const XXH64_hash_t key);
+  // Writes the active API dome light's texture as the capture's sky, for runtimes whose sky is a
+  // dome light rather than geometry drawn with a sky camera. Does nothing if a sky probe was
+  // already baked from such geometry, which stays the higher-fidelity source when it exists.
+  void captureSkyDomeLight(const Rc<DxvkContext> ctx);
   void captureInstances(const Rc<DxvkContext> ctx);
   void newInstance(const Rc<DxvkContext> ctx, const RtInstance& rtInstance);
   void captureMaterial(const Rc<DxvkContext> ctx, const LegacyMaterialData& materialData, const bool bEnableOpacity);
@@ -328,6 +348,13 @@ private:
       std::string stagePath;
     } instance;
     bool bSkyProbeBaked;
+    // Set when bSkyProbeBaked came from an API dome light rather than from geometry drawn with a
+    // sky camera. The two need different orientations on export: a baked probe is already in the
+    // capture's world basis, while a dome light's texture is in the light's own space and has to
+    // carry that basis with it.
+    bool bSkyFromDomeLight = false;
+    Matrix4 skyDomeLightToWorld = Matrix4();
+    Vector3 skyDomeRadiance = Vector3(1.0f, 1.0f, 1.0f);
     size_t numFramesCaptured = 0;
     float currentFrameNum = 0.f;
     lss::Camera camera;
@@ -337,6 +364,10 @@ private:
     std::unordered_map<XXH64_hash_t, Material> materials;
     std::unordered_map<XXH64_hash_t, Instance> instances;
     std::unordered_map<XXH64_hash_t, uint8_t> instanceFlags;
+    // Counts per dusklightTexRep::CaptureAlbedo outcome, for the capture.texrep summary. A capture
+    // that fell back to the game's textures because a pack was still streaming looks exactly like
+    // one taken with no pack installed, and that is worth being told rather than discovering.
+    std::array<uint32_t, 4> texRepCapture = {};
     HWND hwnd;
   };
   std::unique_ptr<Capture> m_pCap;

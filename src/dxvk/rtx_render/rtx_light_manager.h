@@ -72,6 +72,29 @@ public:
 
   const std::unordered_map<XXH64_hash_t, RtLight>& getLightTable() const { return m_lights; }
   const std::unordered_map<uint64_t, RtLight>& getExternallyTrackedLightTable() const { return m_externallyTrackedLights; }
+
+  // The API-submitted lights (remixapi_CreateLight + remixapi_DrawLightInstance) that were active
+  // this frame, paired with the handle the application named them by.
+  //
+  // This is a snapshot rather than a view of m_externalLights/m_externalActiveLightList, because
+  // those are cleared at the end of prepareSceneData and every consumer that runs later in the
+  // frame would see nothing. GameCapturer is exactly such a consumer - SceneManager calls its step
+  // long after this - which is why captures used to omit every light the game created through the
+  // API, the sun and the sky dome included.
+  //
+  // Keyed by handle, not by RtLight::getHash(): an application that re-submits a moving light every
+  // frame changes the light's parameter hash but keeps its handle, and the capture wants one moving
+  // light rather than one light per frame.
+  const std::vector<std::pair<uint64_t, RtLight>>& getActiveExternalLights() const { return m_activeExternalLights; }
+
+  // The dome light that was active this frame, if any. Same snapshot reasoning as above.
+  bool getActiveExternalDomeLight(DomeLight& domeLightOut) const {
+    if (!m_activeExternalDomeLightValid) {
+      return false;
+    }
+    domeLightOut = m_activeExternalDomeLight;
+    return true;
+  }
   const Rc<DxvkBuffer> getLightBuffer() const { return m_lightBuffer; }
   const Rc<DxvkBuffer> getPreviousLightBuffer() const { return m_previousLightBuffer.ptr() ? m_previousLightBuffer : m_lightBuffer; }
   const Rc<DxvkBuffer> getLightMappingBuffer() const { return m_lightMappingBuffer; }
@@ -123,6 +146,11 @@ private:
   std::unordered_set<remixapi_LightHandle> m_externalActiveLightList;
   remixapi_LightHandle m_externalActiveDomeLight = nullptr;
   DomeLightArgs m_gpuDomeLightArgs;
+  // This frame's active API lights, snapshotted before the two collections above are reset so that
+  // later-in-frame consumers can still see them. See getActiveExternalLights.
+  std::vector<std::pair<uint64_t, RtLight>> m_activeExternalLights;
+  DomeLight m_activeExternalDomeLight;
+  bool m_activeExternalDomeLightValid = false;
 
   Rc<DxvkBuffer> m_lightBuffer;
   Rc<DxvkBuffer> m_previousLightBuffer;
