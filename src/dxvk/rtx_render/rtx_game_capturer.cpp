@@ -1424,7 +1424,13 @@ namespace dxvk {
     pxr::VtArray<lss::BlendIdx> blendIndices;
     // Identity for every joint nobody claims, so an unused joint sits at its bind pose rather than
     // collapsing the mesh to the origin.
-    pxr::VtMatrix4dArray boneXForms(jointCount, pxr::GfMatrix4d(1.0));
+    // Identity everywhere to start with. Spelled out rather than leaning on a fill-constructor
+    // because VtArray's resize/construct overloads are not the std::vector ones - insert() does
+    // not exist at all here - and a default-constructed GfMatrix4d is uninitialised, not identity.
+    pxr::VtMatrix4dArray boneXForms(jointCount);
+    for (uint32_t i = 0; i < jointCount; ++i) {
+      boneXForms[i] = pxr::GfMatrix4d(1.0);
+    }
     std::vector<bool> boneWritten(jointCount, false);
 
     size_t vertexBase = 0;
@@ -1450,28 +1456,31 @@ namespace dxvk {
       const auto& srcIndices = src.buffers.idxBufs.begin()->second;
       const size_t vertexCount = srcPositions.size();
 
-      positions.insert(positions.end(), srcPositions.begin(), srcPositions.end());
-
       // Every vertex needs an entry in every stream the merged mesh has, or the arrays fall out of
-      // step and USD silently misreads them. Members missing a stream are padded rather than
-      // skipped.
-      if (!src.buffers.normalBufs.empty()) {
-        const auto& srcNormals = src.buffers.normalBufs.begin()->second;
-        normals.insert(normals.end(), srcNormals.begin(), srcNormals.end());
-      }
-      normals.resize(vertexBase + vertexCount, lss::Norm(0.f, 1.f, 0.f));
+      // step and USD silently misreads them - so each stream is grown to the full vertex count and
+      // padded, whether the member supplied it or not, and whether it supplied enough or not.
+      //
+      // Written against resize() and operator[] only: pxr::VtArray has no insert(), which is worth
+      // knowing before reaching for the obvious std::vector idiom here again.
+      const auto appendStream = [vertexBase, vertexCount](auto& dst, const auto* srcOrNull,
+                                                          const auto& fill) {
+        dst.resize(vertexBase + vertexCount);
+        const size_t available = srcOrNull != nullptr ? srcOrNull->size() : 0;
+        for (size_t v = 0; v < vertexCount; ++v) {
+          dst[vertexBase + v] = v < available ? (*srcOrNull)[v] : fill;
+        }
+      };
 
-      if (!src.buffers.texcoordBufs.empty()) {
-        const auto& srcTexcoords = src.buffers.texcoordBufs.begin()->second;
-        texcoords.insert(texcoords.end(), srcTexcoords.begin(), srcTexcoords.end());
-      }
-      texcoords.resize(vertexBase + vertexCount, lss::Texcoord(0.f, 0.f));
-
-      if (!src.buffers.colorBufs.empty()) {
-        const auto& srcColors = src.buffers.colorBufs.begin()->second;
-        colors.insert(colors.end(), srcColors.begin(), srcColors.end());
-      }
-      colors.resize(vertexBase + vertexCount, lss::Color(1.f, 1.f, 1.f, 1.f));
+      appendStream(positions, &srcPositions, lss::Pos(0.f, 0.f, 0.f));
+      appendStream(normals,
+                   src.buffers.normalBufs.empty() ? nullptr : &src.buffers.normalBufs.begin()->second,
+                   lss::Norm(0.f, 1.f, 0.f));
+      appendStream(texcoords,
+                   src.buffers.texcoordBufs.empty() ? nullptr : &src.buffers.texcoordBufs.begin()->second,
+                   lss::Texcoord(0.f, 0.f));
+      appendStream(colors,
+                   src.buffers.colorBufs.empty() ? nullptr : &src.buffers.colorBufs.begin()->second,
+                   lss::Color(1.f, 1.f, 1.f, 1.f));
 
       const size_t startFace = indices.size() / 3;
       for (const lss::Index index : srcIndices) {
@@ -1575,7 +1584,11 @@ namespace dxvk {
       // The bone array has to line up with the joint array the skeleton declares, not with the
       // subset this group happened to touch.
       meshOut.numBones = skeleton.jointCount;
-      meshOut.boneXForms.resize(skeleton.jointCount, pxr::GfMatrix4d(1.0));
+      const size_t previousBoneCount = meshOut.boneXForms.size();
+      meshOut.boneXForms.resize(skeleton.jointCount);
+      for (size_t i = previousBoneCount; i < skeleton.jointCount; ++i) {
+        meshOut.boneXForms[i] = pxr::GfMatrix4d(1.0);
+      }
     }
     return true;
   }
