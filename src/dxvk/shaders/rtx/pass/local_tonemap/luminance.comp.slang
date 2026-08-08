@@ -20,7 +20,6 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx/pass/local_tonemap/local_tonemapping.slangh"
-#include "rtx/pass/tonemap/tonemapping.slangh"
 
 layout(binding = LUMINANCE_ORIGINAL)
 Texture2D<vec4> OriginalTexture;
@@ -46,10 +45,13 @@ void main(uint2 threadId : SV_DispatchThreadID)
   float avgExposure = getExposure(AutoExposureTexture, cb.enableAutoExposure, cb.exposure);
 
   // Tonemap three syntetic exposures and produce their luminances.
+  //
+  // localTonemapRuler() follows the selected operator, so each operator's local adaptation is
+  // judged on its own response curve. See the long note on that function.
   vec3 inpColor = OriginalTexture[threadId].xyz * avgExposure;
-  float highlights = calcBt709Luminance(linearToGamma(ACESFilm(inpColor * cb.highlights, cb.useLegacyACES)));
-  float midtones   = calcBt709Luminance(linearToGamma(ACESFilm(inpColor                , cb.useLegacyACES)));
-  float shadows    = calcBt709Luminance(linearToGamma(ACESFilm(inpColor * cb.shadows   , cb.useLegacyACES)));
+  float highlights = calcBt709Luminance(linearToGamma(localTonemapRuler(inpColor * cb.highlights, cb.tonemapOperator, cb.useLegacyACES, cb.agx, cb.gt7)));
+  float midtones   = calcBt709Luminance(linearToGamma(localTonemapRuler(inpColor                , cb.tonemapOperator, cb.useLegacyACES, cb.agx, cb.gt7)));
+  float shadows    = calcBt709Luminance(linearToGamma(localTonemapRuler(inpColor * cb.shadows   , cb.tonemapOperator, cb.useLegacyACES, cb.agx, cb.gt7)));
   vec3 cols = vec3(highlights, midtones, shadows);
 
   OutLuminanceTexture[threadId] = vec4(cols, 1.0);

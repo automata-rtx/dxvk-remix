@@ -23,6 +23,8 @@
 #define LOCAL_TONEMAPPING_H
 
 #include "rtx/utility/shader_types.h"
+// For AgxArgs and the tonemapOperator* constants, shared with the global tone mapping path.
+#include "rtx/pass/tonemap/tonemapping.h"
 
 #define LUMINANCE_ORIGINAL           0
 #define LUMINANCE_OUTPUT             1
@@ -63,9 +65,12 @@ struct LuminanceArgs
   uint debugView;
 
   uint useLegacyACES;
-  uint pad1;
+  uint tonemapOperator;   // The ruler follows the selected operator - see localTonemapRuler().
   uint pad2;
   uint enableAutoExposure;
+
+  AgxArgs agx;
+  Gt7Args gt7;
 };
 
 struct ExposureWeightArgs
@@ -97,10 +102,13 @@ struct FinalCombineArgs
   float exposure;
   uint debugView;
 
-  uint finalizeWithACES;
+  uint tonemapOperator;   // tonemapOperatorNone / ACES / AgX / GT7, see rtx/pass/tonemap/tonemapping.h
   uint enableAutoExposure;
   uint useLegacyACES;
   uint pad0;
+
+  AgxArgs agx;
+  Gt7Args gt7;
 };
 
 
