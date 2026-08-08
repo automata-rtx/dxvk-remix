@@ -48,6 +48,7 @@
 #include "rtx_render/rtx_options.h"
 #include "rtx_render/rtx_dusklight_env.h"
 #include "rtx_render/rtx_dusklight_game.h"
+#include "rtx_render/rtx_dusklight_texrep.h"
 #include "rtx_render/rtx_dusklight_emissive.h"
 #include "../../d3d9/d3d9_rtx_matrep.h"
 #include "rtx_render/rtx_global_volumetrics.h"
@@ -3003,10 +3004,13 @@ namespace dxvk {
         "lerp(FF0000, FFFE63, texture). Albedo Texture pushes the texture through the material's single "
         "D3D9 op instead, which on the lava is an ADD against red: red pinned, bright end washed to "
         "white. Presented Colour is one flat colour and loses a molten surface's crust entirely.");
-      RemixGui::DragFloat("Emissive Intensity", &DusklightEmissive::intensityObject(), 0.05f, 0.f, 200.f);
+      RemixGui::DragFloat("Emissive Brightness", &DusklightEmissive::brightnessObject(), 0.02f, 0.f, 50.f);
       ImGui::TextWrapped(
-        "The only dial worth touching. The colour already carries how bright the game meant the surface "
-        "to look; this scales it into radiance.");
+        "The only dial worth touching, and it is a target brightness rather than a multiplier - a dark "
+        "saturated emitter and a pale one reach the same brightness at the same setting. A surface whose "
+        "colour sweeps, like the lava's red-to-yellow ramp, is normalised by its dark end, so its bright "
+        "end overshoots into a white-hot core; a flat pickup glow stays even. Each material's resulting "
+        "radiance is printed in the log.");
       RemixGui::Separator();
       ImGui::TextWrapped(
         "Below here should not need touching. They decide whether an authored colour counts as a glow, "
@@ -3039,7 +3043,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 6;
+    constexpr int kRequiredProtocol = 7;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -3048,7 +3052,7 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Connected, but the game build is older than this build of Remix: it does not read these "
         "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 6 or newer.");
+        "accurate. Update the game to a build that reports protocol 7 or newer.");
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "
@@ -3141,12 +3145,61 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
+    if (RemixGui::CollapsingHeader("HD Texture Pack", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Use HD Replacements", &DusklightTexRep::enableObject());
+      RemixGui::Checkbox("Apply To HUD", &DusklightTexRep::applyToRasterObject());
+      RemixGui::Checkbox("Hold At Full Resolution", &DusklightTexRep::forceFullMipsObject());
+      RemixGui::Checkbox("Log A Report Next Frame", &DusklightTexRep::reportObject());
+
+      const auto& texRepStats = dusklightTexRep::stats();
+      ImGui::Text("Game: %d selected, %d handed over, %d skipped",
+                  DusklightEnv::texrepEntries(), DusklightEnv::texrepCreated(),
+                  DusklightEnv::texrepSkipped());
+      ImGui::Text("Remix: %u draws tagged, %u substituted (%u of them HUD), %u still loading, %u unknown",
+                  texRepStats.handlesSeen, texRepStats.applied, texRepStats.appliedRaster,
+                  texRepStats.pending, texRepStats.missing);
+
+      // "Handed over" and "substituted" failing separately are quite different bugs and read
+      // identically as "the pack does nothing", so each is named rather than left to be inferred.
+      if (!DusklightEnv::texrepEnabled()) {
+        ImGui::TextWrapped(
+          "The game is not handing a pack over. Either texture replacements are off in its config, its "
+          "texture_replacements directory is empty, or the game build predates this feature - the Bridge "
+          "section above says whether it is connected at all.");
+      } else if (DusklightEnv::texrepCreated() == 0 && DusklightEnv::texrepEntries() > 0) {
+        ImGui::TextWrapped(
+          "The game selected replacements but has handed none over yet. It spreads creation over frames "
+          "at launch; if this stays at zero, its D3D9 device never registered with Remix.");
+      } else if (texRepStats.handlesSeen == 0 && DusklightEnv::texrepCreated() > 0) {
+        ImGui::TextWrapped(
+          "Materials were handed over but no draw is tagged with one, so the D3D9 stream is not carrying "
+          "the index. That is an aurora older than this build of Remix, or a scene whose textures simply "
+          "have no replacements in the pack.");
+      } else if (texRepStats.missing > 0) {
+        ImGui::TextWrapped(
+          "Some draws are tagged with an index Remix has no material for. The two sides disagree about "
+          "the pack - most likely the game reloaded its registry after handing it over.");
+      }
+      ImGui::TextWrapped(
+        "The pack never travels through D3D9, so the game's own textures are what Remix hashes and what "
+        "the texture categorization list shows. Tags and rtx.conf categories are unaffected by installing, "
+        "changing or removing a pack.");
+      ImGui::Unindent();
+    }
+
     if (RemixGui::CollapsingHeader("Geometry", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
       RemixGui::Checkbox("Disable Frustum Culling", &DusklightGame::disableFrustumCullingObject());
       RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
       RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
       RemixGui::Checkbox("Per-Blade Grass", &DusklightGame::perBladeGrassObject());
+      RemixGui::Checkbox("Game's Blob Shadows", &DusklightGame::blobShadowsObject());
+      ImGui::TextWrapped(
+        "Blob shadows are the flat discs the game paints under rupees, hearts and pots. Off by "
+        "default: Remix traces a real shadow for each of those objects, so the disc lands on top of a "
+        "correct one. The game drops them at registration, so no draw call is issued at all. Its "
+        "projected shadows - Link and the major actors - are a separate system and are untouched.");
       ImGui::TextWrapped(
         "The game drops geometry outside the camera's view, which a path tracer still needs: a wall "
         "culled because you turned away stops occluding, and light leaks through where it was. Costs "

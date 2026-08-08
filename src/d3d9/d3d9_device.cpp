@@ -45,6 +45,7 @@
 #include "../dxvk/rtx_render/rtx_context.h"
 #include "../dxvk/rtx_render/rtx_options.h"
 #include "../dxvk/rtx_render/rtx_terrain_baker.h"
+#include "../dxvk/rtx_render/rtx_dusklight_texrep.h"
 
 #include "d3d9_initializer.h"
 
@@ -6430,12 +6431,32 @@ namespace dxvk {
     D3D9CommonTexture* commonTex =
       GetCommonTexture(m_state.textures[StateSampler]);
 
+    // NV-DXVK start: Dusklight HD texture packs on the rasterized path
+    // UI/HUD draws are rasterized rather than path-traced, so they never reach material
+    // resolution and sample this view directly. Substituting only in the material would leave
+    // the HUD at the game's own resolution, and the HUD is one of the two things that still
+    // has to rasterize correctly. handleForRasterStage() returns 0 unless this sampler is the
+    // stage aurora's index describes. rtx_dusklight_texrep.h.
     EmitCs([
       cSlot = slot,
-      cImageView = commonTex->GetSampleView(srgb)
+      cImageView = commonTex->GetSampleView(srgb),
+      cTexRepHandle = dusklightTexRep::handleForRasterStage(m_state.material, StateSampler)
     ](DxvkContext* ctx) {
-      ctx->bindResourceView(cSlot, cImageView, nullptr);
+      Rc<DxvkImageView> view = cImageView;
+      if (cTexRepHandle != 0) {
+        auto* rtxCtx = dynamic_cast<RtxContext*>(ctx);
+        if (rtxCtx != nullptr) {
+          if (const TextureRef* replacement = dusklightTexRep::resolveAlbedo(
+                rtxCtx->getSceneManager().getAssetReplacer().get(), cTexRepHandle, true)) {
+            if (DxvkImageView* replacementView = replacement->getImageView()) {
+              view = replacementView;
+            }
+          }
+        }
+      }
+      ctx->bindResourceView(cSlot, view, nullptr);
     });
+    // NV-DXVK end
   }
 
 

@@ -120,6 +120,18 @@ namespace dxvk {
                "The direction the game computes depends on nothing but time of day, so if the lighting still swings around while this is on, "
                "whatever is moving it is downstream of the game - the space Remix reads the direction in, rather than the direction itself.");
 
+    // Fake shadows. The game draws its own approximations of shadows, all of
+    // which Remix computes for real from the geometry - so drawing them puts a
+    // painted shadow on top of a traced one.
+    RTX_OPTION("rtx.dusklight.game", bool, blobShadows, false,
+               "Let the game draw the flat circular shadows it puts under rupees, hearts, pots and small objects.\n"
+               "Off, because Remix traces a real shadow for every one of those objects and the painted disc lands on "
+               "top of it. Turning it on restores the game's own behaviour, which is only useful for comparison. The "
+               "game reads this every frame, so it takes effect immediately - and it is suppressed at the point the "
+               "shadow is registered, so no draw call is issued at all rather than one being hidden later.\n"
+               "This covers the game's *simple* shadows only. Its projected shadows (Link, major actors) are a "
+               "separate system and are not touched.");
+
     // Local point lights.
     RTX_OPTION("rtx.dusklight.game", bool, localLights, false,
                "Mirrors the game's own point lights - torches, braziers, lanterns, campfires and the dungeon lights - into Remix as sphere lights.\n"

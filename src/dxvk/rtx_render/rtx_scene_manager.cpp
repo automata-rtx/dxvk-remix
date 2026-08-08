@@ -35,6 +35,7 @@
 #include "rtx_texture_manager.h"
 #include "rtx_texture.h"
 #include "rtx_xess.h"
+#include "rtx_dusklight_texrep.h"
 
 #include <assert.h>
 
@@ -518,6 +519,10 @@ namespace dxvk {
 
     m_cameraManager.onFrameEnd();
     m_instanceManager.onFrameEnd();
+    // Report before rolling the counters over, so the report describes the frame that just ran
+    // rather than an empty one.
+    dusklightTexRep::reportIfRequested();
+    dusklightTexRep::onFrameEnd();
     m_previousFrameSceneAvailable = raytracedThisFrame && RtxOptions::enablePreviousTLAS();
 
     m_bufferCache.clear();
@@ -723,6 +728,11 @@ namespace dxvk {
         activeReplacementsMatch &&
         legacyMaterialIdentityHashMatch &&
         !terrainCascadesJustChanged &&
+        // A stable instance skips determineMaterialData entirely, and its identity hash says
+        // nothing about whether an HD replacement has finished loading. Without this a room
+        // whose textures were still streaming when it was first drawn keeps the game's
+        // textures for its whole lifetime and only sharpens after a reload.
+        !dusklightTexRep::awaitingReplacement(input.getMaterialData()) &&
         cachedTexturesValidForPreserve;
 
 
@@ -809,7 +819,14 @@ namespace dxvk {
     }
 
     // Standard legacy material conversion
-    return input.getMaterialData().as<OpaqueMaterialData>();
+    MaterialData renderMaterialData = input.getMaterialData().as<OpaqueMaterialData>();
+    // Dusklight HD texture packs: swap the albedo the game loaded through the Remix API in over
+    // the game's own. Deliberately after as<OpaqueMaterialData>() and deliberately not a merge -
+    // the conversion is what sets the sampler override and the ignore-alpha flag, and a merge
+    // against an API material (whose dirty flags are all clear) would erase both along with
+    // every other field. Only the one texture is replaced.
+    dusklightTexRep::applyAlbedo(m_pReplacer.get(), input.getMaterialData(), renderMaterialData);
+    return renderMaterialData;
   }
 
   void SceneManager::createEffectLight(Rc<DxvkContext> ctx, const DrawCallState& input, const RtInstance* instance) {

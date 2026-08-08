@@ -48,7 +48,7 @@ readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
 compares it against a `kRequiredProtocol` constant and says so in the tab when
-the game is older. **Currently 6.**
+the game is older. **Currently 7.**
 
 > **Standing rule, already paid for twice:** the game and the Remix DLL are one
 > protocol. Build both from the same point. Both directions of skew have cost
@@ -164,10 +164,35 @@ this runtime's half of the wire and does not go through the bridge.
 | Reproduce Two-Colour Ramps | `rtx.dusklight.rampMaterials` | whether `lerp(colourA, colourB, texture)` — this game's dominant material shape — is evaluated exactly (default) or approximated by one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints |
 | Emissive Surfaces Enabled | `rtx.dusklight.emissive.enable` | whether self-lit surfaces emit. The rule needs no tuning: a surface qualifies when its GX colour program never reads the lit channel, it has a colour of its own (authored in GX constants, not from the vertex stream and not a bare texture pass-through), and that colour reads as a glow. Over one measured Goron Mines session that is 6 materials of 77 — every lava and fire surface, nothing else |
 | Emitted Colour | `…emissive.colorSource` | what a glowing surface glows. **Reconstructed Albedo (default)** is the two-colour ramp, so the texture drives the colour and neither overpowers the other — on the lava, `lerp(FF0000, FFFE63, texture)`. Albedo Texture pushes the texture through the material's single D3D9 op, which on the lava is an ADD against red: red pinned, bright end washed to white. Presented Colour is one flat colour |
-| Emissive Intensity | `…emissive.intensity` | the only dial worth touching — scales the surface's own colour into radiance |
+| Emissive Brightness | `…emissive.brightness` | the only dial worth touching, default **10.0**, measured in game rather than guessed. A **target brightness rather than a multiplier**: the emitted radiance is divided by the authored colour's luma, so a dark saturated emitter and a pale one reach the same brightness at one setting. A surface whose colour *sweeps* (the lava's red-to-yellow ramp) is normalised by its dark end, so its bright end overshoots into a white-hot core; a flat pickup glow stays even. Each material's resulting radiance is printed in the log |
 | Saturation / Brightness Counts As Glow | `…emissive.glowChroma` / `glowLuma` | **or**'d, not and'd: an authored glow is a strong colour or it is near-white-hot, while a muted mid-tone is a surface colour. This is what stopped the brown false positives. Should not need touching |
 | Log Emissive Candidates | `…emissive.log` | one bounded line per candidate, accepted **or** rejected. Colourless rejections are counted rather than enumerated, and moving any control on this page re-reports every candidate |
 | Log Material Translation Report | `rtx.dusklight.matrep` | one line per distinct reconstructed material |
+
+**HD Texture Pack.** A fourth Remix-owned section, collapsed by default. The
+game's replacement pack does not travel through D3D9 — it is loaded by Remix
+from its own files and swapped in at draw time — so the controls for it live
+here rather than in the game's settings.
+
+| Control | Option | What it decides |
+| :-- | :-- | :-- |
+| Use HD Replacements | `rtx.dusklight.texrep.enable` | whether loaded replacements are substituted at all. Off is exactly what a run with no pack installed looks like, because the D3D9 textures are the game's own either way |
+| Apply To HUD | `…texrep.applyToRaster` | whether the rasterized (UI) draws get them too. This is the **only** lever on HUD fidelity — Remix rasterizes UI draws instead of path-tracing them, so a USD material replacement can never reach the HUD. Turn it off to isolate a HUD-only regression while the world keeps the pack |
+| Hold At Full Resolution | `…texrep.forceFullMips` | rasterized draws generate no sampler feedback, so without this a HUD texture can sit at whatever low-mip tail the streamer happened to load and look *softer* than the game's own |
+| Log A Report Next Frame | `…texrep.report` | one bounded `texrep.rmx` summary line. `NoSave`, and it clears itself after reporting |
+
+Two counter rows sit under them, and the split is the point: the first is what
+the **game** says it did (selected / handed over / skipped), the second is what
+**Remix** did with it (tagged / substituted / still loading / unknown). "The
+game never handed it over" and "the fork ignored it" are different bugs that
+both read as "the pack does nothing", so each has its own number and its own
+named explanation underneath.
+
+`texrepSkipped` is almost always PNG: Remix's asset loader takes `.dds` only,
+while the game's own registry accepts both.
+
+Full design, both substitution sites, and the failure table:
+`aurora-ao/docs/dx9/texture-replacements.md`.
 
 The rule is deliberately not tunable, and that took three revisions to get to.
 No single GX fact identifies an emitter — "GX lighting is off" is true of 45 of
@@ -186,6 +211,16 @@ measurement, §10 for the two-colour ramp.
 
 Then the game's own settings, in collapsible sections: Bridge, Sun / Moon
 Light, Local Point Lights, Geometry, Game, Bloom, Ambient Grade, Atmosphere.
+
+One of those is worth naming here because it is a rendering decision rather than
+a preference: **Geometry > Game's Blob Shadows** (`rtx.dusklight.game.blobShadows`,
+default **off**, tested in game 2026-08-06 and correct). Blob shadows are the flat discs the game paints under rupees,
+hearts and pots — an approximation of a shadow Remix traces for real from the
+same geometry, so drawing them puts a painted shadow on top of a correct one.
+The game drops them at registration (`dDlst_shadowControl_c::setSimple`), so no
+draw call is issued rather than one being hidden downstream. Its *projected*
+shadows — Link and the major actors, `dDlst_shadowReal_c` — are a separate
+system and are untouched.
 
 **Greying.** Sections whose Remix dependency is off are wrapped in
 `ImGui::BeginDisabled` *and* carry a line naming the option and where to find
@@ -399,14 +434,15 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
-| Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the lava scores **0.00**, so no threshold could ever reach it. Rev 4 therefore drops the score from the decision entirely and cuts on three measured facts instead — the section now has no threshold in it, and only Emissive Intensity is expected to be touched. **CI-green, not run in game.** No protocol change: nothing in it is read by the game |
+| HD Texture Pack section | landed 2026-08-05, protocol 7 — **tested good 2026-08-06, first try.** The counters split game-side from Remix-side exactly as intended. Known characteristic: a long first-launch warm-up, `DusklightAtmosphere.md` §12.1 |
+| Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the lava scores **0.00**, so no threshold could ever reach it. Rev 4 therefore drops the score from the decision entirely and cuts on three measured facts instead — the section now has no threshold in it, and only Emissive Brightness is expected to be touched. **Tested in game 2026-08-06:** the rule accepts the lava, and Emissive Brightness was dialled to 10.0 there, which is now its default. No protocol change: nothing in it is read by the game |
 
 Both of the two designs this document argues for at length are now confirmed in
 practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 6** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab). `kRequiredProtocol`
+**Protocol is at 7** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = the HD texture pack readouts). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open
