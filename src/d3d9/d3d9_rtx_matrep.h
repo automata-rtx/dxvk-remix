@@ -39,6 +39,9 @@
 
 #include "../dxvk/rtx_render/rtx_option.h"
 #include "../dxvk/rtx_render/rtx_types.h"
+#include "../dxvk/rtx_render/rtx_options.h"
+#include "../dxvk/rtx_render/rtx_dusklight_env.h"
+#include "../dxvk/rtx_render/rtx_dusklight_game.h"
 #include "../util/util_string.h"
 
 #include <unordered_set>
@@ -280,6 +283,71 @@ namespace dxvk {
       shape.atEnabled = m.alphaTestEnabled ? 1u : 0u;
       shape.atOp = static_cast<uint8_t>(m.alphaTestCompareOp);
       return XXH3_64bits(&shape, sizeof(shape));
+    }
+
+    // Everything a reader would otherwise have to ask the owner about the run itself.
+    //
+    // A material report is only interpretable if you know how the runtime was configured
+    // while it was written, and every one of these has a plausible wrong value that makes
+    // the log say something false rather than nothing: water suppressed by a category that
+    // was never populated, a legacy fallback tuned differently, the game feed not connected
+    // so the markers below never fire. Printed once, at the first reported material, so it
+    // sits at the top of the run's report.
+    inline void emitContext() {
+      static bool s_emitted = false;
+      if (s_emitted) {
+        return;
+      }
+      s_emitted = true;
+
+      Logger::info(str::format(
+        "dusklight.ctx envFeed=", DusklightEnv::enable(),
+        " protocol=", DusklightEnv::protocol(),
+        // Whether the two built-in water paths would do anything at all. Both only ever
+        // act on draws in the AnimatedWater category, so a non-empty texture list is what
+        // decides whether either is reachable - and it is empty by default, which means
+        // "the water paths are off" no matter what the two enables say.
+        " layeredWaterNormal=", OpaqueMaterialOptions::layeredWaterNormalEnable(),
+        " animatedWaterTranslucent=", TranslucentMaterialOptions::animatedWaterEnable(),
+        " animatedWaterTextures=", RtxOptions::animatedWaterTextures().size(),
+        // What an unmatched draw becomes. Any water layer that finds no replacement lands
+        // on these numbers, so they are the milky look's actual parameters.
+        " legacyRoughness=", LegacyMaterialDefaults::roughnessConstant(),
+        " legacyMetallic=", LegacyMaterialDefaults::metallicConstant(),
+        " legacyAlbedoTex=", LegacyMaterialDefaults::useAlbedoTextureIfPresent(),
+        " hideDashEffect=", DusklightGame::hideDashEffect()));
+    }
+
+    // Where in the run something happened. Emitted only when a tracked state changes, so
+    // this is a handful of lines per session rather than one per frame, and it lands
+    // interleaved with the matrep.rmx lines in the same file - which is the whole point.
+    // A new material shape appearing between a dash=1 and the following dash=0 is
+    // attributable to the dash without correlating two logs by wall clock.
+    //
+    // The initial values are latched without emitting, so connecting to a game already in
+    // one of these states does not report a transition that never happened.
+    inline void emitMarkers() {
+      static bool s_primed = false;
+      static bool s_dash = false;
+      static bool s_camInWater = false;
+
+      const bool dash = DusklightEnv::dash();
+      const bool camInWater = DusklightEnv::camInWater();
+
+      if (!s_primed) {
+        s_primed = true;
+        s_dash = dash;
+        s_camInWater = camInWater;
+        return;
+      }
+
+      if (dash == s_dash && camInWater == s_camInWater) {
+        return;
+      }
+
+      s_dash = dash;
+      s_camInWater = camInWater;
+      Logger::info(str::format("dusklight.mark dash=", dash, " camInWater=", camInWater));
     }
 
     // True the first time this shape is seen.

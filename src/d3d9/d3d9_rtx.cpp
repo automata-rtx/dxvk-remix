@@ -1150,6 +1150,12 @@ namespace dxvk {
     // live in d3d9_rtx_matrep.h to keep the rebase surface here small.
     // See aurora-ao/docs/dx9/material-report.md.
     if (DusklightMatrep::matrep()) {
+      // Run configuration, once, and state transitions as they happen. Both live in this
+      // block rather than on a frame hook so they land in the same file as the lines below,
+      // in order, and cost nothing when the report is off.
+      matrep::emitContext();
+      matrep::emitMarkers();
+
       const LegacyMaterialData& mat = m_activeDrawCallState.materialData;
       // Texcoord generation and transform for the stage the material came from.
       // Read from d3d9State rather than from transformData so the line shows what
