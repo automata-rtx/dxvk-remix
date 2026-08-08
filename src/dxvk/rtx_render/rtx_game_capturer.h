@@ -203,6 +203,10 @@ private:
     XXH64_hash_t     matHash;
     MeshSync         meshSync;
     AtomicOriginCalc originCalc;
+    // What this draw's D3D9 blend indices mean in its model's global joint space, when the game
+    // published it. Kept on the mesh rather than the instance because the blend indices live in
+    // the mesh's buffers, and remapping them is what lets two draws of one character be merged.
+    dusklightSkeleton::DrawBinding skeletonBinding;
   };
 
   struct Instance {
@@ -210,6 +214,9 @@ private:
     XXH64_hash_t  meshHash = 0;
     XXH64_hash_t  matHash = 0;
     size_t        meshInstNum = 0;
+    // Which character this draw belongs to, when the game published it. Empty otherwise, and an
+    // instance with an empty binding takes exactly the path it took before any of this existed.
+    dusklightSkeleton::DrawBinding skeletonBinding;
   };
 
   void trigger(const Rc<DxvkContext> ctx);
@@ -288,6 +295,37 @@ private:
                                   lss::Export& exportPrep);
   static void prepExportMeshes(const Capture& cap,
                                lss::Export& exportPrep);
+  // Dusklight character merging. Groups the draws the game published a model identity for and
+  // rewrites them into one mesh per model instance, carrying the game's own joint tree.
+  //
+  // Deliberately run at export rather than during capture: by this point every readback has
+  // landed, so this is plain CPU array concatenation with no GPU work and no async ordering, and
+  // the capture path everything else depends on is untouched. A group that cannot be merged
+  // safely is left exactly as it was and reported, never merged approximately.
+  struct MergedGroup {
+    uint64_t modelKey = 0;
+    uint64_t instanceKey = 0;
+    XXH64_hash_t mergedMeshHash = 0;
+    // Instance ids in a deterministic order - see buildMergedGroups for why that matters to the
+    // merged mesh's hash being the same from one capture to the next.
+    std::vector<XXH64_hash_t> memberInstanceIds;
+  };
+  static std::vector<MergedGroup> buildMergedGroups(const Capture& cap);
+  // Returns false when the group cannot be merged safely: a member whose transform disagrees with
+  // the group's, or a blend index the game did not resolve to a joint. The caller then leaves
+  // those draws exactly as they were.
+  static bool mergeGroup(const Capture& cap,
+                         MergedGroup& group,
+                         lss::Mesh& meshOut,
+                         std::string& rejectReasonOut);
+
+  // Runs after the per-draw meshes and instances are prepped, and rewrites the character groups
+  // in place: adds the merged mesh and its single instance, then drops the members it replaced.
+  // Doing it last rather than instead means every path above stays exactly as it was, and a group
+  // that fails to merge simply leaves its members in the capture.
+  static void prepExportCharacterMerges(const Capture& cap,
+                                        lss::Export& exportPrep);
+
   static void prepExportInstances(const Capture& cap,
                                   lss::Export& exportPrep);
   static void prepExportLights(const Capture& cap,

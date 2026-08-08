@@ -230,6 +230,8 @@ dxvk_src = files([
   'rtx_render/rtx_dusklight_game.h',
   'rtx_render/rtx_dusklight_grade.cpp',
   'rtx_render/rtx_dusklight_grade.h',
+  'rtx_render/rtx_dusklight_skeleton.cpp',
+  'rtx_render/rtx_dusklight_skeleton.h',
   'rtx_render/rtx_dusklight_texrep.cpp',
   'rtx_render/rtx_dusklight_texrep.h',
   'rtx_render/rtx_dust_particles.cpp',

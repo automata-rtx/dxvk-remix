@@ -36,6 +36,7 @@
 #include "rtx_texture.h"
 #include "rtx_xess.h"
 #include "rtx_dusklight_texrep.h"
+#include "rtx_dusklight_skeleton.h"
 
 #include <assert.h>
 
@@ -523,6 +524,8 @@ namespace dxvk {
     // rather than an empty one.
     dusklightTexRep::reportIfRequested();
     dusklightTexRep::onFrameEnd();
+    dusklightSkeleton::reportIfRequested();
+    dusklightSkeleton::onFrameEnd();
     m_previousFrameSceneAvailable = raytracedThisFrame && RtxOptions::enablePreviousTLAS();
 
     m_bufferCache.clear();

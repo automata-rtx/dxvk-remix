@@ -169,6 +169,26 @@ struct RenderingMetaData {
   bool isVertexColorBakedLighting;
 };
 
+// One material's slice of a merged mesh, exported as a UsdGeomSubset so a character can be one
+// mesh without losing its materials. `startFace`/`faceCount` are in faces, because that is what
+// UsdGeomSubset's "face" element type indexes - the merge works in indices and converts, and
+// getting that wrong assigns the wrong material to most of a body.
+struct MeshMaterialRange {
+  Id matId = kInvalidId;
+  size_t startFace = 0;
+  size_t faceCount = 0;
+};
+
+// A skeleton the application declared, as opposed to the one generateSkeleton invents from vertex
+// centroids. Joint paths are what USD and Blender actually build the bone hierarchy from.
+struct AuthoredSkeleton {
+  bool valid = false;
+  std::string name;
+  pxr::VtTokenArray jointPaths;
+  pxr::VtMatrix4dArray bindTransforms;  // model space
+  pxr::VtMatrix4dArray restTransforms;  // joint local
+};
+
 struct Mesh {
   std::string meshName;
   std::unordered_map<const char*, XXH64_hash_t> componentHashes;
@@ -183,6 +203,14 @@ struct Mesh {
   uint32_t     bonesPerVertex = 0;
   pxr::VtMatrix4dArray boneXForms;
   bool         isLhs = false;
+  // Set when this mesh is several draws merged into one. matId then names the first material only
+  // and materialRanges carries all of them; an exporter that ignores materialRanges still produces
+  // a correct-looking mesh with one material, which is the failure mode worth having.
+  std::vector<MeshMaterialRange> materialRanges;
+  // The application's own skeleton, when it declared one. Overrides the synthesised skeleton
+  // entirely - joint names, hierarchy and bind pose all come from the game instead of from vertex
+  // centroids.
+  AuthoredSkeleton authoredSkeleton;
 };
 
 struct Instance {

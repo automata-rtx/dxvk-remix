@@ -39,6 +39,7 @@
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/usdGeom/subset.h>
 #include <pxr/usd/usdGeom/primvar.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h> 
 #include <pxr/usd/usdGeom/metrics.h>
@@ -500,6 +501,41 @@ void GameExporter::exportSkeletons(const Export& exportData, ExportContext& ctx)
     // Set bindTransforms attribute
     auto bindTransformsAttr = skelSchema.CreateBindTransformsAttr();
     assert(bindTransformsAttr);
+
+    // An application-declared skeleton replaces the synthesised one outright. generateSkeleton
+    // below invents a flat "root/jointN" list placed at vertex centroids with no rotation, which
+    // deforms correctly but is not an armature anyone can author against; when the game has told
+    // us its real joint tree there is no reason to guess.
+    //
+    // sanitizeBoneXforms still composes bindPose[i] * xforms[i], so the deformation is unchanged
+    // by swapping the bind pose - that composition is what cancels the bind pose back out. The
+    // difference is entirely in what the skeleton *looks like* in a DCC tool.
+    if (mesh.authoredSkeleton.valid &&
+        mesh.authoredSkeleton.jointPaths.size() == mesh.numBones) {
+      Skeleton& authored = ctx.skeletons[meshId];
+      authored.jointNames = mesh.authoredSkeleton.jointPaths;
+      authored.bindPose = mesh.authoredSkeleton.bindTransforms;
+      authored.restPose = mesh.authoredSkeleton.restTransforms;
+      bindTransformsAttr.Set(authored.bindPose);
+      auto restTransformsAttrAuthored = skelSchema.CreateRestTransformsAttr();
+      assert(restTransformsAttrAuthored);
+      restTransformsAttrAuthored.Set(authored.restPose);
+      auto jointsAttrAuthored = skelSchema.CreateJointsAttr();
+      assert(jointsAttrAuthored);
+      jointsAttrAuthored.Set(authored.jointNames);
+      stage->Save();
+
+      if (ctx.instanceStage != nullptr) {
+        const std::string meshNameAuthored = prefix::mesh + mesh.meshName;
+        const std::string relSkelStagePathAuthored = relDirPath + name + ctx.extension;
+        const pxr::SdfPath skelInstancePathAuthored =
+          gRootMeshesPath.AppendElementString(meshNameAuthored).AppendElementString(gTokSkel);
+        auto skelSchemaAuthored = pxr::UsdSkelSkeleton::Define(ctx.instanceStage, skelInstancePathAuthored);
+        skelSchemaAuthored.GetPrim().GetReferences().AddReference(relSkelStagePathAuthored, skeletonSdfPath);
+      }
+      continue;
+    }
+
     ctx.skeletons[meshId] = generateSkeleton(mesh.numBones,
                                              mesh.bonesPerVertex,
                                              mesh.buffers.positionBufs.begin()->second,
@@ -713,6 +749,42 @@ void GameExporter::exportMeshes(const Export& exportData, ExportContext& ctx) {
       const std::string relMatRefStagePath = std::filesystem::relative(fullMatStagePath,fullMeshStagePath).string();
       shaderMatUsdReferences.AddReference(relMatRefStagePath, matLssReference.ogSdfPath);
       pxr::UsdShadeMaterialBindingAPI(meshXformSchema.GetPrim()).Bind(shaderMatSchema);
+    }
+
+    // A merged mesh - several draws of one character concatenated - keeps its materials as
+    // GeomSubsets over face ranges. The whole-mesh binding above stays as the fallback, so a
+    // consumer that ignores subsets still gets a mesh with one sensible material rather than an
+    // untextured one; Blender's USD importer does read them and produces one object with several
+    // material slots, which is the point.
+    if (mesh.materialRanges.size() > 1) {
+      auto bindingAPI = pxr::UsdShadeMaterialBindingAPI::Apply(meshSchema.GetPrim());
+      size_t subsetIndex = 0;
+      for (const MeshMaterialRange& range : mesh.materialRanges) {
+        if (range.matId == kInvalidId || range.faceCount == 0 ||
+            ctx.matReferences.count(range.matId) == 0) {
+          ++subsetIndex;
+          continue;
+        }
+        pxr::VtIntArray faceIndices;
+        faceIndices.reserve(range.faceCount);
+        for (size_t face = 0; face < range.faceCount; ++face) {
+          faceIndices.push_back(static_cast<int>(range.startFace + face));
+        }
+        const std::string subsetName = "materialSubset_" + std::to_string(subsetIndex);
+        auto subset = pxr::UsdGeomSubset::CreateGeomSubset(
+          meshSchema, pxr::TfToken(subsetName), pxr::UsdGeomTokens->face, faceIndices,
+          pxr::TfToken("materialBind"), pxr::TfToken("nonOverlapping"));
+        assert(subset);
+
+        const Reference& subsetMatReference = ctx.matReferences[range.matId];
+        const auto subsetMatSchema = pxr::UsdShadeMaterial::Define(meshStage, subsetMatReference.ogSdfPath);
+        const std::string fullSubsetMatStagePath = computeLocalPath(subsetMatReference.stagePath);
+        const std::string relSubsetMatPath =
+          std::filesystem::relative(fullSubsetMatStagePath, fullMeshStagePath).string();
+        subsetMatSchema.GetPrim().GetReferences().AddReference(relSubsetMatPath, subsetMatReference.ogSdfPath);
+        pxr::UsdShadeMaterialBindingAPI(subset.GetPrim()).Bind(subsetMatSchema);
+        ++subsetIndex;
+      }
     }
 
     meshStage->Save();

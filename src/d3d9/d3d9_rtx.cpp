@@ -14,6 +14,7 @@
 #include "d3d9_rtx_utils.h"
 #include "d3d9_rtx_matrep.h"
 #include "../dxvk/rtx_render/rtx_dusklight_emissive.h"
+#include "../dxvk/rtx_render/rtx_dusklight_skeleton.h"
 #include "d3d9_texture.h"
 #include "../dxvk/rtx_render/rtx_terrain_baker.h"
 
@@ -702,6 +703,13 @@ namespace dxvk {
 
     // Hash material data
     m_activeDrawCallState.materialData.updateCachedHash();
+
+    // Dusklight character skeletons: pick up whatever aurora latched for this draw. Read only by
+    // the capture path - the draw itself, its geometry hash and its material are untouched, which
+    // is what keeps texture tagging and existing per-draw replacements working exactly as before.
+    // rtx_dusklight_skeleton.h explains why the game alone cannot supply this.
+    m_activeDrawCallState.dusklightSkeletonBinding = dusklightSkeleton::currentDrawBinding();
+    dusklightSkeleton::noteDrawBinding(m_activeDrawCallState.dusklightSkeletonBinding.isValid());
 
     // For shader based drawcalls we also want to capture the vertex shader output
     const bool needVertexCapture = m_parent->UseProgrammableVS() && useVertexCapture();

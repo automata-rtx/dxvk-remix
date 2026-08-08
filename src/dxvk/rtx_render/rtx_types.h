@@ -26,6 +26,8 @@
 #include "rtx_materials.h"
 #include "rtx_hashing.h"
 #include "rtx_camera.h"
+// Fork-owned and self-contained (options + util_matrix only), so it introduces no cycle back here.
+#include "rtx_dusklight_skeleton.h"
 #include "vulkan/vulkan_core.h"
 #include "../../util/util_bounding_box.h"
 #include "../../util/util_threadpool.h"
@@ -745,6 +747,14 @@ struct DrawCallState {
 
   bool isDrawingToRaytracedRenderTarget = false;
   bool isUsingRaytracedRenderTarget = false;
+
+  // Dusklight character skeletons: which model instance this draw belongs to, and what its D3D9
+  // blend indices mean in the model's global joint space. Empty for every draw the game does not
+  // publish, which is all of them in stock Remix. Read by GameCapturer only - see
+  // rtx_dusklight_skeleton.h. Lives here rather than on RtSurface deliberately: RtSurface's size
+  // is guarded by CheckRtInstanceSize and this is capture-only data that has no business on the
+  // GPU-facing struct.
+  dusklightSkeleton::DrawBinding dusklightSkeletonBinding;
 
   // Set when the Sky category was assigned by skyAutoDetect heuristic
   // (as opposed to explicit methods like skyBoxTextures/skyBoxGeometries/skyMinZThreshold).

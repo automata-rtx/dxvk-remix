@@ -52,6 +52,8 @@
 #include "rtx_matrix_helpers.h"
 
 #include <algorithm>
+#include <map>
+#include <unordered_set>
 #include "rtx_lights.h"
 
 #include "../util/util_global_time.h"
@@ -558,6 +560,7 @@ namespace dxvk {
     Instance& instance = m_pCap->instances[instanceId];
     instance.meshHash = meshHash;
     instance.matHash = matHash;
+    instance.skeletonBinding = pBlas->input.dusklightSkeletonBinding;
     instance.meshInstNum = instanceNum;
     instance.lssData.firstTime = m_pCap->currentFrameNum;
 
@@ -656,6 +659,7 @@ namespace dxvk {
       pMesh->lssData.numVertices = numVertices;
       pMesh->lssData.numIndices = numIndices;
       pMesh->lssData.isDoubleSided = isDoubleSided;
+      pMesh->skeletonBinding = blas.input.dusklightSkeletonBinding;
       pMesh->lssData.numBones = skinData.numBones;
       pMesh->lssData.bonesPerVertex = skinData.numBonesPerVertex;
       pMesh->lssData.isLhs = isLhs;
@@ -1105,6 +1109,7 @@ namespace dxvk {
     prepExportMeshes(cap, exportPrep);
     if (exportPrep.bExportInstanceStage) {
       prepExportInstances(cap, exportPrep);
+      prepExportCharacterMerges(cap, exportPrep);
       prepExportLights(cap, exportPrep);
       exportPrep.camera = cap.camera;
     }
@@ -1231,6 +1236,348 @@ namespace dxvk {
       " maxBones=", maxBones,
       "  (one mesh and one skeleton per draw call; joint names and bind transforms are synthesised"
       " from vertex centroids, not the game's joint tree)"));
+  }
+
+  void GameCapturer::prepExportCharacterMerges(const Capture& cap, lss::Export& exportPrep) {
+    std::vector<MergedGroup> groups = buildMergedGroups(cap);
+    if (groups.empty()) {
+      return;
+    }
+
+    uint32_t merged = 0;
+    uint32_t rejected = 0;
+    uint32_t drawsReplaced = 0;
+    uint32_t largestGroup = 0;
+    std::string firstRejectReason;
+
+    for (MergedGroup& group : groups) {
+      lss::Mesh mergedMesh;
+      std::string rejectReason;
+      if (!mergeGroup(cap, group, mergedMesh, rejectReason)) {
+        ++rejected;
+        if (firstRejectReason.empty()) {
+          firstRejectReason = rejectReason;
+        }
+        continue;
+      }
+
+      // The merged instance inherits the group's transform and time span from its first member,
+      // which every other member had to agree with for the merge to be accepted at all.
+      const auto& firstMember = cap.instances.at(group.memberInstanceIds.front());
+      lss::Instance mergedInstance = firstMember.lssData;
+      mergedInstance.meshId = group.mergedMeshHash;
+      mergedInstance.matId = firstMember.matHash;
+      mergedInstance.instanceName = mergedMesh.meshName + "_0";
+      // The members' bone samples describe their own per-draw palettes, so carrying them across
+      // would animate the wrong joints. mergeGroup has already scattered them into the model's
+      // joint space, so the merged instance gets one sample of that instead.
+      //
+      // One sample, deliberately: a merged character is captured in its bind pose with the joint
+      // transforms of the group's first frame. That is what asset extraction wants and it is what
+      // this feature is for. A capture taken to record *motion* should set
+      // rtx.dusklight.skeleton.mergeCaptures=0 and keep the per-draw meshes, which still carry
+      // their full per-frame samples. exportInstances also decides skeleton-ness from this array
+      // being non-empty, so leaving it empty would silently drop the armature altogether.
+      mergedInstance.boneXForms.clear();
+      lss::SampledBoneXform boneSample;
+      boneSample.time = firstMember.lssData.xforms.front().time;
+      boneSample.xforms = mergedMesh.boneXForms;
+      mergedInstance.boneXForms.push_back(std::move(boneSample));
+
+      for (const XXH64_hash_t instanceId : group.memberInstanceIds) {
+        exportPrep.instances.erase(instanceId);
+      }
+      exportPrep.meshes[group.mergedMeshHash] = std::move(mergedMesh);
+      exportPrep.instances[group.mergedMeshHash] = std::move(mergedInstance);
+
+      ++merged;
+      drawsReplaced += static_cast<uint32_t>(group.memberInstanceIds.size());
+      largestGroup = std::max(largestGroup, static_cast<uint32_t>(group.memberInstanceIds.size()));
+    }
+
+    // A member mesh is only dead once nothing still refers to it. Shared geometry - the same draw
+    // appearing outside a character - has to survive, and deleting it would leave a dangling
+    // meshId behind in the stage.
+    std::unordered_set<lss::Id> referenced;
+    for (const auto& [id, instance] : exportPrep.instances) {
+      referenced.insert(instance.meshId);
+    }
+    for (auto it = exportPrep.meshes.begin(); it != exportPrep.meshes.end();) {
+      it = referenced.count(it->first) == 0 ? exportPrep.meshes.erase(it) : std::next(it);
+    }
+
+    Logger::info(str::format(
+      "capture.merge groups=", groups.size(),
+      " merged=", merged,
+      " rejected=", rejected,
+      " drawsReplaced=", drawsReplaced,
+      " largestGroup=", largestGroup,
+      rejected > 0 ? str::format(" firstReject=\"", firstRejectReason, "\"") : std::string(),
+      "  (a rejected group keeps its original per-draw meshes; nothing is merged approximately)"));
+  }
+
+  std::vector<GameCapturer::MergedGroup> GameCapturer::buildMergedGroups(const Capture& cap) {
+    std::vector<MergedGroup> groups;
+    if (!DusklightSkeleton::enable() || !DusklightSkeleton::mergeCaptures()) {
+      return groups;
+    }
+
+    // Group by (model, model instance). Two Bokoblins are two groups; the two halves of one
+    // Bokoblin's head are one.
+    std::map<std::pair<uint64_t, uint64_t>, std::vector<XXH64_hash_t>> byModelInstance;
+    for (const auto& [instanceId, instance] : cap.instances) {
+      const auto& binding = instance.skeletonBinding;
+      if (!binding.isValid() || instance.meshHash == 0) {
+        continue;
+      }
+      byModelInstance[{ binding.modelKey, binding.instanceKey }].push_back(instanceId);
+    }
+
+    for (auto& [key, members] : byModelInstance) {
+      // A group of one is not a merge; leaving it alone keeps its original hash, which is the one
+      // any existing replacement is bound to.
+      if (members.size() < 2) {
+        continue;
+      }
+      // Sorting does two jobs. cap.instances is unordered, so without it the merged geometry would
+      // come out in a different order every run - and since the merged hash is derived from the
+      // member list, the hash would move too, which is exactly the instability this feature exists
+      // to remove.
+      std::sort(members.begin(), members.end(), [&cap](XXH64_hash_t a, XXH64_hash_t b) {
+        const auto& ia = cap.instances.at(a);
+        const auto& ib = cap.instances.at(b);
+        if (ia.meshHash != ib.meshHash) {
+          return ia.meshHash < ib.meshHash;
+        }
+        return a < b;
+      });
+
+      MergedGroup group;
+      group.modelKey = key.first;
+      group.instanceKey = key.second;
+      group.memberInstanceIds = members;
+
+      // Keyed on the model plus the exact set of draws that made it up, not on the model alone:
+      // two instances of one model showing different packets (an LOD, a hidden piece) are
+      // genuinely different geometry and must not collide. Two identical instances hash the same
+      // and correctly share one mesh.
+      XXH64_hash_t hash = XXH64(&group.modelKey, sizeof(group.modelKey), 0);
+      for (const XXH64_hash_t instanceId : members) {
+        const XXH64_hash_t meshHash = cap.instances.at(instanceId).meshHash;
+        hash = XXH64(&meshHash, sizeof(meshHash), hash);
+      }
+      group.mergedMeshHash = hash;
+      groups.push_back(std::move(group));
+    }
+    return groups;
+  }
+
+  bool GameCapturer::mergeGroup(const Capture& cap,
+                                MergedGroup& group,
+                                lss::Mesh& meshOut,
+                                std::string& rejectReasonOut) {
+    // The group's frame of reference is its first member's first transform. Everything else has to
+    // agree with it: the merge concatenates vertices without rebasing them, so a member sitting on
+    // a different transform would land in the wrong place. Rejecting is the right answer rather
+    // than rebasing, because a character whose packets disagree here means the model identity is
+    // wrong and a scattered body is a far worse outcome than an unmerged one.
+    const lss::Instance& first = cap.instances.at(group.memberInstanceIds.front()).lssData;
+    if (first.xforms.empty()) {
+      rejectReasonOut = "no transform";
+      return false;
+    }
+    const pxr::GfMatrix4d& groupXform = first.xforms.front().xform;
+
+    uint32_t jointCount = 0;
+    for (const XXH64_hash_t instanceId : group.memberInstanceIds) {
+      const auto& instance = cap.instances.at(instanceId);
+      if (instance.lssData.xforms.empty() ||
+          !pxr::GfIsClose(instance.lssData.xforms.front().xform, groupXform, 1e-4)) {
+        rejectReasonOut = "members disagree on the model transform";
+        return false;
+      }
+      jointCount = std::max(jointCount, static_cast<uint32_t>(instance.skeletonBinding.jointCount));
+    }
+    if (jointCount == 0) {
+      rejectReasonOut = "no joints";
+      return false;
+    }
+
+    // Every merged mesh carries four influences per vertex whether it needs them or not. A rigid
+    // packet contributes one joint at weight 1 and three at zero; a four-influence packet
+    // contributes all four. Standardising here is what makes the merged mesh a single coherent
+    // skinned object in Blender rather than a set of pieces with incompatible vertex groups.
+    constexpr size_t kInfluences = 4;
+
+    meshOut.meshName = dxvk::hashToString(group.mergedMeshHash);
+    meshOut.isDoubleSided = false;
+    meshOut.numBones = jointCount;
+    meshOut.bonesPerVertex = kInfluences;
+    meshOut.isLhs = false;
+
+    pxr::VtArray<lss::Pos> positions;
+    pxr::VtArray<lss::Norm> normals;
+    pxr::VtArray<lss::Texcoord> texcoords;
+    pxr::VtArray<lss::Color> colors;
+    pxr::VtArray<lss::Index> indices;
+    pxr::VtArray<lss::BlendWeight> weights;
+    pxr::VtArray<lss::BlendIdx> blendIndices;
+    // Identity for every joint nobody claims, so an unused joint sits at its bind pose rather than
+    // collapsing the mesh to the origin.
+    pxr::VtMatrix4dArray boneXForms(jointCount, pxr::GfMatrix4d(1.0));
+    std::vector<bool> boneWritten(jointCount, false);
+
+    size_t vertexBase = 0;
+    for (const XXH64_hash_t instanceId : group.memberInstanceIds) {
+      const auto& instance = cap.instances.at(instanceId);
+      const auto meshIt = cap.meshes.find(instance.meshHash);
+      if (meshIt == cap.meshes.end() || meshIt->second == nullptr) {
+        rejectReasonOut = "a member mesh is missing";
+        return false;
+      }
+      const Mesh& member = *meshIt->second;
+      const lss::Mesh& src = member.lssData;
+      const auto& binding = member.skeletonBinding;
+
+      // Only the first time sample. Skinned geometry is captured in its bind pose (captureMesh
+      // takes the raster buffers when there are bones), so later samples are the same points; the
+      // animation lives in the bone transforms below.
+      if (src.buffers.positionBufs.empty() || src.buffers.idxBufs.empty()) {
+        rejectReasonOut = "a member has no geometry";
+        return false;
+      }
+      const auto& srcPositions = src.buffers.positionBufs.begin()->second;
+      const auto& srcIndices = src.buffers.idxBufs.begin()->second;
+      const size_t vertexCount = srcPositions.size();
+
+      positions.insert(positions.end(), srcPositions.begin(), srcPositions.end());
+
+      // Every vertex needs an entry in every stream the merged mesh has, or the arrays fall out of
+      // step and USD silently misreads them. Members missing a stream are padded rather than
+      // skipped.
+      if (!src.buffers.normalBufs.empty()) {
+        const auto& srcNormals = src.buffers.normalBufs.begin()->second;
+        normals.insert(normals.end(), srcNormals.begin(), srcNormals.end());
+      }
+      normals.resize(vertexBase + vertexCount, lss::Norm(0.f, 1.f, 0.f));
+
+      if (!src.buffers.texcoordBufs.empty()) {
+        const auto& srcTexcoords = src.buffers.texcoordBufs.begin()->second;
+        texcoords.insert(texcoords.end(), srcTexcoords.begin(), srcTexcoords.end());
+      }
+      texcoords.resize(vertexBase + vertexCount, lss::Texcoord(0.f, 0.f));
+
+      if (!src.buffers.colorBufs.empty()) {
+        const auto& srcColors = src.buffers.colorBufs.begin()->second;
+        colors.insert(colors.end(), srcColors.begin(), srcColors.end());
+      }
+      colors.resize(vertexBase + vertexCount, lss::Color(1.f, 1.f, 1.f, 1.f));
+
+      const size_t startFace = indices.size() / 3;
+      for (const lss::Index index : srcIndices) {
+        indices.push_back(static_cast<lss::Index>(index + vertexBase));
+      }
+      lss::MeshMaterialRange range;
+      range.matId = instance.matHash;
+      range.startFace = startFace;
+      range.faceCount = (indices.size() / 3) - startFace;
+      meshOut.materialRanges.push_back(range);
+
+      // Blend data, remapped from this draw's local palette into the model's joint space. This is
+      // the whole point of the exercise: without it, blend index 0 of one packet and blend index 0
+      // of the next are different joints and merging them is nonsense.
+      const size_t srcInfluences = std::max<size_t>(src.bonesPerVertex, 1);
+      const bool hasBlend = !src.buffers.blendIndicesBufs.empty() &&
+                            !src.buffers.blendWeightBufs.empty() &&
+                            src.numBones > 0;
+      const pxr::VtArray<lss::BlendIdx>* srcBlendIndices =
+        hasBlend ? &src.buffers.blendIndicesBufs.begin()->second : nullptr;
+      const pxr::VtArray<lss::BlendWeight>* srcWeights =
+        hasBlend ? &src.buffers.blendWeightBufs.begin()->second : nullptr;
+
+      for (size_t v = 0; v < vertexCount; ++v) {
+        for (size_t k = 0; k < kInfluences; ++k) {
+          int32_t joint = 0;
+          float weight = 0.f;
+          if (hasBlend && k < srcInfluences) {
+            const size_t offset = v * srcInfluences + k;
+            if (offset < srcBlendIndices->size() && offset < srcWeights->size()) {
+              const int32_t local = (*srcBlendIndices)[offset];
+              weight = (*srcWeights)[offset];
+              if (local < 0 || static_cast<uint32_t>(local) >= binding.blendIndexCount) {
+                rejectReasonOut = "a blend index has no joint mapping";
+                return false;
+              }
+              const uint16_t mapped = binding.blendIndexToJoint[local];
+              if (mapped == dusklightSkeleton::kNoJoint || mapped >= jointCount) {
+                rejectReasonOut = "a blend index maps to no joint";
+                return false;
+              }
+              joint = static_cast<int32_t>(mapped);
+            }
+          } else if (k == 0) {
+            // A rigid packet: one joint at full weight, taken from the single entry the game
+            // published for it. Without this the piece would arrive weightless and collapse onto
+            // the model origin when the armature moves.
+            if (binding.blendIndexCount == 0 ||
+                binding.blendIndexToJoint[0] == dusklightSkeleton::kNoJoint ||
+                binding.blendIndexToJoint[0] >= jointCount) {
+              rejectReasonOut = "a rigid member has no joint mapping";
+              return false;
+            }
+            joint = static_cast<int32_t>(binding.blendIndexToJoint[0]);
+            weight = 1.f;
+          }
+          blendIndices.push_back(joint);
+          weights.push_back(weight);
+        }
+      }
+
+      // Scatter this member's bone matrices into the model's joint space. Members between them
+      // cover the joints the character actually uses; the rest keep the identity set above.
+      const auto& memberBones = src.boneXForms;
+      for (uint32_t local = 0; local < binding.blendIndexCount && local < memberBones.size(); ++local) {
+        const uint16_t mapped = binding.blendIndexToJoint[local];
+        if (mapped != dusklightSkeleton::kNoJoint && mapped < jointCount && !boneWritten[mapped]) {
+          boneXForms[mapped] = memberBones[local];
+          boneWritten[mapped] = true;
+        }
+      }
+
+      vertexBase += vertexCount;
+    }
+
+    meshOut.numVertices = static_cast<uint32_t>(positions.size());
+    meshOut.numIndices = static_cast<uint32_t>(indices.size());
+    meshOut.boneXForms = boneXForms;
+    meshOut.buffers.positionBufs[0.f] = std::move(positions);
+    meshOut.buffers.normalBufs[0.f] = std::move(normals);
+    meshOut.buffers.texcoordBufs[0.f] = std::move(texcoords);
+    meshOut.buffers.colorBufs[0.f] = std::move(colors);
+    meshOut.buffers.idxBufs[0.f] = std::move(indices);
+    meshOut.buffers.blendIndicesBufs[0.f] = std::move(blendIndices);
+    meshOut.buffers.blendWeightBufs[0.f] = std::move(weights);
+
+    // The game's own joint tree, replacing the one generateSkeleton would have invented from
+    // vertex centroids.
+    dusklightSkeleton::Skeleton skeleton;
+    if (dusklightSkeleton::findSkeleton(group.modelKey, skeleton) &&
+        skeleton.jointCount >= jointCount) {
+      lss::AuthoredSkeleton& authored = meshOut.authoredSkeleton;
+      authored.valid = true;
+      authored.name = meshOut.meshName;
+      authored.jointPaths.reserve(skeleton.jointCount);
+      for (uint32_t i = 0; i < skeleton.jointCount; ++i) {
+        authored.jointPaths.push_back(pxr::TfToken(skeleton.jointPaths[i]));
+        authored.bindTransforms.push_back(matrix4ToGfMatrix4d(skeleton.bindTransforms[i]));
+        authored.restTransforms.push_back(matrix4ToGfMatrix4d(skeleton.restTransforms[i]));
+      }
+      // The bone array has to line up with the joint array the skeleton declares, not with the
+      // subset this group happened to touch.
+      meshOut.numBones = skeleton.jointCount;
+      meshOut.boneXForms.resize(skeleton.jointCount, pxr::GfMatrix4d(1.0));
+    }
+    return true;
   }
 
   void GameCapturer::prepExportInstances(const Capture& cap, lss::Export& exportPrep) {
