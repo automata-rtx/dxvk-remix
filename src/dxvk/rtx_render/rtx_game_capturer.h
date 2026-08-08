@@ -86,6 +86,7 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <optional>
 
 namespace dxvk 
 {
@@ -218,11 +219,13 @@ private:
   void captureFrame(const Rc<DxvkContext> ctx);
   void captureCamera();
   void captureLights();
-  // `key` names the captured light across frames. It is the RtLight's own hash for lights Remix
-  // tracks itself, and the application's handle for API-submitted lights, whose parameter hash
-  // changes whenever the application moves them - see LightManager::getActiveExternalLights.
-  void captureSphereLight(const dxvk::RtSphereLight& rtLight, const XXH64_hash_t key);
-  void captureDistantLight(const RtDistantLight& rtLight, const XXH64_hash_t key);
+  // `keyOverride` names the captured light across frames. Empty means "use the light's own hash",
+  // which is what Remix-tracked lights want. API-submitted lights pass the application's handle
+  // instead, because their parameter hash changes whenever the application moves them - see
+  // LightManager::getActiveExternalLights. Note the hash lives on the concrete light types, not on
+  // RtLight, which is why this is resolved here rather than by the caller.
+  void captureSphereLight(const dxvk::RtSphereLight& rtLight, const std::optional<XXH64_hash_t> keyOverride);
+  void captureDistantLight(const RtDistantLight& rtLight, const std::optional<XXH64_hash_t> keyOverride);
   // Writes the active API dome light's texture as the capture's sky, for runtimes whose sky is a
   // dome light rather than geometry drawn with a sky camera. Does nothing if a sky probe was
   // already baked from such geometry, which stays the higher-fidelity source when it exists.

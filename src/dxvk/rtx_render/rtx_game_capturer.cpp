@@ -321,12 +321,12 @@ namespace dxvk {
   }
 
   void GameCapturer::captureLights() {
-    auto captureLight = [&](const RtLight& rtLight, const XXH64_hash_t key) {
+    auto captureLight = [&](const RtLight& rtLight, const std::optional<XXH64_hash_t> keyOverride) {
       assert(rtLight.getInitialHash() != 0);
       switch (rtLight.getType()) {
       default:
       case RtLightType::Sphere:
-        captureSphereLight(rtLight.getSphereLight(), key);
+        captureSphereLight(rtLight.getSphereLight(), keyOverride);
         break;
       case RtLightType::Rect:
         // Todo: Handle Rect lights
@@ -343,16 +343,16 @@ namespace dxvk {
         ONCE(Logger::err("[GameCapturer][" + m_pCap->idStr + "] CylinderLight not implemented"));
         break;
       case RtLightType::Distant:
-        captureDistantLight(rtLight.getDistantLight(), key);
+        captureDistantLight(rtLight.getDistantLight(), keyOverride);
         break;
       }
     };
 
     for (auto&& pair : m_sceneManager.getLightManager().getLightTable()) {
-      captureLight(pair.second, pair.second.getHash());
+      captureLight(pair.second, std::nullopt);
     }
     for (auto&& pair : m_sceneManager.getLightManager().getExternallyTrackedLightTable()) {
-      captureLight(pair.second, pair.second.getHash());
+      captureLight(pair.second, std::nullopt);
     }
     // Lights the application submitted through remixapi_CreateLight/remixapi_DrawLightInstance.
     // Keyed by the application's handle rather than the light's parameter hash: a game that
@@ -363,7 +363,9 @@ namespace dxvk {
     }
   }
 
-  void GameCapturer::captureSphereLight(const dxvk::RtSphereLight& rtLight, const XXH64_hash_t hash) {
+  void GameCapturer::captureSphereLight(const dxvk::RtSphereLight& rtLight,
+                                        const std::optional<XXH64_hash_t> keyOverride) {
+    const XXH64_hash_t hash = keyOverride.value_or(rtLight.getHash());
     pxr::GfRotation  rotation;
     rotation.SetIdentity();
     if (m_pCap->sphereLights.count(hash) == 0) {
@@ -396,7 +398,9 @@ namespace dxvk {
     sphereLight.finalTime = m_pCap->currentFrameNum;
   }
 
-  void GameCapturer::captureDistantLight(const RtDistantLight& rtLight, const XXH64_hash_t hash) {
+  void GameCapturer::captureDistantLight(const RtDistantLight& rtLight,
+                                         const std::optional<XXH64_hash_t> keyOverride) {
+    const XXH64_hash_t hash = keyOverride.value_or(rtLight.getHash());
     // Note: this consulted `sphereLights` before 2026-08-08, so the "is this light new" test could
     // never be false for a distant light and the block below re-ran every frame. The damage was to
     // `firstTime`, which ended up holding the *last* captured frame; exportDistantLights then wrote
