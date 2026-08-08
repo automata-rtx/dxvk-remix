@@ -204,6 +204,44 @@ thresholds are options rather than constants; §10 covers the two-colour ramp.
 - `dxvk_imgui.cpp` does **not** include `<cmath>`. Do not rely on a transitive
   one across three compilers.
 
+## This runtime charges per draw, not per pixel
+
+Established 2026-08-07 while chasing unusable frame rates in Dusklight's rain
+and snow, and worth knowing before anyone reaches for a shading explanation
+again.
+
+A draw call too small to deserve its own BLAS is merged into a shared bucket —
+but it **still contributes its own `VkAccelerationStructureGeometryKHR` and its
+own surface**, and the bucket's BLAS is rebuilt whenever any of its geometry
+moves (`rtx_accel_manager.cpp`: `buildInfo.geometryCount =
+bucket->geometries.size()`, and the bucket's `originalInstances`). So a
+thousand single-quad draws cost roughly a thousand times what the same
+thousand quads cost inside one draw, and no amount of shading work changes it.
+The game was emitting one `GXBegin`/`GXEnd` per particle quad; batching them
+game-side fixed it (tested 2026-08-08).
+
+**Two corollaries that were each mistaken for something else:**
+
+- **`rtx.particleTextures` is not a performance control.** It sets
+  `m_isUnordered` and `VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR`
+  (`rtx_instance_manager.cpp`) — which TLAS a draw lands in and how the resolve
+  loop treats it. It does nothing about per-draw scene-management cost. **If a
+  dense effect does not respond to it, the cost is draw count.**
+- **Opacity micromaps working is not evidence they are helping.** They reduce
+  per-pixel any-hit work, which is not the bottleneck when the bottleneck is
+  BLAS rebuild and surface upload.
+
+The measurement lives game-side: aurora logs `dx9.draws frames=600 mean=… peak=…`
+once every 600 frames. A `peak` in the thousands is the signature.
+`aurora-ao/docs/dx9/progress.md` §3.32,
+`dusklight-ao/docs/remix-open-issues.md` issue 13.
+
+**Not yet exercised:** `createBillboards` only runs for instances already in the
+unordered TLAS, and `rtx.useIntersectionBillboardsOnPrimaryRays` is **false** by
+default, so the intersection-billboard path does nothing on primary rays today.
+Batched particle draws are the first geometry that path has had anything useful
+to chew on — an optimisation to try, not a fix that is owed.
+
 ## Merges that succeed and are still wrong
 
 **A clean `git merge` is not a correct merge.** Several Dusklight features are
