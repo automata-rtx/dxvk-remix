@@ -82,6 +82,13 @@ namespace dxvk {
                "Requires the skeletons above. Materials survive as USD GeomSubsets of the merged mesh, so a character\n"
                "arrives in Blender as one object with one armature rather than dozens. Turn it off to keep one mesh\n"
                "per draw while still getting the real skeleton - useful for telling a merge fault from a skeleton one.");
+    RTX_OPTION("rtx.dusklight.skeleton", bool, replaceBodies, true,
+               "Let one replacement stand in for a whole character at runtime.\n"
+               "A capture names a merged character mesh after its model, and with this on the runtime looks that same\n"
+               "name up when any of the character's draws arrives. The first draw of the character each frame\n"
+               "instantiates the replacement; the rest are dropped, because otherwise the new body and the original\n"
+               "would both be drawn. With no replacement authored for a character nothing changes at all - the draws\n"
+               "take exactly the path they always did.");
     RTX_OPTION_FLAG("rtx.dusklight.skeleton", bool, report, false, RtxOptionFlags::NoSave,
                     "Log a bounded skeleton.* summary of what the game has declared. Clears itself after one report.");
   };
@@ -155,6 +162,31 @@ namespace dxvk {
     // instead - see mergeGroup.
     XXH64_hash_t groupMeshHash(uint64_t modelKey);
 
+    // Whether a body replacement is actually authored for this model.
+    //
+    // Asked by the skinning path, which must not raise its bone count for a character nobody is
+    // replacing. Raising it unconditionally would look harmless and quietly cost real performance:
+    // RtSurface bakes a single-bone draw's matrix into the transform and skips the skinning pass
+    // entirely (rtx_types.cpp, `minBoneIndex + 1 == numBones`), and a raised count defeats that
+    // test for every rigid packet of every character in the game.
+    //
+    // SceneManager records the answer the first time it resolves a draw of that model, so the very
+    // first frame a character appears answers "no" and skins as it always did. Self-correcting, and
+    // one frame of a body being posed by the original skeleton is not something anyone can see.
+    void noteGroupReplacement(uint64_t modelKey, bool exists);
+    bool hasGroupReplacement(uint64_t modelKey);
+
+    // True for the first draw of a given character in a given frame, false for its siblings.
+    //
+    // This is what turns "forty draws" into "one body": the claiming draw instantiates the
+    // replacement, and the rest are dropped by the caller. Dropping them is not optional - a
+    // replacement stands in for the whole character, so leaving the siblings in would draw the new
+    // body and the original one through each other.
+    //
+    // Which draw claims is whichever the game issues first, and J3D's order is deterministic, so
+    // in practice it is the same packet every frame.
+    bool claimGroupDraw(const DrawBinding& binding, uint32_t frameId);
+
     // Called once per submitted draw so the report can say how much of a frame is actually bound.
     // A scene where boundDraws stays zero while the game insists it is publishing is the first
     // thing to check, and it separates "the game is not calling" from "the merge is not merging".
@@ -166,6 +198,8 @@ namespace dxvk {
       uint32_t skeletonsRejected = 0;
       uint32_t boundDraws = 0;
       uint32_t unboundDraws = 0;
+      uint32_t groupsReplaced = 0;
+      uint32_t drawsSuppressed = 0;
     };
     const Stats& stats();
     void onFrameEnd();

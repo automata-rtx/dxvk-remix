@@ -622,12 +622,44 @@ namespace dxvk {
     }
 
 
-    const XXH64_hash_t activeReplacementHash = input.getHash(RtxOptions::geometryAssetHashRule());
+    XXH64_hash_t activeReplacementHash = input.getHash(RtxOptions::geometryAssetHashRule());
     
     // Track this mesh hash for mesh hash checking
     trackMeshHash(activeReplacementHash);
 
     std::vector<AssetReplacement>* pReplacements = m_pReplacer->getReplacementsForMesh(activeReplacementHash);
+
+    // Dusklight: a character is one asset, not the forty draws the game happens to split it into.
+    //
+    // A capture names a merged character after its model key, and this is the other end of that:
+    // when any draw of a character arrives, look up the same name. The hash comes from the shared
+    // groupMeshHash so the capture and this can never disagree about what a body is called - the
+    // first revision of the merge derived it from the member draw set, which the capture can
+    // compute and the runtime cannot, and a replacement authored against it could never have bound.
+    //
+    // Tracked unconditionally, replacement or not, so the group hash shows up in the mesh-hash
+    // tooling: an artist has to be able to find what to author against before anything exists.
+    const auto& skeletonBinding = input.dusklightSkeletonBinding;
+    if (skeletonBinding.isValid() && DusklightSkeleton::replaceBodies()) {
+      const XXH64_hash_t groupHash = dusklightSkeleton::groupMeshHash(skeletonBinding.modelKey);
+      trackMeshHash(groupHash);
+
+      std::vector<AssetReplacement>* pGroupReplacements = m_pReplacer->getReplacementsForMesh(groupHash);
+      // Recorded either way, because the skinning path needs to know a character is NOT being
+      // replaced just as much as it needs to know it is.
+      dusklightSkeleton::noteGroupReplacement(skeletonBinding.modelKey, pGroupReplacements != nullptr);
+
+      if (pGroupReplacements != nullptr) {
+        // Exactly one draw per character per frame instantiates the body. Every sibling returns
+        // here, which is the whole mechanism: a replacement stands in for the *whole* character,
+        // so leaving the others in would draw the new body and the original through each other.
+        if (!dusklightSkeleton::claimGroupDraw(skeletonBinding, m_device->getCurrentFrameId())) {
+          return;
+        }
+        activeReplacementHash = groupHash;
+        pReplacements = pGroupReplacements;
+      }
+    }
 
     // TODO (REMIX-656): Remove this once we can transition content to new hash
     if ((RtxOptions::geometryHashGenerationRule() & rules::LegacyAssetHash0) == rules::LegacyAssetHash0) {

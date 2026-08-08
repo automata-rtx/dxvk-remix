@@ -38,6 +38,10 @@ namespace dxvk {
     static uint32_t s_rejected = 0;
     static Stats s_stats;
     static Stats s_lastFrame;
+    // Model instance -> the frame its replacement was last instantiated. See claimGroupDraw.
+    static std::unordered_map<uint64_t, uint32_t> s_groupClaims;
+    // Model key -> whether a body replacement is authored for it. See noteGroupReplacement.
+    static std::unordered_map<uint64_t, bool> s_groupReplacements;
 
     // The latch is per thread on purpose: aurora writes it and D3D9Rtx reads it on the game's
     // thread, and a Remix worker submitting anything of its own must not pick up a character's
@@ -122,6 +126,46 @@ namespace dxvk {
       return XXH64(&salted, sizeof(salted), kGroupSalt);
     }
 
+    void noteGroupReplacement(uint64_t modelKey, bool exists) {
+      std::lock_guard lock { s_mutex };
+      s_groupReplacements[modelKey] = exists;
+    }
+
+    bool hasGroupReplacement(uint64_t modelKey) {
+      if (!DusklightSkeleton::enable() || !DusklightSkeleton::replaceBodies()) {
+        return false;
+      }
+      std::lock_guard lock { s_mutex };
+      const auto found = s_groupReplacements.find(modelKey);
+      return found != s_groupReplacements.end() && found->second;
+    }
+
+    bool claimGroupDraw(const DrawBinding& binding, uint32_t frameId) {
+      if (!binding.isValid()) {
+        return false;
+      }
+      // Keyed on the model instance, not the model: two Bokoblins on screen are two bodies and
+      // each needs its own claim, or the second one vanishes.
+      const uint64_t key = binding.modelKey ^ (binding.instanceKey * 0x9E3779B97F4A7C15ull);
+
+      std::lock_guard lock { s_mutex };
+      auto& lastFrame = s_groupClaims[key];
+      if (lastFrame == frameId) {
+        ++s_stats.drawsSuppressed;
+        return false;
+      }
+      lastFrame = frameId;
+      ++s_stats.groupsReplaced;
+
+      // The map is bounded by how many character instances a session sees, which is small, but it
+      // is never pruned - so drop it wholesale if it ever grows past anything plausible rather
+      // than leak for a long session. Losing the claims costs one frame of double-drawn bodies.
+      if (s_groupClaims.size() > 4096) {
+        s_groupClaims.clear();
+      }
+      return true;
+    }
+
     const DrawBinding& currentDrawBinding() {
       if (!DusklightSkeleton::enable()) {
         return s_invalidBinding;
@@ -162,6 +206,8 @@ namespace dxvk {
       s_lastFrame.skeletonsRejected = s_rejected;
       s_stats.boundDraws = 0;
       s_stats.unboundDraws = 0;
+      s_stats.groupsReplaced = 0;
+      s_stats.drawsSuppressed = 0;
     }
 
     void reportIfRequested() {
@@ -178,6 +224,9 @@ namespace dxvk {
         " rejected=", s_rejected,
         " boundDraws=", s_lastFrame.boundDraws,
         " unboundDraws=", s_lastFrame.unboundDraws,
+        " replaceBodies=", DusklightSkeleton::replaceBodies() ? 1 : 0,
+        " bodiesReplaced=", s_lastFrame.groupsReplaced,
+        " drawsSuppressed=", s_lastFrame.drawsSuppressed,
         "  (declared and rejected are cumulative; the draw counts are per frame)"));
 
       // One line per model, capped, so a reader without the source can tell a model that declared

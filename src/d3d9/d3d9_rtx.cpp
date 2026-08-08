@@ -873,7 +873,27 @@ namespace dxvk {
     const Matrix4* const boneMatrices = m_stagedBones.stageBones(
         d3d9State().transforms.data() + startBoneTransform, nMat);
 
-    return m_pGeometryWorkers->Schedule([boneMatrices, blendIndices, numBonesPerVertex, vertexCount]()->SkinningData {
+    // Dusklight: how many bones a replacement body needs, as opposed to how many this packet uses.
+    //
+    // numBones below is derived from the joints the *original* geometry references, which is the
+    // right answer for the original and the wrong one for a replacement. A replacement is weighted
+    // against the model's whole joint tree, so a body referencing joint 45 triggered from a packet
+    // whose highest joint is 12 would skin against bones that were never copied. The matrices are
+    // already staged - aurora sets a world matrix per joint on every skinned draw and m_maxBone
+    // covers them - so only the count truncates, and raising its floor is the whole fix.
+    //
+    // Clamped to nMat because that is what was actually staged; asking for more would read past it.
+    // Gated on a replacement actually existing for this model - see hasGroupReplacement. Raising
+    // the count for a character nobody replaces would defeat the single-bone bake in RtSurface and
+    // cost a skinning pass per rigid packet, for nothing.
+    const auto& skeletonBinding = dusklightSkeleton::currentDrawBinding();
+    const uint32_t dusklightMinBones =
+      skeletonBinding.isValid() && dusklightSkeleton::hasGroupReplacement(skeletonBinding.modelKey)
+        ? std::min<uint32_t>(skeletonBinding.jointCount, nMat)
+        : 0;
+
+    return m_pGeometryWorkers->Schedule([boneMatrices, blendIndices, numBonesPerVertex, vertexCount,
+                                         dusklightMinBones]()->SkinningData {
       ScopedCpuProfileZone();
       uint32_t numBones = numBonesPerVertex;
 
@@ -893,6 +913,10 @@ namespace dxvk {
         blendIndices.ref->release(DxvkAccess::Read);
         blendIndices.ref->decRef();
       }
+
+      // See dusklightMinBones above: the original geometry decides how many bones it needs, a
+      // replacement body needs the model's whole tree, and this takes the larger.
+      numBones = std::max(numBones, dusklightMinBones);
 
       // Pass bone data to RT back-end
 
