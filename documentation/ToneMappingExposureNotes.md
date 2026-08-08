@@ -4,8 +4,9 @@ Written up separately from the commits because several of these are **upstream
 dxvk-remix defects, not fork-specific ones**, and are worth carrying back on their own.
 
 Every measurement here comes from a numerical model of the shader maths, run against the
-constants actually in the tree. **Nothing in this document has been observed in game.** Where a
-claim is a mechanism rather than an observation, it says so.
+constants actually in the tree. Where a claim is a mechanism rather than an observation, it says
+so. **Most of this document is still model, not observation** — see the closing section for what
+has and has not been seen on screen.
 
 ---
 
@@ -228,6 +229,12 @@ stock Remix, and AgX and GT7 are each judged on their own response curve rather 
 curve they have nothing to do with. `None` keeps ACES, because the fusion still needs something to
 measure with when no final look is applied.
 
+**One rule governs what the ruler sees: it measures the operator's CURVE, never the artistic look
+layered on top of it.** So AgX's `minEv`/`maxEv` and GT7's peak and shoulder stay, because those
+shape the response being measured; AgX's ASC-CDL look transform and GT7's saturation boost are
+neutralised inside `localTonemapRuler()`. Without that, dragging a saturation slider would change
+local contrast as a side effect, which is not what any of those sliders claims to do.
+
 The one genuine cost is that the shipped `rtx.localtonemap.shadows` / `highlights` /
 `exposurePreferenceSigma` defaults were tuned against the ACES response, so they may want
 revisiting per operator. That is a tuning job, not a correctness problem, and
@@ -314,12 +321,25 @@ only residual is gamut clipping on the way back to Rec.709. Measured ICtCp hue d
 bit-identical to the reference — checked at 0.00e+00 deviation across sky, surface and emissive
 samples.
 
-The boost is explicitly neutralised inside `localTonemapRuler()`. It is a look control, and a look
-control must not move the instrument the exposure fusion measures with.
+The boost is neutralised inside `localTonemapRuler()`, alongside AgX's look transform, under the
+rule stated in §8: the ruler measures the operator's curve, never the look on top of it.
 
 ---
 
 ## What was verified, and what was not
+
+**Confirmed in game** (2026-08-07, Dusklight, 3440x1440, DLSS Quality + 2x frame generation):
+
+- GT7 holds the physically scattered sky "considerably better" than the alternatives — the
+  headline claim of §8/§9 and the reason the operator was added.
+- GT7 retains more colour in strong emissives such as lava.
+- `rtx.bloom.dusklightThreshold` at 0.485 under GT7 "noticeably helped", confirming the
+  best-fit figure derived in the bloom analysis.
+- The GT7 saturation boost (§10) behaves as designed: surfaces lift, sky does not.
+- GT7 in **Local** mode was reported as fine for performance. Treat this as reassurance, not
+  measurement: it was an unscientific test with DLSS upscaling and frame generation active, both
+  of which change how much of the frame the full-resolution tone mapping passes actually cover.
+  The 5x per-pixel evaluation cost in §9 is unmeasured and the 4K figures there remain estimates.
 
 **Verified numerically** against a model of the shader maths: metering identity at mid grey;
 incomplete-adaptation endpoints at strength 0 and 1; soft limiter monotonicity and asymptotic

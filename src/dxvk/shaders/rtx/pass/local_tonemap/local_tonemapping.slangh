@@ -44,18 +44,27 @@
 //
 // Note the shipped rtx.localtonemap.shadows / highlights / exposurePreferenceSigma defaults were
 // tuned against the ACES response, so they may want revisiting per operator.
+// One rule applies to every branch below: the ruler measures the operator's CURVE, never the
+// artistic look layered on top of it. A look control that moved the ruler would silently change
+// how the fusion decides local adaptation, so dragging a saturation slider would alter local
+// contrast as a side effect - which is not what any of these sliders claim to do.
+//
+// So the curve-shaping parameters stay (AgX minEv/maxEv, GT7 peakIntensity and its shoulder) and
+// the look parameters are neutralised (AgX's ASC-CDL look transform, GT7's saturation boost). Both
+// argument blocks are by-value parameters, so the overrides here affect only the ruler.
 float3 localTonemapRuler(float3 color, uint tonemapOperator, bool useLegacyACES, AgxArgs agx, Gt7Args gt7)
 {
   if (tonemapOperator == tonemapOperatorAgX)
   {
+    agx.lookSlope = float3(1.0f, 1.0f, 1.0f);
+    agx.lookOffset = 0.0f;
+    agx.lookPower = 1.0f;
+    agx.lookSaturation = 1.0f;
     return agxToneMapping(color, agx);
   }
 
   if (tonemapOperator == tonemapOperatorGT7)
   {
-    // The saturation boost is a look control, so it must not move the measuring instrument -
-    // otherwise turning it up would quietly change how the fusion decides local adaptation.
-    // gt7 is a by-value parameter, so this only affects the ruler.
     gt7.saturationBoost = 1.0f;
     return gt7ToneMapping(color, gt7);
   }

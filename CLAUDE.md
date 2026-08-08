@@ -28,6 +28,11 @@ unless it says so.
 carry the design, the measurements, and a §14 "Facts that were expensive to
 learn" that exists because several of them were wrong in an earlier draft.
 
+`documentation/ToneMappingExposureNotes.md` covers the tone mapping and auto
+exposure work, which is **not** Dusklight-specific — five of the six defects it
+records are upstream dxvk-remix bugs and are written up so they can be carried
+back on their own.
+
 | Repo | Role | Its docs |
 | :-- | :-- | :-- |
 | `automata-rtx/dxvk-remix` | **this repo** — the Remix fork | `documentation/Dusklight*.md` |
@@ -164,6 +169,8 @@ anything else.
 | `src/dxvk/rtx_render/rtx_dusklight_atmosphere.{h,cpp}` | one medium driving fog, sky and sky-light; Hillaire physical sky |
 | `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` | the ambient grade stage |
 | `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. **A rule, not a score**: self-lit (no TEV colour stage reads the rasterized channel) AND a colour of its own (authored in GX constants, not the vertex stream and not a bare texture pass-through) AND that colour reading as a glow (saturated **or** near-white-hot). Aurora ships the three facts in `D3DMATERIAL9::Specular.{a,b}` and `Emissive.rgb`; `Emissive.a` still carries the old evidence score but **nothing decides on it** — three revisions cut on it and all three missed the lava, which scores 0.00. Applied at one site in `rtx_instance_manager.cpp`. **Note the trap around the emissive colour: by default the shader re-applies the albedo's texture op to it** — `RtSurface::emissiveSource` (`textureFlags` bits 19–20) is what selects out of that. Also holds `rtx.dusklight.rampMaterials`, the two-colour ramp, which shares the same `D3DMATERIAL9` transport: the fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints rather than squeezing it into one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork can |
+| `src/dxvk/rtx_render/rtx_agx.{h,cpp}` | AgX look presets, the shared `TonemapOperator` enum, and the `finalizeWithACES` → operator migration. **Not Dusklight-specific** |
+| `src/dxvk/rtx_render/rtx_gt7.{h,cpp}` | GT7 setup, a transcription of Polyphony's `initializeAsSDR()`. The reference `.cpp` is kept verbatim at `shaders/rtx/pass/tonemap/reference/` — fix the port, never the reference. **Not Dusklight-specific** |
 | `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
 | `src/d3d9/d3d9_rtx_matrep.h` | the material translation report (`rtx.dusklight.matrep`), one guarded call at the tail of `D3D9Rtx::processTextures` |
 
@@ -219,11 +226,25 @@ second needs the exact MSVC layout.
   the trailing `padding[N]` adjusted. **This one is checkable locally** — copy
   the struct into a standalone file and compile it with a matching
   `static_assert` before pushing.
+- **Push constant budget** (`rtx_tone_mapping.cpp`, `rtx_local_tone_mapping.cpp`).
+  `MaxPushConstantSize` is 128 and `ToneMappingApplyToneMappingArgs` is now
+  **exactly 128**. Three `static_assert`s guard it. If one fires, move the
+  operator argument blocks into a uniform buffer — only one operator runs per
+  dispatch, so they are currently paying for each other's space. Do not shrink
+  an operator's parameters to squeeze past it. **Checkable locally** the same way
+  as `hashStructByMemory`.
 
 ## CI
 
 `.github/workflows/build.yml`, three Windows configs. `claude/**` is in the
-push triggers, so a branch gets built without opening a PR. The x86 bridge
+push triggers, so a branch gets built without opening a PR.
+
+**A red build is not automatically your code.** On 2026-08-06 two of the three
+configs failed with `Failed to resolve action download info: Service Unavailable`
+— GitHub infrastructure, dying before checkout, while the third config passed on
+the identical commit. Read the log before debugging. Re-running failed jobs needs
+the MCP `actions_run_trigger` tool; a plain REST POST 403s on a read-scoped
+token. The x86 bridge
 steps were removed on 2026-07-28 — Dusklight is 64-bit and loads `d3d9.dll`
 directly, so it never used the bridge.
 

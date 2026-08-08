@@ -571,6 +571,10 @@ design keeps the upstream diff to a checklist.
 > the API capture change, the grade pass and the Dusklight bloom were all absent
 > from the one list a rebase reads.
 >
+> **Extended 2026-08-07** with the tone mapping and auto exposure work, which is the first block
+> here that is *not* Dusklight-named. That block was assembled from the change itself rather than
+> by name matching, because name matching would have found none of it.
+>
 > **How this list was produced, and what that is worth:** every file below either
 > names `Dusklight`/`dusklight` in the working tree or was identified from the
 > change that owns it. It was *not* produced by diffing against an upstream tag,
@@ -636,6 +640,53 @@ row says otherwise.
 | `rtx_bloom.{h,cpp}` + `bloom.h` | the Dusklight bloom mode and its settings | `rtx.bloom.dusklight` |
 | `rtx_context.{h,cpp}` | `dispatchDusklightGrade`, and the bloom stage ordering | `DusklightGrade` enable |
 | `dxvk_objects.h`, `dxvk_device.cpp` | the two modules constructed and exposed as `metaDusklight*` | additive members |
+
+*Tone mapping and auto exposure (2026-08-06/07) — see `ToneMappingExposureNotes.md`:*
+
+> **This block is a different shape from the rows above and a rebase should expect that.** The
+> Dusklight work is concentrated in `dusklight_*` files with single guarded hooks into upstream.
+> This work is not: it **rewrites** two upstream passes outright and edits eight upstream shaders.
+> There is no `Dusklight` in most of these filenames, so the "names dusklight in the tree" heuristic
+> that produced the rest of this list would have missed all of it.
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_auto_exposure.{h,cpp}` | **rewritten.** Trimmed log-average metering, tanh soft limiter, asymmetric tau, deadband, cut snap, debug readback. Removed options stay registered as deprecated no-ops | none — replaces the upstream design wholesale |
+| `auto_exposure.comp.slang` | **rewritten** reduction; the mean/median modes are gone | same |
+| `auto_exposure_histogram.comp.slang` | metering weight applied to the count rather than the colour; fixed-point accumulation | same |
+| `rtx_tone_mapping.{h,cpp}` | `tonemapOperator` enum replaces `finalizeWithACES` (migrated on load); GT7 bypasses the dynamic tone curve; push-constant `static_assert` | additive plus one branch |
+| `rtx_local_tone_mapping.{h,cpp}` | same operator enum and migration; luminance pass gains the operator args | additive |
+| `rtx_context.cpp` | auto exposure now receives `resetHistory` on camera cut — upstream never passed it | one argument added |
+| `tonemap/tonemapping.h` | `AgxArgs`, `Gt7Args`, operator constants, histogram domain constants; `ToneMappingApplyToneMappingArgs` is now **exactly 128 bytes** | additive, but the budget is full |
+| `tonemapping_apply_tonemapping.comp.slang` | operator dispatch; GT7 replaces the dynamic curve | one branch |
+| `local_tonemap/local_tonemapping.h` | `LuminanceArgs` and `FinalCombineArgs` gain the operator args | additive |
+| `local_tonemap/local_tonemapping.slangh` | `localTonemapRuler()` — the fusion's ruler follows the selected operator | new function in an upstream header |
+| `local_tonemap/luminance.comp.slang` | three ruler calls; also fixes the missing `suppressBlackLevelClamp` | rewritten lines |
+| `local_tonemap/final_combine.comp.slang` | operator dispatch plus the ruler probe | two sites |
+| `ThirdPartyLicenses.txt` | AgX (Wrensch, MIT), three.js (MIT), GT7 (Polyphony Digital, MIT) | additive |
+| `RtxOptions.md` | generated; regenerate after any option change. It will conflict on a rebase and the resolution is to regenerate, never to merge by hand | generated |
+
+**New files (zero upstream churn) for this work:**
+- `src/dxvk/rtx_render/rtx_agx.{h,cpp}` — AgX look presets, the `TonemapOperator` enum, and the
+  `finalizeWithACES` migration helper shared by both tone mapping paths.
+- `src/dxvk/rtx_render/rtx_gt7.{h,cpp}` — GT7 setup, a transcription of the reference's
+  `initializeAsSDR()`/`initializeCurve()`.
+- `src/dxvk/shaders/rtx/pass/tonemap/agx.slangh`, `gt7.slangh` — the two operators.
+- `src/dxvk/shaders/rtx/pass/tonemap/reference/gt7_tone_mapping.cpp` — Polyphony's GT7 sample
+  implementation kept verbatim as the source of truth, plus `reference/README.md` recording its
+  provenance and how it was verified. **Not built**; meson lists sources explicitly and
+  `compile_shaders.py` only walks `.slang`. Never edit it to fix a port bug - fix the port.
+- `documentation/ToneMappingExposureNotes.md` — six defects (five of them upstream), the design
+  decisions and their measurements.
+
+**Three things a rebase should check first here:**
+1. `ToneMappingApplyToneMappingArgs` is exactly at the 128-byte push-constant limit. Three
+   `static_assert`s guard it. If upstream adds a field to that struct, the fix is to move the
+   operator argument blocks into a uniform buffer, not to shrink them.
+2. The operator enum is mirrored in two places — `dxvk::TonemapOperator` in `rtx_agx.h` and the
+   `tonemapOperator*` constants in `tonemapping.h` — with `static_assert`s tying them together.
+3. `rtx.autoExposure` deprecated options must stay registered. Deleting them makes existing
+   `rtx.conf` files log unknown-option noise.
 
 Rule for every guarded hook: **one branch, no reformatting of surrounding code,
 and the guarded path calls into our module rather than inlining logic.** A
