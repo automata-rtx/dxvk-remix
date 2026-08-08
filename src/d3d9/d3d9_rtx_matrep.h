@@ -44,6 +44,7 @@
 #include "../dxvk/rtx_render/rtx_dusklight_game.h"
 #include "../util/util_string.h"
 
+#include <string>
 #include <unordered_set>
 
 namespace dxvk {
@@ -181,7 +182,24 @@ namespace dxvk {
       uint8_t projected = 0;
       TciClass tci = TciClass::PassThru;
       TexGenMode texgen = TexGenMode::None;
+      // The divisor row itself, straight from the game's matrix. Printed for projected
+      // stages because the encoding that carries it is lossy in exactly one respect - it
+      // drops the w coefficient by dividing through - and a log that only says "projected"
+      // cannot distinguish an encoder producing (0, 0, -1, 0) from one producing rubbish.
+      // Raw rather than encoded: the encoding is deterministic from this, and this is the
+      // thing that can be checked against what C_MTXLightPerspective ought to have built.
+      float divisorRow[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     };
+
+    // Empty for a stage that is not projected, so the field costs nothing on the vast
+    // majority of lines.
+    inline std::string divisorRowText(const StageXform& x) {
+      if (x.projected == 0) {
+        return std::string();
+      }
+      return str::format(" projRow=(", x.divisorRow[0], ",", x.divisorRow[1], ",",
+                         x.divisorRow[2], ",", x.divisorRow[3], ")");
+    }
 
     inline const char* opName(DxvkRtTextureOperation op) {
       switch (op) {
@@ -259,6 +277,11 @@ namespace dxvk {
         // mat_p->change()), so the same texture legitimately arrives as two
         // different materials. Both states are bounded, so this cannot multiply
         // the report the way a continuous value like tFactor would.
+        //
+        // atOp is forced to zero while the test is disabled. A disabled compare
+        // decides nothing, and keying on it split one material into two lines
+        // that printed identically - which is worse than not reporting it, since
+        // the reader has no way to see why the two differ.
         uint8_t atEnabled, atOp;
         uint8_t pad[1];
       };
@@ -281,7 +304,7 @@ namespace dxvk {
       shape.tci = static_cast<uint8_t>(x.tci);
       shape.texgen = static_cast<uint8_t>(x.texgen);
       shape.atEnabled = m.alphaTestEnabled ? 1u : 0u;
-      shape.atOp = static_cast<uint8_t>(m.alphaTestCompareOp);
+      shape.atOp = m.alphaTestEnabled ? static_cast<uint8_t>(m.alphaTestCompareOp) : 0u;
       return XXH3_64bits(&shape, sizeof(shape));
     }
 

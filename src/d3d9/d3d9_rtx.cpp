@@ -1183,6 +1183,17 @@ namespace dxvk {
         }
 
         xform.texgen = m_activeDrawCallState.getTransformData().texgenMode;
+
+        // The divisor row, in the same indexing the surface encoder uses: shader row r,
+        // column c is textureTransform.data[c][r], and the divisor is the last output
+        // element. Only meaningful when projected, which is the only case it is printed in.
+        if (xform.projected != 0 && xform.elementCount >= 3 && xform.elementCount <= 4) {
+          const Matrix4& transform = m_activeDrawCallState.getTransformData().textureTransform;
+          const size_t divisorRow = static_cast<size_t>(xform.elementCount) - 1;
+          for (size_t column = 0; column < 4; ++column) {
+            xform.divisorRow[column] = transform.data[column][divisorRow];
+          }
+        }
       }
 
       // Keyed on the reconstruction *shape* -- texture, ops, arg sources and the
@@ -1227,9 +1238,13 @@ namespace dxvk {
           " proj=", static_cast<uint32_t>(xform.projected),
           " tci=", matrep::tciName(xform.tci),
           " texgen=", matrep::texgenName(xform.texgen),
-          // Swapped per-frame by dKy_bg_MAxx_proc on the water-in fog materials.
+          // Swapped per-frame by dKy_bg_MAxx_proc on the water-in fog materials. The
+          // compare op is printed as well as keyed on: without it two lines that differ
+          // only there print identically and look like a duplicate report.
           " alphaTest=", mat.alphaTestEnabled,
+          " alphaOp=", static_cast<uint32_t>(mat.alphaTestCompareOp),
           " alphaRef=", static_cast<uint32_t>(mat.alphaTestReferenceValue),
+          matrep::divisorRowText(xform),
           " albedo=\"", matrep::albedoExpression(mat), "\""));
       }
     }
