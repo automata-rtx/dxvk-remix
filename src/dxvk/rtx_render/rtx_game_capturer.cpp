@@ -230,9 +230,16 @@ namespace dxvk {
     if (m_pCap->bCaptureInstances) {
       captureCamera();
       captureLights();
-      captureSkyDomeLight(ctx);
     }
     captureInstances(ctx);
+    // After captureInstances, not before: that is where a sky probe gets baked from sky-camera
+    // geometry, and the probe is the better source when the game draws one. Running the dome-light
+    // fallback second lets geometry win within a frame. The choice is still made on the first frame
+    // either source is available, so a game that has both but shows its sky geometry late would
+    // latch the dome light - not a case that exists here, where there is no sky geometry at all.
+    if (m_pCap->bCaptureInstances) {
+      captureSkyDomeLight(ctx);
+    }
     ++m_pCap->numFramesCaptured;
     Logger::debug("[GameCapturer][" + m_pCap->idStr + "] End frame capture");
   }
