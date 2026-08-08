@@ -1,0 +1,177 @@
+/*
+* Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// Dusklight water.
+//
+// Twilight Princess draws water as several stacked materials rather than one:
+// dKy_bg_MAxx_proc (dusklight-ao d_kankyo.cpp) dispatches on the J3D material
+// name and gives MA06 the murky body, MA09 the shine surface, MA02/MA10 a
+// projected reflection layer, and MA00/01/04/16 the water-in fog. None of that
+// reaches Remix on its own, so every one of those layers fell through
+// determineMaterialData's last line to as<OpaqueMaterialData>() and became a
+// rough white-ish dielectric. Stacked and alpha blended, that is the milky
+// sheet.
+//
+// Two things make it white rather than merely wrong. The layers' albedo is a
+// pure texture pass-through, and several of them sample an EFB copy that aurora
+// could not produce - a depth copy, or one whose StretchRect failed - for which
+// it substitutes a 1x1 texture of 0x00FFFFFF (aurora-ao dx9_texture.cpp,
+// create_placeholder). White is neutral for a modulate consumer, which is what
+// that placeholder was chosen for, and maximally wrong for a pass-through.
+//
+// So water is not fixed by correcting its albedo. It is fixed by not being an
+// opaque material at all: a translucent material's look comes from its
+// transmittance and index of refraction, and the albedo those layers could not
+// supply stops being consulted.
+//
+// The game marks its own water draws by material name and carries the fact
+// per-draw through the D3DMATERIAL9 side channel, which is section 1's
+// "translate, don't tag" - a texture hash list would be wrong the moment the
+// game reused a water texture elsewhere, and this game reuses textures
+// constantly. Marking by name also survives the water moving: dungeon water
+// levels rise and fall, and the material's identity does not change when they
+// do.
+//
+// Every constant here is an option rather than a literal. None of them can be
+// derived - the right transmittance distance depends on the game's unit scale
+// against a path traced image - so they need to be tunable while the game runs.
+
+#include "rtx_option.h"
+#include "rtx_materials.h"
+#include "../../util/log/log.h"
+#include "../../util/util_string.h"
+
+#include <unordered_set>
+
+namespace dxvk {
+
+  struct DusklightWater {
+    friend class ImGUI;
+
+    RTX_OPTION("rtx.dusklight.water", bool, enable, true,
+               "Treat draws the game marks as water as a translucent material rather than an opaque one.\n"
+               "Off returns water to the legacy opaque fallback, which is where the milky white sheet comes from - "
+               "useful only for comparison. Requires a game build that marks its water; a game that does not simply "
+               "never sets the flag and nothing here applies.");
+
+    RTX_OPTION("rtx.dusklight.water", float, refractiveIndex, 1.33f,
+               "Index of refraction for water. 1.33 is water's measured value at visible wavelengths.\n"
+               "Remix clamps translucent IoR to the range 1 to 3.");
+
+    RTX_OPTION("rtx.dusklight.water", Vector3, transmittanceColor, Vector3(0.42f, 0.70f, 0.75f),
+               "What white light becomes after travelling transmittanceMeasurementDistance through the water.\n"
+               "This is the whole of water's colour under a path tracer: shallow water shows almost none of it and "
+               "deep water shows all of it, which is the depth tinting a rasterizer had to fake. Needs tuning against "
+               "the image together with the distance below - the pair is what sets how quickly water reads as deep.");
+
+    RTX_OPTION("rtx.dusklight.water", float, transmittanceMeasurementDistance, 200.0f,
+               "The distance, in the game's units, over which transmittanceColor is reached.\n"
+               "Unverified against this game's scale: it is a starting value, not a measurement. Smaller makes water "
+               "reach its full colour sooner and so look murkier; larger makes it clearer. Tune this before "
+               "transmittanceColor - most of what reads as wrong is usually this rather than the colour.");
+
+    RTX_OPTION("rtx.dusklight.water", bool, thinWalled, false,
+               "Treat water surfaces as a thin sheet rather than the boundary of a volume.\n"
+               "Off, because water is a volume and the depth tinting above depends on light travelling through it. On "
+               "is for surfaces that really are a film, and makes the transmittance distance nearly irrelevant.");
+
+    RTX_OPTION("rtx.dusklight.water", float, thinWallThickness, 1.0f,
+               "Sheet thickness used when thinWalled is on. Ignored otherwise.");
+
+    RTX_OPTION("rtx.dusklight.water", bool, log, true,
+               "Log one line per distinct water material the game marks.\n"
+               "This is what tells apart 'the game is not marking water' from 'water is marked and still looks wrong', "
+               "which read identically in a picture. Bounded at 64 distinct materials.");
+
+    static constexpr size_t kMaxLoggedMaterials = 64;
+  };
+
+  namespace dusklightWater {
+
+    // The game's own answer, carried per draw. Aurora ships it in an otherwise
+    // unused component of the D3DMATERIAL9 side channel it already uses for
+    // self-illumination and the two-colour ramp; the field map lives in
+    // aurora-ao lib/dx9/dx9_internal.hpp, set_remix_material.
+    //
+    // Note this is deliberately not a texture hash test. The same water texture
+    // appears on non-water draws in this game, and the same water appears with
+    // different textures as the level's water rises.
+    inline bool isWater(const LegacyMaterialData& mat) {
+      return DusklightWater::enable() && mat.getLegacyMaterial().Ambient.g >= 0.5f;
+    }
+
+    // Water as a translucent material.
+    //
+    // Note what is deliberately absent: no albedo, no transmittance texture. A
+    // translucent material's colour is its transmittance, and the game's own
+    // water textures are the layers that arrive white. Leaving them out is the
+    // point rather than an omission - and a replacement authored against the
+    // draw's texture hash still wins, because getReplacementMaterial is
+    // consulted before this is ever reached.
+    inline TranslucentMaterialData makeMaterial(const LegacyMaterialData& mat) {
+      TranslucentMaterialData water;
+
+      // The game's own sampler, so a replacement's wrap and filter modes match
+      // what the draw asked for.
+      if (mat.getSampler().ptr()) {
+        water.setSamplerOverride(mat.getSampler());
+      }
+
+      water.setRefractiveIndex(DusklightWater::refractiveIndex());
+      water.setTransmittanceColor(DusklightWater::transmittanceColor());
+      water.setTransmittanceMeasurementDistance(DusklightWater::transmittanceMeasurementDistance());
+      water.setEnableThinWalled(DusklightWater::thinWalled());
+      water.setThinWallThickness(DusklightWater::thinWallThickness());
+
+      // The diffuse layer is a painted-on opaque coat over the surface. It is
+      // the one switch here that would put the milky sheet straight back.
+      water.setEnableDiffuseLayer(false);
+      water.setEnableEmission(false);
+
+      return water;
+    }
+
+    // True the first time this material is seen. Bounded, and says so once when
+    // it stops reporting, so a truncated log is never mistaken for a short one.
+    inline bool shouldLog(XXH64_hash_t textureHash) {
+      static std::unordered_set<XXH64_hash_t> s_seen;
+      static bool s_truncated = false;
+
+      if (!DusklightWater::log() || s_seen.count(textureHash) != 0) {
+        return false;
+      }
+      if (s_seen.size() >= DusklightWater::kMaxLoggedMaterials) {
+        if (!s_truncated) {
+          s_truncated = true;
+          Logger::info(str::format("dusklight.water.trunc cap=", DusklightWater::kMaxLoggedMaterials,
+                                   " - further distinct water materials not reported"));
+        }
+        return false;
+      }
+      s_seen.insert(textureHash);
+      return true;
+    }
+
+  } // namespace dusklightWater
+
+} // namespace dxvk

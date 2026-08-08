@@ -49,6 +49,7 @@
 #include "rtx_render/rtx_dusklight_env.h"
 #include "rtx_render/rtx_dusklight_game.h"
 #include "rtx_render/rtx_dusklight_emissive.h"
+#include "rtx_render/rtx_dusklight_water.h"
 #include "../../d3d9/d3d9_rtx_matrep.h"
 #include "rtx_render/rtx_global_volumetrics.h"
 #include "rtx_render/rtx_bloom.h"
@@ -3042,7 +3043,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 6;
+    constexpr int kRequiredProtocol = 7;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -3051,7 +3052,7 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Connected, but the game build is older than this build of Remix: it does not read these "
         "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 6 or newer.");
+        "accurate. Update the game to a build that reports protocol 7 or newer.");
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "
@@ -3202,6 +3203,30 @@ namespace dxvk {
         common->metaBloom().showDusklightImguiSettings();
         ImGui::EndDisabled();
       }
+    }
+
+    if (RemixGui::CollapsingHeader("Water", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Translucent Water", &DusklightWater::enableObject());
+      ImGui::TextWrapped(
+        "The game marks its own water draws by material name and carries that per draw. Without this "
+        "they fall through to the legacy opaque material and become a rough white sheet - several of "
+        "those layers sample a framebuffer copy the backend could not produce, and its stand-in is "
+        "white, which a pass-through material shows literally. A translucent material takes its "
+        "colour from transmittance instead, so that albedo stops being consulted.");
+      ImGui::BeginDisabled(!DusklightWater::enable());
+      RemixGui::DragFloat("Index of Refraction", &DusklightWater::refractiveIndexObject(), 0.005f, 1.0f, 3.0f);
+      RemixGui::ColorEdit3("Transmittance Color", &DusklightWater::transmittanceColorObject());
+      RemixGui::DragFloat("Transmittance Distance", &DusklightWater::transmittanceMeasurementDistanceObject(), 1.0f, 0.001f, 65504.0f);
+      ImGui::TextWrapped(
+        "Distance is the one to tune first: it sets how far light travels before reaching the colour "
+        "above, so it decides how quickly water reads as deep. The default is a starting value in the "
+        "game's units, not a measurement.");
+      RemixGui::Checkbox("Thin Walled", &DusklightWater::thinWalledObject());
+      RemixGui::DragFloat("Thin Wall Thickness", &DusklightWater::thinWallThicknessObject(), 0.01f, 0.001f, 65504.0f);
+      RemixGui::Checkbox("Log Water Materials", &DusklightWater::logObject());
+      ImGui::EndDisabled();
+      ImGui::Unindent();
     }
 
     if (RemixGui::CollapsingHeader("Ambient Grade", collapsingHeaderClosedFlags)) {

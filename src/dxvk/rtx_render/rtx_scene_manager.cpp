@@ -45,6 +45,7 @@
 #include "rtx_matrix_helpers.h"
 #include "dxvk_scoped_annotation.h"
 #include "rtx_lights_data.h"
+#include "rtx_dusklight_water.h"
 #include "rtx_light_utils.h"
 
 #include "../util/util_global_time.h"
@@ -806,6 +807,27 @@ namespace dxvk {
       MaterialData renderMaterialData = input.getMaterialData().as<RayPortalMaterialData>();
       renderMaterialData.getRayPortalMaterialData().setRayPortalIndex(rayPortalTextureIndex);
       return renderMaterialData;
+    }
+
+    // Dusklight water. Checked after replacements, so a hand-authored material for a water
+    // texture still wins - which is how a normal map gets onto the surface - and before the
+    // legacy conversion below, which is the line that made every water layer an opaque
+    // white-ish dielectric. See rtx_dusklight_water.h.
+    if (dusklightWater::isWater(input.getMaterialData())) {
+      if (dusklightWater::shouldLog(input.getMaterialData().getHash())) {
+        Logger::info(str::format(
+          "dusklight.water tex0hash=", std::hex, input.getMaterialData().getHash(), std::dec,
+          " ior=", DusklightWater::refractiveIndex(),
+          " dist=", DusklightWater::transmittanceMeasurementDistance(),
+          " thinWalled=", DusklightWater::thinWalled(),
+          // Whether this draw carries a texture transform at all, which is what separates the
+          // scrolling ripple layers from still water. Reported rather than acted on: every
+          // water layer is treated the same, and this only says which is which.
+          " texXform=", static_cast<uint32_t>(input.getTransformData().texcoordElementCount),
+          " proj=", input.getTransformData().texcoordProjected));
+      }
+
+      return dusklightWater::makeMaterial(input.getMaterialData());
     }
 
     // Standard legacy material conversion
