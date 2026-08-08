@@ -50,6 +50,8 @@
 #include "../../lssusd/usd_include_end.h"
 
 #include "rtx_matrix_helpers.h"
+
+#include <algorithm>
 #include "rtx_lights.h"
 
 #include "../util/util_global_time.h"
@@ -1188,6 +1190,36 @@ namespace dxvk {
     if(correctBakedTransforms()) {
       exportPrep.stageOrigin = stageOriginCalc.calc();
     }
+
+    // How fragmented the capture is, and how much of a skeleton each piece got. One D3D9 draw is
+    // one mesh here and one USD skeleton is written per mesh, so a character the game draws as
+    // forty shape packets arrives as forty meshes and forty skeletons - and a packet that
+    // references a single matrix arrives with a single bone. That is the shape of the problem, and
+    // until now the only way to see it was to open the capture and count.
+    //
+    // The bone counts also say which of the two skinning paths a model came down: an envelope model
+    // carries its whole joint palette on every draw (large, equal counts), while a matrix-palette
+    // model carries only the joints that packet touched (mostly 1).
+    std::array<uint32_t, 4> boneBuckets = {}; // 1, 2-4, 5-16, 17+
+    uint32_t skinnedMeshes = 0;
+    uint32_t maxBones = 0;
+    for (const auto& [hash, mesh] : exportPrep.meshes) {
+      if (mesh.numBones == 0) {
+        continue;
+      }
+      ++skinnedMeshes;
+      maxBones = std::max(maxBones, mesh.numBones);
+      const size_t bucket = mesh.numBones == 1 ? 0 : (mesh.numBones <= 4 ? 1 : (mesh.numBones <= 16 ? 2 : 3));
+      ++boneBuckets[bucket];
+    }
+    Logger::info(str::format(
+      "capture.geometry meshes=", exportPrep.meshes.size(),
+      " skinnedMeshes=", skinnedMeshes,
+      " bones=[1:", boneBuckets[0], " 2-4:", boneBuckets[1],
+      " 5-16:", boneBuckets[2], " 17+:", boneBuckets[3], "]",
+      " maxBones=", maxBones,
+      "  (one mesh and one skeleton per draw call; joint names and bind transforms are synthesised"
+      " from vertex centroids, not the game's joint tree)"));
   }
 
   void GameCapturer::prepExportInstances(const Capture& cap, lss::Export& exportPrep) {

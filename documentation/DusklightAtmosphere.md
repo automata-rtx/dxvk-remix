@@ -697,6 +697,28 @@ is also how to re-check it after any future change.
 - `documentation/ToneMappingExposureNotes.md` — six defects (five of them upstream), the design
   decisions and their measurements.
 
+*Scene capture — what a capture contains (2026-08-08), see `dusklight-ao/docs/remix-open-issues.md` issue 14:*
+
+> **Another block that is not Dusklight-named**, for the same reason as the tone mapping one above:
+> two of the four changes here are upstream defects that happen to be fatal for this game, and a
+> name-matching sweep of the tree would find none of it.
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_light_manager.{h,cpp}` | a snapshot of the frame's active API lights and dome light, taken in `prepareSceneData` immediately before the active lists are reset, plus the two accessors that read it. Needed because `GameCapturer::step` runs after that reset | additive; costs one vector copy per frame |
+| `rtx_game_capturer.cpp` `captureLights` | walks the API light snapshot as well as the two tables upstream walks | unconditional |
+| `rtx_game_capturer.cpp` `captureDistantLight` | **upstream bug fix** — tested `sphereLights` where it meant `distantLights`, which zeroed a captured sun's intensity across a multi-frame capture. Carry-back candidate | unconditional |
+| `rtx_game_capturer.cpp` `captureSkyDomeLight` | new: writes the active API dome light's texture as the capture's sky when no sky probe was baked from sky-camera geometry | `rtx.capture.captureApiDomeLightAsSky` |
+| `rtx_game_capturer.cpp` `captureMaterial` | dumps the texrep-substituted albedo where one is fully resident, instead of the game's own. Material names and hashes are unchanged | `rtx.dusklight.texrep.captureReplaced` |
+| `rtx_game_capturer.cpp` | three bounded summary lines: `capture.lights`, `capture.texrep`, `capture.geometry` | unconditional |
+| `game_exporter.cpp` `exportSky` | a dome-light branch: orients from the light's own transform plus `rtx.capture.skyDomeYawDegrees`, and carries the light's radiance onto the USD dome light | `Export::bSkyFromDomeLight` |
+| `game_exporter_types.h` | three fields on `Export` for the above | additive |
+| `rtx_dusklight_texrep.{h,cpp}` | `resolveAlbedoForCapture` — same lookup as `resolveAlbedo`, but counter-free and insists on the top mip | new function in a fork-owned file |
+
+The three `Logger::info` summaries are the part most likely to be dropped silently in a rebase,
+and they are the part that makes the rest checkable — a capture that quietly fell back to the
+game's textures or came out with no sky is otherwise indistinguishable from one that did not.
+
 **Three things a rebase should check first here:**
 1. `ToneMappingApplyToneMappingArgs` is exactly at the 128-byte push-constant limit. Three
    `static_assert`s guard it. If upstream adds a field to that struct, the fix is to move the
