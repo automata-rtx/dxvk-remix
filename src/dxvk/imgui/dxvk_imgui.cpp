@@ -3153,11 +3153,12 @@ namespace dxvk {
       RemixGui::Checkbox("Hide Epona Dash Effect", &DusklightGame::hideDashEffectObject());
       ImGui::TextWrapped(
         "The dash speed effect is placed in front of the camera rather than in the world, so Remix "
-        "captures it as a translucent wall travelling with the view. On by default, and that default "
-        "is a hypothesis rather than a measurement: it is the leading suspect for water changing "
-        "appearance while dashing, but the cause is unconfirmed. Turn it off, enable the Dusklight "
-        "material report and compare the water's matrep.rmx lines across a dash - if the material "
-        "shape still changes, the dash effect was not the cause.");
+        "captures it as a translucent wall travelling with the view. Off by default: it shipped on as a "
+        "suspect for water changing appearance while dashing, and the log refuted that - the water still "
+        "changed with the effect suppressed, and material changes were not clustered on the dashes. The "
+        "real cause was the projective texture transform on the water's reflection layer, now "
+        "implemented. Still worth enabling to see the scene without a translucent quad tracking the "
+        "camera, which is its own problem for a path tracer.");
       RemixGui::Checkbox("Game's Blob Shadows", &DusklightGame::blobShadowsObject());
       ImGui::TextWrapped(
         "Blob shadows are the flat discs the game paints under rupees, hearts and pots. Off by "

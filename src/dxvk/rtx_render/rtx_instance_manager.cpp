@@ -1210,6 +1210,8 @@ namespace dxvk {
         }
 
         currentInstance.surface.textureTransform = drawCall.getTransformData().textureTransform;
+        currentInstance.surface.texcoordElementCount = drawCall.getTransformData().texcoordElementCount;
+        currentInstance.surface.isTexcoordProjected = drawCall.getTransformData().texcoordProjected;
 
         currentInstance.surface.isStatic = !(hasTransformChanged || hasPreviousPositions) || currentInstance.m_materialType == MaterialDataType::RayPortal;
 

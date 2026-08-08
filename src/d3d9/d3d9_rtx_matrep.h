@@ -315,7 +315,12 @@ namespace dxvk {
         " legacyRoughness=", LegacyMaterialDefaults::roughnessConstant(),
         " legacyMetallic=", LegacyMaterialDefaults::metallicConstant(),
         " legacyAlbedoTex=", LegacyMaterialDefaults::useAlbedoTextureIfPresent(),
-        " hideDashEffect=", DusklightGame::hideDashEffect()));
+        " hideDashEffect=", DusklightGame::hideDashEffect(),
+        // Capability, not a setting. A "proj=1" line means something different either side
+        // of the build that implemented the projective divide - before it, the projection
+        // was detected and discarded - so a log has to say which it came from rather than
+        // leaving the reader to date it from the filename.
+        " projectiveTexcoords=1"));
     }
 
     // Where in the run something happened. Emitted only when a tracked state changes, so
