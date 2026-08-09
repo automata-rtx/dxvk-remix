@@ -832,9 +832,19 @@ namespace dxvk {
           " thinWalled=", DusklightWater::thinWalled(),
           // Whether this draw carries a texture transform at all, which is what separates the
           // scrolling ripple layers from still water. Reported rather than acted on: every
-          // water layer is treated the same, and this only says which is which.
+          // water surface is treated the same, and this only says which is which.
           " texXform=", static_cast<uint32_t>(input.getTransformData().texcoordElementCount),
-          " proj=", input.getTransformData().texcoordProjected));
+          " proj=", input.getTransformData().texcoordProjected,
+          // The open question after 2026-08-08 23:47: a body of water arrives as more than
+          // one surface draw, and only one of them should be the refracting interface. The
+          // projected layer is handled by name; whether the remaining base and scrolling
+          // passes can be told apart the same way, or need the blend state, is unanswered.
+          // These two are what would answer it - an additive pass is light over a surface,
+          // not a second surface - so they are reported before anything is built on them.
+          " blend=", input.getMaterialData().blendMode.enableBlending,
+          " blendSrcDst=", static_cast<uint32_t>(input.getMaterialData().blendMode.colorSrcFactor),
+          ",", static_cast<uint32_t>(input.getMaterialData().blendMode.colorDstFactor),
+          " alphaTest=", input.getMaterialData().alphaTestEnabled));
       }
 
       return dusklightWater::makeMaterial(input.getMaterialData());

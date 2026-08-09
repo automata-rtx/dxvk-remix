@@ -3224,6 +3224,13 @@ namespace dxvk {
         "game's units, not a measurement.");
       RemixGui::Checkbox("Thin Walled", &DusklightWater::thinWalledObject());
       RemixGui::DragFloat("Thin Wall Thickness", &DusklightWater::thinWallThicknessObject(), 0.01f, 0.001f, 65504.0f);
+      RemixGui::Checkbox("Hide Projected Reflection Layer", &DusklightWater::hideProjectedLayerObject());
+      ImGui::TextWrapped(
+        "A body of water is not one draw. Besides the surface, the game paints a fake reflection "
+        "over it (MA02/MA10) using a perspective matrix built from the live camera. Remix traces "
+        "that reflection for real, so the painted one is a screen-space image on top of a correct "
+        "one - and once water is translucent it is also a second refracting sheet just above the "
+        "first, which is what stops water reading as one continuous surface. Off shows it again.");
       RemixGui::Checkbox("Log Water Materials", &DusklightWater::logObject());
       ImGui::EndDisabled();
       ImGui::Unindent();

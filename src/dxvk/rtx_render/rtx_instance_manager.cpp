@@ -34,6 +34,7 @@
 #include "rtx_ray_portal_manager.h"
 #include "rtx_terrain_baker.h"
 #include "rtx_dusklight_emissive.h"
+#include "rtx_dusklight_water.h"
 
 #include "../d3d9/d3d9_state.h"
 #include "rtx_matrix_helpers.h"
@@ -1009,6 +1010,25 @@ namespace dxvk {
     // Sky mesh and material are only good for capture and replacement purposes.
     if (drawCall.cameraType == CameraType::Sky) {
       currentInstance.m_isHidden = true;
+    }
+
+    // Dusklight: drop the game's camera-projected water overlay.
+    //
+    // MA02/MA10 are not the water surface - dKy_bg_MAxx_proc installs a perspective matrix
+    // built from the live camera as their texture matrix, making them a painted reflection
+    // over the water. Remix traces that reflection for real, so keeping this layer paints a
+    // screen-space image on top of a correct one, and (once water became translucent) added
+    // a second refracting interface just above the first. Same reasoning as the blob
+    // shadows. See rtx_dusklight_water.h.
+    if (DusklightWater::hideProjectedLayer() &&
+        dusklightWater::isProjectedOverlay(drawCall.getMaterialData())) {
+      currentInstance.m_isHidden = true;
+
+      if (dusklightWater::shouldLogProjected(drawCall.getMaterialData().getHash())) {
+        Logger::info(str::format(
+          "dusklight.water.projected tex0hash=", std::hex, drawCall.getMaterialData().getHash(),
+          std::dec, " hidden=1 - camera-projected water overlay (MA02/MA10), not the surface"));
+      }
     }
 
     // Snapshot whether this is a brand-new camera before the call to preserveInstance() at the

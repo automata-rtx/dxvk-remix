@@ -98,6 +98,15 @@ namespace dxvk {
     RTX_OPTION("rtx.dusklight.water", float, thinWallThickness, 1.0f,
                "Sheet thickness used when thinWalled is on. Ignored otherwise.");
 
+    RTX_OPTION("rtx.dusklight.water", bool, hideProjectedLayer, true,
+               "Drop the game's camera-projected water overlay (MA02/MA10).\n"
+               "Twilight Princess paints a fake reflection over its water using a perspective\n"
+               "matrix built from the live camera. Remix traces that reflection for real off the\n"
+               "water surface, so the painted one is redundant - and left in the scene it is a\n"
+               "second refracting interface a few units above the first, carrying a screen-space\n"
+               "image, which is what stops water reading as one continuous surface.\n"
+               "Turn off to see the layer again; the same reasoning retired the blob shadows.");
+
     RTX_OPTION("rtx.dusklight.water", bool, log, true,
                "Log one line per distinct water material the game marks.\n"
                "This is what tells apart 'the game is not marking water' from 'water is marked and still looks wrong', "
@@ -118,6 +127,13 @@ namespace dxvk {
     // different textures as the level's water rises.
     inline bool isWater(const LegacyMaterialData& mat) {
       return DusklightWater::enable() && mat.getLegacyMaterial().Ambient.g >= 0.5f;
+    }
+
+    // The camera-projected overlay drawn over a water surface - MA02/MA10, which
+    // dKy_bg_MAxx_proc (d_kankyo.cpp:11479) hands a C_MTXLightPerspective built from the
+    // live camera fovy and aspect. Not the surface, and not something to refract through.
+    inline bool isProjectedOverlay(const LegacyMaterialData& mat) {
+      return DusklightWater::enable() && mat.getLegacyMaterial().Ambient.b >= 0.5f;
     }
 
     // Water as a translucent material.
@@ -187,6 +203,12 @@ namespace dxvk {
       static std::unordered_set<XXH64_hash_t> s_seen;
       static bool s_truncated = false;
       return shouldLogOnce(s_seen, s_truncated, "dusklight.water.replaced.trunc", textureHash);
+    }
+
+    inline bool shouldLogProjected(XXH64_hash_t textureHash) {
+      static std::unordered_set<XXH64_hash_t> s_seen;
+      static bool s_truncated = false;
+      return shouldLogOnce(s_seen, s_truncated, "dusklight.water.projected.trunc", textureHash);
     }
 
   } // namespace dusklightWater
