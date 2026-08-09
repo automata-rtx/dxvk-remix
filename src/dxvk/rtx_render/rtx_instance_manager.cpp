@@ -34,6 +34,7 @@
 #include "rtx_ray_portal_manager.h"
 #include "rtx_terrain_baker.h"
 #include "rtx_dusklight_emissive.h"
+#include "rtx_dusklight_skeleton.h"
 
 #include "../d3d9/d3d9_state.h"
 #include "rtx_matrix_helpers.h"
@@ -1066,7 +1067,26 @@ namespace dxvk {
         currentInstance.surface.tFactor = drawCall.getMaterialData().tFactor;
         currentInstance.surface.alphaState = alphaState;
         currentInstance.surface.isAnimatedWater = currentInstance.testCategoryFlags(InstanceCategories::AnimatedWater);
-        currentInstance.surface.associatedGeometryHash = drawCall.getHash(RtxOptions::geometryAssetHashRule());
+        // A character's draws report the group hash here, so the Geometry Hash debug view paints a
+        // whole body one colour instead of a patchwork. This field is identity, not geometry -
+        // rtx_materials.h calls it out as debug-view-only, it is written here and read only by the
+        // 16-bit fold the debug view colours by. Nothing keys on it: DrawCallCache buckets on
+        // TopologicalHash and matches on FullGeometryHash/material/bone hashes taken from the
+        // actual buffers, and the replacement lookup in submitDrawState computes its own hashes.
+        //
+        // So this merges *identity* at runtime while leaving geometry alone. That distinction is
+        // the one the first revision missed: it merged geometry in the capture, solved replacement
+        // binding through the group hash, and left the debug view showing a per-draw patchwork that
+        // looked identical whether the feature worked or was completely dead.
+        //
+        // Unbound draws keep their own hash on purpose - a character that is partly one colour and
+        // partly a patchwork is a draw the game did not publish an identity for, which is worth
+        // seeing rather than hiding.
+        const auto& skeletonBinding = drawCall.dusklightSkeletonBinding;
+        currentInstance.surface.associatedGeometryHash =
+          (DusklightSkeleton::enable() && skeletonBinding.isValid())
+            ? dusklightSkeleton::groupMeshHash(skeletonBinding.modelKey)
+            : drawCall.getHash(RtxOptions::geometryAssetHashRule());
         currentInstance.surface.isTextureFactorBlend = drawCall.getMaterialData().isTextureFactorBlend;
         // Dusklight two-colour ramp; see rtx_dusklight_emissive.h and
         // aurora-ao/docs/dx9/remix-material-interface.md §10.

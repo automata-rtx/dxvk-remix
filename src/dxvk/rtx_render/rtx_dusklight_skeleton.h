@@ -73,10 +73,12 @@ namespace dxvk {
   struct DusklightSkeleton {
     RTX_OPTION("rtx.dusklight.skeleton", bool, enable, true,
                "Use the character skeletons and model identity the game publishes.\n"
-               "Only the capture path reads them: with this on, a captured character is merged into one mesh per model\n"
-               "instance carrying the game's own joint tree, instead of one mesh and one invented skeleton per draw\n"
-               "call. Turning it off restores stock Remix capture behaviour exactly - nothing about what is rendered\n"
-               "changes either way.");
+               "With this on, a captured character is merged into one mesh per model instance carrying the game's own\n"
+               "joint tree, instead of one mesh and one invented skeleton per draw call; and every draw of that\n"
+               "character reports one shared identity to the Geometry Hash debug view, so a body paints as one colour\n"
+               "rather than a patchwork. That identity is a debug-view field only - what is rendered, how geometry is\n"
+               "cached, and which textures are tagged are all untouched. Turning it off restores stock Remix behaviour\n"
+               "exactly.");
     RTX_OPTION("rtx.dusklight.skeleton", bool, mergeCaptures, true,
                "Merge a model instance's draws into one captured mesh.\n"
                "Requires the skeletons above. Materials survive as USD GeomSubsets of the merged mesh, so a character\n"
