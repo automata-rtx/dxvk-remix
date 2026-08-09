@@ -50,6 +50,7 @@
 #include "rtx_render/rtx_dusklight_game.h"
 #include "rtx_render/rtx_dusklight_emissive.h"
 #include "../../d3d9/d3d9_rtx_matrep.h"
+#include "../rtx_render/rtx_dusklight_catrep.h"
 #include "rtx_render/rtx_global_volumetrics.h"
 #include "rtx_render/rtx_bloom.h"
 #include <functional>
@@ -3027,6 +3028,18 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Writes one matrep.rmx line per distinct reconstructed material. Pair it with the game's own "
         "matrep lines - see aurora-ao/docs/dx9/material-report.md.");
+      RemixGui::Separator();
+      if (ImGui::Button("Log Texture Category Report", ImVec2(-1, 0))) {
+        DusklightCatrep::catrepCommit.setDeferred(DusklightCatrep::catrepCommit() + 1);
+      }
+      ImGui::TextWrapped(
+        "Which textures actually received which categories - WorldUI, Particle, Decal, Ignore and the "
+        "rest - with a draw count each, busiest first.\n\n"
+        "This is the only place that information exists. A category is keyed on a hash this runtime "
+        "computes from the D3D9 texture, so the game and aurora are both blind to it, and rtx.conf "
+        "lists the hashes you TAGGED rather than the ones being drawn. Reading the config and inferring "
+        "which entry is responsible for a symptom produced a confidently wrong answer on 2026-08-09.\n\n"
+        "A category printed with a trailing ? was present on some draws of that texture and not others.");
       ImGui::Unindent();
     }
 
