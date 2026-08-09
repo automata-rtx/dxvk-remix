@@ -3234,6 +3234,15 @@ namespace dxvk {
         "this is an animated perturbation rather than real ripples - and that is the point, since "
         "it is the slot a replacement normal map lands in. Normal Intensity is the global "
         "rtx.translucentMaterial.normalIntensity and scales it.");
+      RemixGui::Checkbox("Apply To Replaced Materials", &DusklightWater::applyToReplacementsObject());
+      ImGui::TextWrapped(
+        "A capture cannot express water - it writes an albedo texture path and nothing else - so a "
+        "water draw captures as an OPAQUE material, and anything authored from that capture stays "
+        "opaque unless its type was changed by hand. Replaced and unreplaced draws on one lake then "
+        "render as two different kinds of surface, which is what large chunks with hard edges "
+        "between them look like. On, an opaque replacement on water keeps its authored normal map "
+        "and gets the water treatment around it; a replacement that is already translucent is left "
+        "completely alone.");
       RemixGui::Checkbox("Hide Projected Reflection Layer", &DusklightWater::hideProjectedLayerObject());
       ImGui::TextWrapped(
         "A body of water is not one draw. Besides the surface, the game paints a fake reflection "

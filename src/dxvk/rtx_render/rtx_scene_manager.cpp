@@ -791,14 +791,32 @@ namespace dxvk {
     // test if any direct material replacements exist
     MaterialData* pReplacementMaterial = m_pReplacer->getReplacementMaterial(input.getMaterialData().getHash());
     if (pReplacementMaterial != nullptr) {
-      // A replacement claiming a water draw is intended and is how a normal map gets onto
-      // the surface, but it is otherwise indistinguishable in the log from the water mark
-      // never arriving - so say which it was. See rtx_dusklight_water.h.
-      if (dusklightWater::isWater(input.getMaterialData()) &&
-          dusklightWater::shouldLogReplaced(input.getMaterialData().getHash())) {
-        Logger::info(str::format(
-          "dusklight.water.replaced tex0hash=", std::hex, input.getMaterialData().getHash(), std::dec,
-          " - marked water, but a replacement material won; rtx.dusklight.water.* does not apply here"));
+      // A water draw with a replacement authored over it. Worth its own handling, because
+      // a capture cannot express water: GameCapturer::captureMaterial writes an albedo
+      // texture path and nothing else, so a water draw captures as an OPAQUE material and
+      // anything built from that capture is opaque unless its type was changed by hand.
+      // Replaced and unreplaced draws on one lake then render as two different kinds of
+      // surface - large chunks, hard edges between them. See rtx_dusklight_water.h.
+      if (dusklightWater::isWater(input.getMaterialData())) {
+        const bool alreadyTranslucent =
+          pReplacementMaterial->getType() == MaterialDataType::Translucent;
+        const bool coerce = DusklightWater::applyToReplacements() && !alreadyTranslucent;
+
+        if (dusklightWater::shouldLogReplaced(input.getMaterialData().getHash())) {
+          Logger::info(str::format(
+            "dusklight.water.replaced tex0hash=", std::hex, input.getMaterialData().getHash(),
+            std::dec, " type=", dusklightWater::materialTypeName(pReplacementMaterial->getType()),
+            " coerced=", coerce,
+            coerce ? " - opaque replacement on water; kept its normal map, applied the water treatment"
+                   : (alreadyTranslucent
+                        ? " - already translucent, left alone"
+                        : " - left as authored (rtx.dusklight.water.applyToReplacements is off)")));
+        }
+
+        if (coerce) {
+          return MaterialData(dusklightWater::makeMaterialFromReplacement(input.getMaterialData(),
+                                                                         *pReplacementMaterial));
+        }
       }
 
       // Make a copy - dont modify the replacement data.

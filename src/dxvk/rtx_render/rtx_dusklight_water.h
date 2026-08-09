@@ -108,6 +108,17 @@ namespace dxvk {
                "the game's own scroll rate, in exactly the slot a replacement normal map goes into.\n"
                "Strength is rtx.translucentMaterial.normalIntensity.");
 
+    RTX_OPTION("rtx.dusklight.water", bool, applyToReplacements, true,
+               "Keep water translucent even where a replacement material was authored for it.\n"
+               "A capture cannot express water: GameCapturer::captureMaterial writes an albedo\n"
+               "texture path and nothing else, so every water draw captures as an OPAQUE material\n"
+               "and anything authored from that capture stays opaque unless its type is changed by\n"
+               "hand. Replaced and unreplaced draws on the same lake then render as two different\n"
+               "kinds of surface, which is what large chunks with hard cutoffs look like.\n"
+               "With this on, an opaque replacement on a water draw keeps its authored normal map\n"
+               "and gets the water treatment around it. A replacement that is ALREADY translucent\n"
+               "is left completely alone - that author meant it.");
+
     RTX_OPTION("rtx.dusklight.water", bool, hideProjectedLayer, true,
                "Drop the game's camera-projected water overlay (MA02/MA10).\n"
                "Twilight Princess paints a fake reflection over its water using a perspective\n"
@@ -238,6 +249,33 @@ namespace dxvk {
       static std::unordered_set<XXH64_hash_t> s_seen;
       static bool s_truncated = false;
       return shouldLogOnce(s_seen, s_truncated, "dusklight.water.replaced.trunc", textureHash);
+    }
+
+    // The authored normal map out of an opaque replacement, if it has one. That is the
+    // one thing worth keeping when a water draw's replacement is coerced back to water:
+    // its albedo is what makes water white, and its roughness/metallic mean nothing on a
+    // refracting surface, but the normal map is the ripple detail someone drew by hand.
+    inline TranslucentMaterialData makeMaterialFromReplacement(const LegacyMaterialData& mat,
+                                                               const MaterialData& replacement) {
+      TranslucentMaterialData water = makeMaterial(mat);
+
+      if (replacement.getType() == MaterialDataType::Opaque) {
+        const TextureRef& authoredNormal = replacement.getOpaqueMaterialData().getNormalTexture();
+        if (authoredNormal.isValid() && !authoredNormal.isImageEmpty()) {
+          water.getNormalTexture() = authoredNormal;
+        }
+      }
+
+      return water;
+    }
+
+    inline const char* materialTypeName(MaterialDataType type) {
+      switch (type) {
+      case MaterialDataType::Opaque:      return "opaque";
+      case MaterialDataType::Translucent: return "translucent";
+      case MaterialDataType::RayPortal:   return "rayportal";
+      default:                            return "unknown";
+      }
     }
 
     inline bool shouldLogProjected(XXH64_hash_t textureHash) {
