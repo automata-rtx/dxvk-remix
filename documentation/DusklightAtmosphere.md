@@ -797,13 +797,26 @@ without its bytes entering D3D9, so texture tagging is unchanged. One known
 characteristic: a long first-launch warm-up (§12.1 below). Design and failure
 modes live in `aurora-ao/docs/dx9/texture-replacements.md`.
 
-**Still untested, as of 2026-08-04:** the ambient grade — which should stay
+**Still untested, as of 2026-08-09:** the ambient grade — which should stay
 untested until the defect below is fixed, because grading on a wrongly-lit sky
 is tuning against a moving target — and everything built since 2026-07-29 and
 never run: the `skyFogMode` treatments below and the painted moon (§13.1). The
 2026-08-04/05 material work (two-colour ramps, per-draw vertex colour, and the
 self-illumination rule) is likewise CI-green and unrun; it is tracked in
 `aurora-ao/docs/dx9/remix-material-interface.md` §9–§10, not here.
+
+**Also unrun, and larger than anything above: the whole 2026-08-08/09 scene
+capture and character merge.** API lights and the sky dome in captures, HD
+textures in captures, one merged mesh per character with the game's real
+armature, and the runtime replacement binding. All CI-green; **no capture has
+been taken in game since any of it landed**, and the first build of the merge
+crashed on launch (fixed 2026-08-09, also unrun). Two things are known-open
+rather than merely untested: the captured sky's azimuth is derived rather than
+verified (`rtx.capture.skyDomeYawDegrees`), and a merged character's vertices
+are in two spaces so its *rest* pose is wrong while its posed shape is right.
+Both, and the test procedure, are in
+`dusklight-ao/docs/remix-open-issues.md` issues 14 and 15 and
+`dusklight-ao/docs/remix-test-playbook.md` §0g–0i.
 
 `disableFrustumCulling` **is** tested: it works and it visibly helps with
 light leakage.
