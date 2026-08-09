@@ -98,6 +98,16 @@ namespace dxvk {
     RTX_OPTION("rtx.dusklight.water", float, thinWallThickness, 1.0f,
                "Sheet thickness used when thinWalled is on. Ignored otherwise.");
 
+    RTX_OPTION("rtx.dusklight.water", bool, surfaceDetailFromGameTexture, true,
+               "Bind the draw's own texture as the water's normal map, so the game's scrolling\n"
+               "ripples still move across the surface.\n"
+               "Without it water is featureless glass - correct, and far too calm. The texture the\n"
+               "game supplies is a colour texture, not a normal map, so what it produces until a\n"
+               "real normal map is authored over it is an animated perturbation rather than\n"
+               "physically meaningful ripples. That is the point: it puts the game's texture, with\n"
+               "the game's own scroll rate, in exactly the slot a replacement normal map goes into.\n"
+               "Strength is rtx.translucentMaterial.normalIntensity.");
+
     RTX_OPTION("rtx.dusklight.water", bool, hideProjectedLayer, true,
                "Drop the game's camera-projected water overlay (MA02/MA10).\n"
                "Twilight Princess paints a fake reflection over its water using a perspective\n"
@@ -136,21 +146,46 @@ namespace dxvk {
       return DusklightWater::enable() && mat.getLegacyMaterial().Ambient.b >= 0.5f;
     }
 
+    // Whether there is a real texture on this draw to put in the normal slot.
+    // Not every water draw has one - the 2026-08-08 23:47 log has a water surface
+    // that arrives with a null sampler and no UVs at all - and binding an empty
+    // texture there would be a flat normal read at whatever coordinate happened to
+    // be there.
+    inline bool hasSurfaceTexture(const LegacyMaterialData& mat) {
+      return mat.getColorTexture().isValid() && !mat.getColorTexture().isImageEmpty();
+    }
+
     // Water as a translucent material.
     //
-    // Note what is deliberately absent: no albedo, no transmittance texture. A
-    // translucent material's colour is its transmittance, and the game's own
-    // water textures are the layers that arrive white. Leaving them out is the
-    // point rather than an omission - and a replacement authored against the
-    // draw's texture hash still wins, because getReplacementMaterial is
-    // consulted before this is ever reached.
+    // The albedo and transmittance textures are deliberately absent. A translucent
+    // material's colour is its transmittance, and the game's water textures are the
+    // layers that arrive white - a pure texture pass-through over an EFB copy aurora
+    // could not produce. Leaving them out is what stopped the milky sheet.
+    //
+    // The normal map is the exception, and it is the one slot the game's texture
+    // belongs in. Water without it is featureless glass: correct, and far too calm.
+    // The texture scrolls because the draw carries a texture transform, so the ripples
+    // move at the game's own rate rather than at some rate invented here - and it is
+    // the slot a replacement normal map lands in, which is the whole point of putting
+    // it there rather than approximating ripples some other way.
+    //
+    // A replacement authored against the draw's texture hash still wins over all of
+    // this, because getReplacementMaterial is consulted before this is ever reached.
     inline TranslucentMaterialData makeMaterial(const LegacyMaterialData& mat) {
       TranslucentMaterialData water;
 
-      // The game's own sampler, so a replacement's wrap and filter modes match
-      // what the draw asked for.
+      // The game's own sampler, so wrap and filter match what the draw asked for.
+      // This matters more now than it did: a scrolling UV runs off the end of the
+      // 0-1 range every cycle, and only the game's wrap mode makes that tile.
       if (mat.getSampler().ptr()) {
         water.setSamplerOverride(mat.getSampler());
+        water.getFilterMode() = lss::Mdl::Filter::vkToMdl(mat.getSampler()->info().magFilter);
+        water.getWrapModeU() = lss::Mdl::WrapMode::vkToMdl(mat.getSampler()->info().addressModeU);
+        water.getWrapModeV() = lss::Mdl::WrapMode::vkToMdl(mat.getSampler()->info().addressModeV);
+      }
+
+      if (DusklightWater::surfaceDetailFromGameTexture() && hasSurfaceTexture(mat)) {
+        water.getNormalTexture() = mat.getColorTexture();
       }
 
       water.setRefractiveIndex(DusklightWater::refractiveIndex());

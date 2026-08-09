@@ -3224,6 +3224,16 @@ namespace dxvk {
         "game's units, not a measurement.");
       RemixGui::Checkbox("Thin Walled", &DusklightWater::thinWalledObject());
       RemixGui::DragFloat("Thin Wall Thickness", &DusklightWater::thinWallThicknessObject(), 0.01f, 0.001f, 65504.0f);
+      RemixGui::Checkbox("Surface Detail From Game Texture", &DusklightWater::surfaceDetailFromGameTextureObject());
+      RemixGui::DragFloat("Normal Intensity", &TranslucentMaterialOptions::normalIntensityObject(), 0.01f, 0.0f, 4.0f);
+      ImGui::TextWrapped(
+        "Puts the draw's own texture in the water's normal slot, so the game's scrolling ripples "
+        "still move across the surface - at the game's scroll rate, since the scroll is a texture "
+        "transform on the draw. Off, water is featureless glass: correct and far too calm. The "
+        "game supplies a colour texture rather than a normal map, so until one is authored over it "
+        "this is an animated perturbation rather than real ripples - and that is the point, since "
+        "it is the slot a replacement normal map lands in. Normal Intensity is the global "
+        "rtx.translucentMaterial.normalIntensity and scales it.");
       RemixGui::Checkbox("Hide Projected Reflection Layer", &DusklightWater::hideProjectedLayerObject());
       ImGui::TextWrapped(
         "A body of water is not one draw. Besides the surface, the game paints a fake reflection "
