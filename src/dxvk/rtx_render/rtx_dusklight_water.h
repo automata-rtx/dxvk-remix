@@ -153,23 +153,40 @@ namespace dxvk {
 
     // True the first time this material is seen. Bounded, and says so once when
     // it stops reporting, so a truncated log is never mistaken for a short one.
-    inline bool shouldLog(XXH64_hash_t textureHash) {
-      static std::unordered_set<XXH64_hash_t> s_seen;
-      static bool s_truncated = false;
-
-      if (!DusklightWater::log() || s_seen.count(textureHash) != 0) {
+    inline bool shouldLogOnce(std::unordered_set<XXH64_hash_t>& seen, bool& truncated,
+                              const char* truncLine, XXH64_hash_t textureHash) {
+      if (!DusklightWater::log() || seen.count(textureHash) != 0) {
         return false;
       }
-      if (s_seen.size() >= DusklightWater::kMaxLoggedMaterials) {
-        if (!s_truncated) {
-          s_truncated = true;
-          Logger::info(str::format("dusklight.water.trunc cap=", DusklightWater::kMaxLoggedMaterials,
+      if (seen.size() >= DusklightWater::kMaxLoggedMaterials) {
+        if (!truncated) {
+          truncated = true;
+          Logger::info(str::format(truncLine, " cap=", DusklightWater::kMaxLoggedMaterials,
                                    " - further distinct water materials not reported"));
         }
         return false;
       }
-      s_seen.insert(textureHash);
+      seen.insert(textureHash);
       return true;
+    }
+
+    inline bool shouldLog(XXH64_hash_t textureHash) {
+      static std::unordered_set<XXH64_hash_t> s_seen;
+      static bool s_truncated = false;
+      return shouldLogOnce(s_seen, s_truncated, "dusklight.water.trunc", textureHash);
+    }
+
+    // Counted separately: a water draw whose material a replacement already
+    // claimed. That is intended - authoring a replacement against the ripple
+    // layers' hashes is how a real normal map gets onto the surface - but it is
+    // silent, and silence here reads exactly like the mark never arriving. The
+    // 2026-08-08 22:38 session saw "some blue translucency" on water with zero
+    // dusklight.water lines, and this is the line that would have said which of
+    // the two it was.
+    inline bool shouldLogReplaced(XXH64_hash_t textureHash) {
+      static std::unordered_set<XXH64_hash_t> s_seen;
+      static bool s_truncated = false;
+      return shouldLogOnce(s_seen, s_truncated, "dusklight.water.replaced.trunc", textureHash);
     }
 
   } // namespace dusklightWater

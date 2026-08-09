@@ -791,6 +791,16 @@ namespace dxvk {
     // test if any direct material replacements exist
     MaterialData* pReplacementMaterial = m_pReplacer->getReplacementMaterial(input.getMaterialData().getHash());
     if (pReplacementMaterial != nullptr) {
+      // A replacement claiming a water draw is intended and is how a normal map gets onto
+      // the surface, but it is otherwise indistinguishable in the log from the water mark
+      // never arriving - so say which it was. See rtx_dusklight_water.h.
+      if (dusklightWater::isWater(input.getMaterialData()) &&
+          dusklightWater::shouldLogReplaced(input.getMaterialData().getHash())) {
+        Logger::info(str::format(
+          "dusklight.water.replaced tex0hash=", std::hex, input.getMaterialData().getHash(), std::dec,
+          " - marked water, but a replacement material won; rtx.dusklight.water.* does not apply here"));
+      }
+
       // Make a copy - dont modify the replacement data.
       MaterialData renderMaterialData = *pReplacementMaterial;
       // merge in the input material from game
