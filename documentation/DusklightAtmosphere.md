@@ -719,6 +719,33 @@ The three `Logger::info` summaries are the part most likely to be dropped silent
 and they are the part that makes the rest checkable — a capture that quietly fell back to the
 game's textures or came out with no sky is otherwise indistinguishable from one that did not.
 
+*Character merge and real skeletons (2026-08-08/09), see `dusklight-ao/docs/remix-open-issues.md`
+issue 15:*
+
+> **This is the largest single block in this list and the least Dusklight-named.** It spans three
+> repos: the game publishes its joint tree and slot mapping, aurora composes that with its own
+> palette compaction, and the fork merges the draws and resolves one replacement per character.
+> A rebase that keeps only the fork half leaves the other two publishing into nothing — which is
+> silent, because every entry point degrades to "no identity, capture as before".
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_dusklight_skeleton.{h,cpp}` | new: the two `__declspec(dllexport)` entry points the game and aurora call, the per-model skeleton store, `groupMeshHash`, the per-frame claim, and the stats block behind `rtx.dusklight.skeleton.report` | new file |
+| `rtx_types.h` | `DrawCallState` gains `dusklightSkeletonBinding`. **Deliberately on `DrawCallState` and not on `RtSurface`** — the latter would grow `RtInstance` and trip `CheckRtInstanceSize` for no benefit, since nothing on the GPU reads it | additive |
+| `d3d9_rtx.cpp` | latches the per-draw binding after `materialData.updateCachedHash()`; and in `processSkinning`, raises `numBones` to the model's joint count. **The floor is gated on a replacement existing for that model**, because `RtSurface` bakes a single-bone draw's matrix into the transform and skips skinning (`minBoneIndex + 1 == numBones`) — an ungated floor would defeat that for every rigid packet of every character | `hasGroupReplacement(modelKey)` |
+| `rtx_scene_manager.cpp` `submitDrawState` | group-hash lookup, sibling suppression, and `noteGroupReplacement` recorded either way | `rtx.dusklight.skeleton.{enable,replaceBodies}` |
+| `rtx_scene_manager.cpp` `onFrameEnd` | the report and the per-frame stats roll | `rtx.dusklight.skeleton.report` |
+| `rtx_game_capturer.{h,cpp}` | `buildMergedGroups` / `mergeGroup` / `prepExportCharacterMerges`, and the `capture.merge` summary | `rtx.dusklight.skeleton.mergeCaptures` |
+| `game_exporter.cpp` `exportSkeletons` | an authored skeleton replaces `generateSkeleton`'s invention outright. Upstream's synthesised bind pose cancels out of the deformation (`sanitizeBoneXforms` composes `bindPose · M` and UsdSkel divides it back out), so this changes what a DCC tool *draws* and not what deforms — **derived from reading both functions, not measured** | `Mesh::authoredSkeleton.valid` |
+| `game_exporter.cpp` `exportMeshes` | emits `UsdGeomSubset` face ranges when a merged mesh carries more than one material | `materialRanges.size() > 1` |
+| `game_exporter_types.h` | `MeshMaterialRange` and `AuthoredSkeleton` | additive |
+
+**What a rebase should check first here:** the two exports must keep their exact names —
+`dusklight_DeclareSkeleton` and `dusklight_SetDrawSkeleton`. Both the game and aurora resolve them
+with `GetProcAddress` and cache the not-found answer, so a rename does not fail to link or log an
+error; the feature simply stops existing. `rtx_dusklight_skeleton.cpp` is the only place either
+name appears in this repo.
+
 **Three things a rebase should check first here:**
 1. `ToneMappingApplyToneMappingArgs` is exactly at the 128-byte push-constant limit. Three
    `static_assert`s guard it. If upstream adds a field to that struct, the fix is to move the
