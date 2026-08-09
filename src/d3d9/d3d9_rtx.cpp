@@ -704,10 +704,13 @@ namespace dxvk {
     // Hash material data
     m_activeDrawCallState.materialData.updateCachedHash();
 
-    // Dusklight character skeletons: pick up whatever aurora latched for this draw. Read only by
-    // the capture path - the draw itself, its geometry hash and its material are untouched, which
-    // is what keeps texture tagging and existing per-draw replacements working exactly as before.
-    // rtx_dusklight_skeleton.h explains why the game alone cannot supply this.
+    // Dusklight character skeletons: pick up whatever aurora latched for this draw. Read by the
+    // capture path, and by submitDrawState for the group-hash replacement lookup - but the draw's
+    // own geometry hash and material are untouched either way, which is what keeps texture tagging
+    // and existing per-draw replacements working exactly as before. In particular this does NOT
+    // merge anything at runtime: with no body replacement authored, every sibling draw is still
+    // submitted separately and still has its own geometry hash, which is what the hash debug view
+    // shows. rtx_dusklight_skeleton.h explains why the game alone cannot supply this.
     m_activeDrawCallState.dusklightSkeletonBinding = dusklightSkeleton::currentDrawBinding();
     dusklightSkeleton::noteDrawBinding(m_activeDrawCallState.dusklightSkeletonBinding.isValid());
 

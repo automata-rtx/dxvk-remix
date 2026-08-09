@@ -199,11 +199,69 @@ namespace dxvk {
       }
     }
 
+    namespace {
+      // Caller must hold s_mutex.
+      void reportLocked(const char* trigger) {
+        Logger::info(str::format(
+          "skeleton.rmx enable=", DusklightSkeleton::enable() ? 1 : 0,
+          " merge=", DusklightSkeleton::mergeCaptures() ? 1 : 0,
+          " declared=", s_skeletons.size(),
+          " rejected=", s_rejected,
+          " boundDraws=", s_lastFrame.boundDraws,
+          " unboundDraws=", s_lastFrame.unboundDraws,
+          " replaceBodies=", DusklightSkeleton::replaceBodies() ? 1 : 0,
+          " bodiesReplaced=", s_lastFrame.groupsReplaced,
+          " drawsSuppressed=", s_lastFrame.drawsSuppressed,
+          " trigger=", trigger,
+          "  (declared and rejected are cumulative; the draw counts are per frame."
+          " boundDraws=0 means the game published nothing - check the game log for"
+          " 'dx9.skeleton model identity export')"));
+
+        // One line per model, capped, so a reader without the source can tell a model that declared
+        // 60 joints from one that declared 3.
+        //
+        // groupHash is the one number an artist actually needs and cannot derive: it is a salted
+        // hash of the model key, so nothing outside this file can compute it. It names the merged
+        // mesh in a capture, and it is what a body replacement must be authored against.
+        uint32_t printed = 0;
+        for (const auto& [key, skeleton] : s_skeletons) {
+          if (printed >= 16) {
+            Logger::info(str::format("skeleton.rmx   ... ", s_skeletons.size() - printed,
+                                     " more model(s) not listed"));
+            break;
+          }
+          Logger::info(str::format(
+            "skeleton.rmx   model=0x", std::hex, key,
+            " groupHash=0x", groupMeshHash(key), std::dec,
+            " joints=", skeleton.jointCount,
+            " root=", skeleton.jointCount > 0 ? skeleton.jointNames[0] : std::string("-")));
+          ++printed;
+        }
+      }
+
+      // One automatic report per session, so a log answers "is this alive, and what do I author
+      // against" without the owner having to know an option exists. Two triggers, because the
+      // interesting cases are opposite: the first frame that binds a character shows the feature
+      // working, and a fixed deadline shows it NOT working - which is the case a
+      // fires-only-on-success report can never surface, and the case that sent the owner to ask.
+      bool s_autoReported = false;
+      uint32_t s_frameCount = 0;
+      constexpr uint32_t kAutoReportDeadlineFrames = 600;
+    }
+
     void onFrameEnd() {
       std::lock_guard lock { s_mutex };
       s_lastFrame = s_stats;
       s_lastFrame.skeletonsDeclared = s_declared;
       s_lastFrame.skeletonsRejected = s_rejected;
+
+      ++s_frameCount;
+      if (!s_autoReported && DusklightSkeleton::enable() &&
+          (s_lastFrame.boundDraws > 0 || s_frameCount >= kAutoReportDeadlineFrames)) {
+        s_autoReported = true;
+        reportLocked(s_lastFrame.boundDraws > 0 ? "firstBoundDraw" : "deadline");
+      }
+
       s_stats.boundDraws = 0;
       s_stats.unboundDraws = 0;
       s_stats.groupsReplaced = 0;
@@ -217,33 +275,7 @@ namespace dxvk {
       DusklightSkeleton::reportObject().setDeferred(false);
 
       std::lock_guard lock { s_mutex };
-      Logger::info(str::format(
-        "skeleton.rmx enable=", DusklightSkeleton::enable() ? 1 : 0,
-        " merge=", DusklightSkeleton::mergeCaptures() ? 1 : 0,
-        " declared=", s_skeletons.size(),
-        " rejected=", s_rejected,
-        " boundDraws=", s_lastFrame.boundDraws,
-        " unboundDraws=", s_lastFrame.unboundDraws,
-        " replaceBodies=", DusklightSkeleton::replaceBodies() ? 1 : 0,
-        " bodiesReplaced=", s_lastFrame.groupsReplaced,
-        " drawsSuppressed=", s_lastFrame.drawsSuppressed,
-        "  (declared and rejected are cumulative; the draw counts are per frame)"));
-
-      // One line per model, capped, so a reader without the source can tell a model that declared
-      // 60 joints from one that declared 3.
-      uint32_t printed = 0;
-      for (const auto& [key, skeleton] : s_skeletons) {
-        if (printed >= 16) {
-          Logger::info(str::format("skeleton.rmx   ... ", s_skeletons.size() - printed,
-                                   " more model(s) not listed"));
-          break;
-        }
-        Logger::info(str::format(
-          "skeleton.rmx   model=0x", std::hex, key, std::dec,
-          " joints=", skeleton.jointCount,
-          " root=", skeleton.jointCount > 0 ? skeleton.jointNames[0] : std::string("-")));
-        ++printed;
-      }
+      reportLocked("requested");
     }
   }
 }
