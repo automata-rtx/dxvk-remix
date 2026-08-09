@@ -280,7 +280,7 @@ It checks `kRequiredProtocol` against the prose and the version registry
 (including **duplicate protocol numbers**, which is the double-bump), every
 `D3DMATERIAL9` channel the fork reads against
 `documentation/DusklightSideChannels.md`, `RtxOptions.md` coverage of every
-declared `rtx.dusklight.*` option, and leftover conflict markers. The
+declared `rtx.*` option, and leftover conflict markers. The
 `Invariants` workflow runs it on **every** push and PR, unfiltered by path or
 branch — doc-only commits and `Fixed-Function-dev` merges are exactly when these
 drift, and `build.yml` covers neither.

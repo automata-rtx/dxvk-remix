@@ -222,7 +222,16 @@ def check_side_channel_map() -> None:
 
 
 def check_rtx_options_doc() -> None:
-    """RtxOptions.md is generated; every rtx.dusklight.* option should be in it."""
+    """RtxOptions.md is generated; every rtx.* option declared here should be in it.
+
+    Deliberately NOT scoped to rtx.dusklight.*, which is what it checked until
+    2026-08-09. This fork adds options outside that namespace - the scene capture
+    work put two under rtx.capture.* - and a namespace-scoped check cannot see
+    them, so it reported 5 stale options when there were 7. Upstream's own
+    options are all present in the generated file, so widening the net costs no
+    noise: the only thing it can catch is a fork-added option, whatever its
+    namespace.
+    """
     global checks_run
     checks_run += 1
 
@@ -232,7 +241,7 @@ def check_rtx_options_doc() -> None:
         return
 
     declared: dict[str, str] = {}
-    decl = re.compile(r'RTX_OPTION[A-Z_]*\(\s*"(rtx\.dusklight[^"]*)"\s*,\s*[^,]+,\s*(\w+)')
+    decl = re.compile(r'RTX_OPTION[A-Z_]*\(\s*"(rtx\.[^"]*)"\s*,\s*[^,]+,\s*(\w+)')
     for rel in tracked_files():
         if not rel.startswith("src/") or Path(rel).suffix not in {".h", ".hpp", ".cpp"}:
             continue
@@ -247,7 +256,7 @@ def check_rtx_options_doc() -> None:
         shown = ", ".join(missing[:8]) + (f" (+{len(missing) - 8} more)" if len(missing) > 8 else "")
         warn(
             "rtxoptions",
-            f"{len(missing)} rtx.dusklight.* option(s) are declared but absent from "
+            f"{len(missing)} rtx.* option(s) are declared but absent from "
             f"RtxOptions.md: {shown}. It is generated, never hand-edited - regenerate with "
             f"DXVK_DOCUMENTATION_WRITE_RTX_OPTIONS_MD=1",
         )
