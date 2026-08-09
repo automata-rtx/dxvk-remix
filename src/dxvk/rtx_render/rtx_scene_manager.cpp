@@ -859,11 +859,10 @@ namespace dxvk {
           // passes can be told apart the same way, or need the blend state, is unanswered.
           // These two are what would answer it - an additive pass is light over a surface,
           // not a second surface - so they are reported before anything is built on them.
-          // Whether the game's texture went into the normal slot on this draw. A water
-          // surface with no texture stays featureless glass, and that is worth seeing
-          // rather than inferring from how calm the water looks.
-          " normalTex=", (DusklightWater::surfaceDetailFromGameTexture() &&
-                          dusklightWater::hasSurfaceTexture(input.getMaterialData())),
+          // Which MAxx tag the game's material carried. This is the field that says what a
+          // given body of water is actually made of - a lake arrives as more than one
+          // surface, and rtx.dusklight.water.hideSurfaceTag is set from what shows up here.
+          " tag=MA", dusklightWater::waterTag(input.getMaterialData()),
           " blend=", input.getMaterialData().blendMode.enableBlending,
           " blendSrcDst=", static_cast<uint32_t>(input.getMaterialData().blendMode.colorSrcFactor),
           ",", static_cast<uint32_t>(input.getMaterialData().blendMode.colorDstFactor),

@@ -3224,16 +3224,25 @@ namespace dxvk {
         "game's units, not a measurement.");
       RemixGui::Checkbox("Thin Walled", &DusklightWater::thinWalledObject());
       RemixGui::DragFloat("Thin Wall Thickness", &DusklightWater::thinWallThicknessObject(), 0.01f, 0.001f, 65504.0f);
-      RemixGui::Checkbox("Surface Detail From Game Texture", &DusklightWater::surfaceDetailFromGameTextureObject());
+      RemixGui::Checkbox("Animate Texcoords", &DusklightWater::animateTexcoordsObject());
+      RemixGui::DragFloat("UV Tiling", &DusklightWater::uvTilingObject(), 0.05f, 0.01f, 256.0f);
+      RemixGui::DragFloat2("Scroll Speed", &DusklightWater::scrollSpeedObject(), 0.001f, -1.0f, 1.0f);
       RemixGui::DragFloat("Normal Intensity", &TranslucentMaterialOptions::normalIntensityObject(), 0.01f, 0.0f, 4.0f);
       ImGui::TextWrapped(
-        "Puts the draw's own texture in the water's normal slot, so the game's scrolling ripples "
-        "still move across the surface - at the game's scroll rate, since the scroll is a texture "
-        "transform on the draw. Off, water is featureless glass: correct and far too calm. The "
-        "game supplies a colour texture rather than a normal map, so until one is authored over it "
-        "this is an animated perturbation rather than real ripples - and that is the point, since "
-        "it is the slot a replacement normal map lands in. Normal Intensity is the global "
-        "rtx.translucentMaterial.normalIntensity and scales it.");
+        "Drives the water surface's texture coordinates instead of the transform the draw arrived "
+        "with, so tiling and scroll rate are set here rather than inherited from a rasterizer at "
+        "the game's own scale. Tiling is the one to reach for on a large lake: a ripple texture "
+        "stretched once across Lake Hylia reads as a smear. Normal Intensity is the global "
+        "rtx.translucentMaterial.normalIntensity, and scales whatever normal map is authored onto "
+        "the surface.");
+      RemixGui::DragInt("Hide Surface Tag (MAxx)", &DusklightWater::hideSurfaceTagObject(), 1.0f, 0, 20);
+      ImGui::TextWrapped(
+        "A body of water is drawn as more than one surface - a shine layer and a murky body over "
+        "the same lake - and stacking refracting interfaces is not what water is; overlapping "
+        "normal maps do not blend correctly either. This hides the surfaces carrying one MAxx tag "
+        "so a lake becomes one moving surface. 0 hides none. The tag= field on each "
+        "dusklight.water log line says what a given lake is made of; 6 (MA06, the murky body) is "
+        "the first thing to try.");
       RemixGui::Checkbox("Apply To Replaced Materials", &DusklightWater::applyToReplacementsObject());
       ImGui::TextWrapped(
         "A capture cannot express water - it writes an albedo texture path and nothing else - so a "

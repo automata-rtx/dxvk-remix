@@ -20,7 +20,9 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include <assert.h>
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -35,6 +37,7 @@
 #include "rtx_terrain_baker.h"
 #include "rtx_dusklight_emissive.h"
 #include "rtx_dusklight_water.h"
+#include "../../util/util_global_time.h"
 
 #include "../d3d9/d3d9_state.h"
 #include "rtx_matrix_helpers.h"
@@ -1031,6 +1034,18 @@ namespace dxvk {
       }
     }
 
+    // Dusklight: a body of water is drawn as more than one surface, and stacking refracting
+    // interfaces is not what water is - nor do overlapping normal maps blend correctly in
+    // Remix. This drops the surfaces carrying one MAxx tag so a lake is one moving surface.
+    // Off by default: which layer should survive is a look decision, and dusklight.water's
+    // tag= field is how to find out what a given lake is made of.
+    if (DusklightWater::hideSurfaceTag() != 0 &&
+        dusklightWater::isWater(drawCall.getMaterialData()) &&
+        dusklightWater::waterTag(drawCall.getMaterialData()) ==
+          static_cast<uint32_t>(DusklightWater::hideSurfaceTag())) {
+      currentInstance.m_isHidden = true;
+    }
+
     // Snapshot whether this is a brand-new camera before the call to preserveInstance() at the
     // bottom (which always re-registers via RtInstance::registerCamera) so the override logic
     // below sees the "is this the first time we've seen this camera type?" state.
@@ -1232,6 +1247,28 @@ namespace dxvk {
         currentInstance.surface.textureTransform = drawCall.getTransformData().textureTransform;
         currentInstance.surface.texcoordElementCount = drawCall.getTransformData().texcoordElementCount;
         currentInstance.surface.isTexcoordProjected = drawCall.getTransformData().texcoordProjected;
+
+        // Dusklight: drive water's texcoords from the fork's own tiling and scroll instead of
+        // the transform the draw arrived with. The game's scroll is authored for its own scale
+        // and a rasterizer's; a path traced lake has no reason to inherit either, and a ripple
+        // texture stretched once across Lake Hylia reads as a smear. Same clock as the shader's
+        // timeSinceStartSeconds (rtx_context.cpp), so this and Remix's own animated water agree.
+        if (DusklightWater::animateTexcoords() && dusklightWater::isWater(drawCall.getMaterialData())) {
+          const float timeSeconds =
+            (static_cast<uint32_t>(GlobalTime::get().absoluteTimeMs()) & ((1U << 24U) - 1U)) / 1000.f;
+          const Vector2 scroll = timeSeconds * DusklightWater::scrollSpeed();
+          const float tiling = std::max(DusklightWater::uvTiling(), 0.0001f);
+
+          Matrix4 waterTransform;
+          waterTransform[0][0] = tiling;
+          waterTransform[1][1] = tiling;
+          waterTransform[3][0] = std::fmod(scroll.x, 1.0f) * tiling;
+          waterTransform[3][1] = std::fmod(scroll.y, 1.0f) * tiling;
+
+          currentInstance.surface.textureTransform = waterTransform;
+          currentInstance.surface.texcoordElementCount = 2;
+          currentInstance.surface.isTexcoordProjected = false;
+        }
 
         currentInstance.surface.isStatic = !(hasTransformChanged || hasPreviousPositions) || currentInstance.m_materialType == MaterialDataType::RayPortal;
 

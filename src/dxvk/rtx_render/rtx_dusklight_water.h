@@ -98,15 +98,34 @@ namespace dxvk {
     RTX_OPTION("rtx.dusklight.water", float, thinWallThickness, 1.0f,
                "Sheet thickness used when thinWalled is on. Ignored otherwise.");
 
-    RTX_OPTION("rtx.dusklight.water", bool, surfaceDetailFromGameTexture, true,
-               "Bind the draw's own texture as the water's normal map, so the game's scrolling\n"
-               "ripples still move across the surface.\n"
-               "Without it water is featureless glass - correct, and far too calm. The texture the\n"
-               "game supplies is a colour texture, not a normal map, so what it produces until a\n"
-               "real normal map is authored over it is an animated perturbation rather than\n"
-               "physically meaningful ripples. That is the point: it puts the game's texture, with\n"
-               "the game's own scroll rate, in exactly the slot a replacement normal map goes into.\n"
-               "Strength is rtx.translucentMaterial.normalIntensity.");
+    RTX_OPTION("rtx.dusklight.water", bool, animateTexcoords, true,
+               "Drive the water surface's texture coordinates from uvTiling and scrollSpeed below,\n"
+               "in place of the texture transform the draw arrived with.\n"
+               "The game's own scroll is authored for a 640x480 rasterizer at the game's own scale, "
+               "and there is no reason a path traced lake has to inherit either. Off restores the "
+               "draw's transform exactly as it came.");
+
+    RTX_OPTION("rtx.dusklight.water", float, uvTiling, 1.0f,
+               "How many times the water texture repeats across the surface's own UV range.\n"
+               "1 is the game's mapping. Large bodies of water usually want more than that - a "
+               "ripple texture stretched once across Lake Hylia reads as a smear rather than as "
+               "water. This is a look control with no correct value; find one that reads naturally "
+               "at the scale you are standing at.");
+
+    RTX_OPTION("rtx.dusklight.water", Vector2, scrollSpeed, Vector2(0.02f, 0.013f),
+               "Water texture scroll, in UV units per second, before uvTiling is applied.\n"
+               "The two components deliberately differ so the pattern does not travel along a "
+               "diagonal. Zero on both stops the animation without disabling animateTexcoords.");
+
+    RTX_OPTION("rtx.dusklight.water", int, hideSurfaceTag, 0,
+               "Hide water surfaces carrying this MAxx tag; 0 hides none.\n"
+               "A body of water is drawn as more than one surface - the 2026-08-09 sessions saw a "
+               "shine layer and a murky body over the same lake - and stacking refracting interfaces "
+               "is not what water is. Overlapping normal maps also do not blend correctly in Remix, "
+               "so a lake wants ONE moving surface. dusklight.water reports tag= per material, which "
+               "is how to find out what a given lake is made of; 6 (MA06, dKy_murky_set) is the "
+               "first thing to try, and it is deliberately not the default because no session has "
+               "yet confirmed which layer should survive.");
 
     RTX_OPTION("rtx.dusklight.water", bool, applyToReplacements, true,
                "Keep water translucent even where a replacement material was authored for it.\n"
@@ -157,13 +176,11 @@ namespace dxvk {
       return DusklightWater::enable() && mat.getLegacyMaterial().Ambient.b >= 0.5f;
     }
 
-    // Whether there is a real texture on this draw to put in the normal slot.
-    // Not every water draw has one - the 2026-08-08 23:47 log has a water surface
-    // that arrives with a null sampler and no UVs at all - and binding an empty
-    // texture there would be a flat normal read at whatever coordinate happened to
-    // be there.
-    inline bool hasSurfaceTexture(const LegacyMaterialData& mat) {
-      return mat.getColorTexture().isValid() && !mat.getColorTexture().isImageEmpty();
+    // Which MAxx tag this draw's material carried, or 0. Aurora ships the number
+    // itself rather than an index, so 9 means MA09 and the log reads the way the
+    // game's own material names do.
+    inline uint32_t waterTag(const LegacyMaterialData& mat) {
+      return static_cast<uint32_t>(mat.getLegacyMaterial().Ambient.a + 0.5f);
     }
 
     // Water as a translucent material.
@@ -173,15 +190,14 @@ namespace dxvk {
     // layers that arrive white - a pure texture pass-through over an EFB copy aurora
     // could not produce. Leaving them out is what stopped the milky sheet.
     //
-    // The normal map is the exception, and it is the one slot the game's texture
-    // belongs in. Water without it is featureless glass: correct, and far too calm.
-    // The texture scrolls because the draw carries a texture transform, so the ripples
-    // move at the game's own rate rather than at some rate invented here - and it is
-    // the slot a replacement normal map lands in, which is the whole point of putting
-    // it there rather than approximating ripples some other way.
+    // No normal map either. A revision put the draw's own colour texture in that slot
+    // to stop water reading as featureless glass; it was reverted on 2026-08-09 because
+    // a colour texture decoded as a tangent normal is noise, and because it put a second
+    // normal map on lakes that already had one authored - which Remix does not blend.
+    // Surface detail comes from an authored replacement, and from nothing else.
     //
-    // A replacement authored against the draw's texture hash still wins over all of
-    // this, because getReplacementMaterial is consulted before this is ever reached.
+    // A replacement authored against the draw's texture hash wins over all of this,
+    // because getReplacementMaterial is consulted before this is ever reached.
     inline TranslucentMaterialData makeMaterial(const LegacyMaterialData& mat) {
       TranslucentMaterialData water;
 
@@ -193,10 +209,6 @@ namespace dxvk {
         water.getFilterMode() = lss::Mdl::Filter::vkToMdl(mat.getSampler()->info().magFilter);
         water.getWrapModeU() = lss::Mdl::WrapMode::vkToMdl(mat.getSampler()->info().addressModeU);
         water.getWrapModeV() = lss::Mdl::WrapMode::vkToMdl(mat.getSampler()->info().addressModeV);
-      }
-
-      if (DusklightWater::surfaceDetailFromGameTexture() && hasSurfaceTexture(mat)) {
-        water.getNormalTexture() = mat.getColorTexture();
       }
 
       water.setRefractiveIndex(DusklightWater::refractiveIndex());
