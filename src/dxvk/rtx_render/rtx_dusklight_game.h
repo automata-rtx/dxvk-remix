@@ -257,6 +257,18 @@ namespace dxvk {
                     "out of nothing, and tying them together guarantees that tuning one breaks the other.",
                     args.minValue = 0.0f,
                     args.maxValue = 64.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightDerivedReach, 1.0f,
+                    "Multiplies the reach a game-authored light came with, before the radiance is solved from it.\n"
+                    "The derived half has no reach of its own to set - it takes LIGHT_INFLUENCE::mPow from whatever light the game registered - so this "
+                    "scales that value rather than replacing it, which is the difference between this and effectLightUndeterminedReach.\n"
+                    "Reach and radius pull in opposite directions and only one of them changes the shape of the light: reach is the distance the light is "
+                    "solved to carry to, radius is the physical size of the sphere. Growing the radius is what makes a light inside a sconce clip through "
+                    "the geometry, so raising this is the way to push light further without that happening.\n"
+                    "Worth knowing before tuning: reach only ever feeds two things, the solved radiance and the budget sort. Radiance goes as the square "
+                    "of it, so 2.0 here is the same brightness as 4.0 on effectLightDerivedIntensity. The one place they differ is priority - a light with "
+                    "more reach outranks a dimmer one when maxLights is binding, and intensity does not enter that.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 16.0f);
     RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightDerivedRadius, 10.0f,
                     "Emitter radius, in world units, for lights that took their reach from the game.\n"
                     "Changes brightness as well as softness - the radiance is solved so the light still reaches the same distance, so a larger emitter "

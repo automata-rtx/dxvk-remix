@@ -426,7 +426,7 @@ practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 8** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights, 8 = the effect-light exclusion readout). `kRequiredProtocol`
+**Protocol is at 9** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach`). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open

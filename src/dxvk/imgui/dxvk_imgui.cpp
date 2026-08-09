@@ -3042,7 +3042,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 8;
+    constexpr int kRequiredProtocol = 9;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -3122,6 +3122,7 @@ namespace dxvk {
 
       ImGui::TextUnformatted("From the game (a light was authored beside the effect)");
       RemixGui::DragFloat("Derived Intensity##dusklight", &DusklightGame::effectLightDerivedIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
+      RemixGui::DragFloat("Derived Reach##dusklight", &DusklightGame::effectLightDerivedReachObject(), 0.02f, 0.f, 16.f, "%.2fx");
       RemixGui::DragFloat("Derived Radius##dusklight", &DusklightGame::effectLightDerivedRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
 
       ImGui::TextUnformatted("Invented (nothing authored - fire arrows, unlit torches)");
