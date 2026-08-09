@@ -3055,7 +3055,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 9;
+    constexpr int kRequiredProtocol = 10;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -3132,6 +3132,13 @@ namespace dxvk {
         "which a path tracer shows immediately.");
 
       RemixGui::DragFloat("Master Intensity##dusklight", &DusklightGame::effectLightIntensityObject(), 0.02f, 0.f, 8.f, "%.2f");
+
+      RemixGui::Checkbox("Infinite Lantern Oil", &DusklightGame::lanternInfiniteOilObject());
+      ImGui::TextWrapped(
+        "Keeps Link's lantern at full fuel: refills it when empty and stops the burn while lit. A gameplay change, off by "
+        "default, and here because the game's own menus are never drawn in this mode.\n"
+        "Enclosed rooms have very little light of their own right now, and the lantern is the only light you can carry into "
+        "one - so without this, testing interior lighting means managing fuel instead of looking at the room.");
 
       ImGui::TextUnformatted("From the game (a light was authored beside the effect)");
       RemixGui::DragFloat("Derived Intensity##dusklight", &DusklightGame::effectLightDerivedIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");

@@ -289,6 +289,15 @@ namespace dxvk {
                     "Emitter radius, in world units, for lights with no game-authored reach.",
                     args.minValue = 0.5f,
                     args.maxValue = 64.0f);
+    RTX_OPTION("rtx.dusklight.game", bool, lanternInfiniteOil, false,
+               "Keep Link's lantern permanently fuelled.\n"
+               "Tops the oil back to full whenever it is below, and stops the per-frame burn while the lantern is lit. An empty "
+               "lantern refills rather than going out.\n"
+               "Here rather than in the game's own menu because that menu is never drawn in the fixed-function D3D9 mode. It exists "
+               "because enclosed rooms currently have very little light of their own and the lantern is the only portable source, so "
+               "testing interior lighting otherwise means managing fuel instead of looking at the room. It is a gameplay change and it "
+               "is off by default.");
+
     RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightFireOffset, 15.0f,
                     "How far above the effect's origin a fire light sits, in world units.\n"
                     "An emitter is placed where the effect is generated from, which for a torch or a totem is the fuel at the base of the flame. The light "
