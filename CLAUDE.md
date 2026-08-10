@@ -36,8 +36,34 @@ back on their own.
 | Repo | Role | Its docs |
 | :-- | :-- | :-- |
 | `automata-rtx/dxvk-remix` | **this repo** — the Remix fork | `documentation/Dusklight*.md` |
-| `automata-rtx/dusklight-ao` | the game | `docs/kankyo-remix.md` ← the overall entry point |
+| `automata-rtx/dusklight-ao` | the game | `docs/kankyo-remix.md` ← the overall entry point; `docs/japanese-naming.md` for reading its symbol names |
 | `automata-rtx/aurora-ao` | GX→D3D9 backend, `extern/aurora` in dusklight | `docs/dx9/` |
+
+## The game's symbols are named in Japanese; this fork's are not
+
+**This fork's code is `camelCase` English** (`AGENTS.md`, Naming Conventions),
+and that does not change. But every *game-side* symbol these documents quote is
+romanized Japanese, preserved by the decompilation from the original Japanese
+team — and reading one as English gets you the wrong file:
+
+- `kankyo` = 環境, **environment** — the system this whole fork's atmosphere
+  work is driven by. `dKy_`, `dKyw_`, `dKyr_` are all it.
+- `kumo` = 雲 cloud, `kasumi` = 霞 horizon haze, `moya` = 靄 mist — the sky and
+  haze fields the atmosphere reads.
+- `kytag01`…`kytag17` = *kankyo tag*, invisible per-area override actors.
+- `vrbox` is the game's word for the skybox dome; `wether` is its own spelling
+  of **weather**, not a typo, and neither is `dKyd_lightSchejule`.
+
+**When you go reading game code, search in both romanizations.** The game tree
+mixes kunrei-shiki (`si`, `tu`, `ti`, `sya`) with Hepburn (`shi`, `tsu`, `chi`,
+`sha`) *for the same word*, so one spelling finds half a feature and an empty
+grep is not evidence of absence. Full reference and glossary:
+`dusklight-ao/docs/japanese-naming.md`.
+
+**And `export LC_ALL=C.UTF-8` before grepping it for Japanese.** Nearly 500 game
+files carry literal kana/kanji — the original team's debug-panel labels, which
+are what settled the `kasumi` near/far question above. Under the default `POSIX`
+locale, `grep -P` on a kana/kanji class silently matches nothing.
 
 ## Branches — ALL THREE repos use the same structure
 

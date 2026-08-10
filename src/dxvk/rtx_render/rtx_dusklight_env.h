@@ -26,7 +26,11 @@
 namespace dxvk {
 
   // Raw environment state fed by the game's kankyo bridge (see dusklight-ao
-  // docs/kankyo-remix.md). The game pushes these through the Remix API every frame it is
+  // docs/kankyo-remix.md). "kankyo" is the game's own name for its environment system,
+  // romanized Japanese rather than an acronym - like most identifiers in the game, which
+  // the decompilation preserves from the original Japanese team. It is spelled that way in
+  // every option description below on purpose; dusklight-ao docs/japanese-naming.md is the
+  // reference. The game pushes these through the Remix API every frame it is
   // running under Remix with the bridge enabled; they describe what the game's environment
   // system computed, not how strongly Remix should respond to it. Response knobs live with
   // the passes that consume them (e.g. rtx.bloom.dusklightThresholdScale). All options here
@@ -111,11 +115,19 @@ namespace dxvk {
                     "and it is what stops a sky light being added indoors.");
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, skyColor, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
                     "The game's sky colour at the zenith, normalized to 0..1. Written by the game's kankyo bridge.");
+    // Corrected 2026-08-10: these were described as the haze "on the sun's side" and "away from
+    // the sun". Nothing in the game relates either field to sun position. The split is front/back,
+    // and the game says so in three places - the palette CSV exporter's Japanese header
+    // (d_kankyo.cpp:6582) labels kasumi_outer as the near band and kasumi_inner as the far one,
+    // the debug view (d_kankyo_debug.cpp:301,306) prints them as kasumiF and kasumiB, and the two
+    // dome actors paint one band each. Note this makes "outer" the NEAR band, opposite to what the
+    // English reads like. dusklight-ao docs/japanese-naming.md section 6 carries the derivation.
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kasumiInner, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
-                    "The game's horizon haze colour on the sun's side, normalized to 0..1. Written by the game's kankyo bridge.\n"
-                    "'Kasumi' is the game's own name for it. This is the colour that carries sunrise and sunset.");
+                    "The game's far horizon haze band, normalized to 0..1. Written by the game's kankyo bridge.\n"
+                    "'Kasumi' is the game's own name for horizon haze; the game labels this one the back band.");
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kasumiOuter, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
-                    "The game's horizon haze colour away from the sun, normalized to 0..1. Written by the game's kankyo bridge.");
+                    "The game's near horizon haze band, normalized to 0..1. Written by the game's kankyo bridge.\n"
+                    "Despite the name this is the front band, the one nearer the viewer; the game labels it so.");
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kumoTop, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
                     "The game's lit cloud colour, normalized to 0..1. Written by the game's kankyo bridge. Not consumed yet - clouds are a later phase.");
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kumoBottom, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,

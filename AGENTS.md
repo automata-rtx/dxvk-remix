@@ -30,6 +30,11 @@ This file provides context for AI coding agents working in this repository.
 >   `hashStructByMemory`, neither of which shows up in a Linux container.
 > - The five project rules, including *a fix that cannot be observed is a guess*
 >   and *say what was verified and what was not*.
+> - **The game's symbols are romanized Japanese.** The naming rules below govern
+>   *this repo* and are unaffected — but `kankyo` (環境) is *environment*,
+>   `wether` is the game's spelling of *weather*, and the game tree spells some
+>   words two ways, so a search for one spelling finds half a feature. Reference:
+>   `dusklight-ao/docs/japanese-naming.md`.
 >
 > Design documents for this fork's own work:
 > `documentation/DusklightAtmosphere.md` (the rendering, and §11 the whole-fork
@@ -76,6 +81,9 @@ Full guide: `documentation/CONTRIBUTING-style-guide.md`
   - Constants: `k` prefix and camelCase, i.e. `kConstantName`
   - Macros and defines: `UPPER_CASE`
   - Classes and structs: `PascalCase`
+  - **These apply to code written here.** Game symbols quoted in comments or
+    documentation keep the game's own spelling — they are romanized Japanese and
+    must not be Anglicised (`dusklight-ao/docs/japanese-naming.md`).
 - **Includes**: Standard library first, then third-party, then local. Separate groups with blank lines.
 - **Memory**: Prefer smart pointers (`std::unique_ptr`, `std::shared_ptr`). Use `Rc<T>` for GPU resources.
 - **Profiling**: Use `ScopedCpuProfileZone()` / `ScopedGpuProfileZone(ctx, "name")` for performance-critical code.

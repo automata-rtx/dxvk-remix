@@ -301,8 +301,10 @@ Three things here were each the second attempt, and the first would have been
 subtly wrong in a way that is hard to see:
 
 1. **Freeze sets the game's own `using_time_control_tag`** — what
-   `d_a_kytag11` sets for a stage whose sky must not move, and what
-   `setDaytime` already tests. Reusing it means the freeze rides a branch the
+   `d_a_kytag11` (a *kankyo tag*: an invisible per-area environment override
+   actor; the game's names are romanized Japanese,
+   `dusklight-ao/docs/japanese-naming.md`) sets for a stage whose sky must not
+   move, and what `setDaytime` already tests. Reusing it means the freeze rides a branch the
    game exercises every frame. *Consequence:* it also holds the Twilight Realm
    clock and skips the reset to midnight that entering twilight normally does.
 2. **A value plus a counter, not a bare value.** Acting on the value alone pins
