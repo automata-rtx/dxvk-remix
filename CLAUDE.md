@@ -60,6 +60,11 @@ mixes kunrei-shiki (`si`, `tu`, `ti`, `sya`) with Hepburn (`shi`, `tsu`, `chi`,
 grep is not evidence of absence. Full reference and glossary:
 `dusklight-ao/docs/japanese-naming.md`.
 
+**And `export LC_ALL=C.UTF-8` before grepping it for Japanese.** Nearly 500 game
+files carry literal kana/kanji — the original team's debug-panel labels, which
+are what settled the `kasumi` near/far question above. Under the default `POSIX`
+locale, `grep -P` on a kana/kanji class silently matches nothing.
+
 ## Branches — ALL THREE repos use the same structure
 
 - **`Fixed-Function-dev` — the working branch. ALL development commits land
