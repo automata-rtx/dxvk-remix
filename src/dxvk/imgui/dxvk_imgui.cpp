@@ -3055,7 +3055,7 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 10;
+    constexpr int kRequiredProtocol = 11;
     const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
 
     if (feedLive && !gameTooOld) {
@@ -3139,6 +3139,13 @@ namespace dxvk {
         "default, and here because the game's own menus are never drawn in this mode.\n"
         "Enclosed rooms have very little light of their own right now, and the lantern is the only light you can carry into "
         "one - so without this, testing interior lighting means managing fuel instead of looking at the room.");
+
+      RemixGui::DragFloat("Mass Exponent##dusklight", &DusklightGame::effectLightMassExponentObject(), 0.01f, 0.f, 2.f, "%.2f");
+      ImGui::TextWrapped(
+        "Scales a light by how much fire is actually standing at it. A five-emitter bonfire measures mass 5, a candle 1, a fire fading "
+        "out less as it fades; reach is multiplied by mass to this power.\n"
+        "0 disables it exactly. 0.50 makes radiance proportional to mass. A single full-alpha emitter measures 1 and is unchanged at "
+        "any value, so torch and candle tuning survives - this only moves the big ones.");
 
       ImGui::TextUnformatted("From the game (a light was authored beside the effect)");
       RemixGui::DragFloat("Derived Intensity##dusklight", &DusklightGame::effectLightDerivedIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");

@@ -269,6 +269,19 @@ namespace dxvk {
                     "more reach outranks a dimmer one when maxLights is binding, and intensity does not enter that.",
                     args.minValue = 0.0f,
                     args.maxValue = 16.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMassExponent, 0.5f,
+                    "How much a light grows with the amount of fire actually standing at it.\n"
+                    "Every site sums the emitters merged into it, weighted by their alpha, into a mass: a five-emitter bonfire at full alpha "
+                    "measures 5, a single candle measures 1, a fire fading out measures less as it fades. Reach is then multiplied by mass "
+                    "raised to this power.\n"
+                    "0 disables it exactly - mass to the power 0 is 1, so every light behaves as it did before this existed. 0.5, the default, "
+                    "makes RADIANCE proportional to mass, because radiance goes as the square of reach: twice the fire, twice the light. 1.0 "
+                    "makes reach itself proportional to mass, which is much stronger and grows quadratically in brightness.\n"
+                    "This exists because nothing previously scaled a light by how much fire was there - a roaring bonfire and a guttering "
+                    "candle emitted identically, which is why large fires read as underwhelming. A single full-alpha emitter measures 1 and is "
+                    "therefore unchanged at any exponent, so existing tuning for torches and candles survives.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 2.0f);
     RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightDerivedRadius, 10.0f,
                     "Emitter radius, in world units, for lights that took their reach from the game.\n"
                     "Changes brightness as well as softness - the radiance is solved so the light still reaches the same distance, so a larger emitter "
