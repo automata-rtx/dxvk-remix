@@ -3235,14 +3235,20 @@ namespace dxvk {
         "stretched once across Lake Hylia reads as a smear. Normal Intensity is the global "
         "rtx.translucentMaterial.normalIntensity, and scales whatever normal map is authored onto "
         "the surface.");
-      RemixGui::DragInt("Hide Surface Tag (MAxx)", &DusklightWater::hideSurfaceTagObject(), 1.0f, 0, 20);
+      ImGui::Text("Hide water layers");
+      RemixGui::Checkbox("Shimmer (mera)", &DusklightWater::hideShimmerLayerObject());
+      RemixGui::Checkbox("Waves (nami)", &DusklightWater::hideWavesLayerObject());
+      RemixGui::Checkbox("Shoreline (mizugiwa)", &DusklightWater::hideShorelineLayerObject());
+      RemixGui::Checkbox("Murk (nigori)", &DusklightWater::hideMurkLayerObject());
+      RemixGui::Checkbox("Additive passes (kasan)", &DusklightWater::hideAdditiveLayerObject());
       ImGui::TextWrapped(
-        "A body of water is drawn as more than one surface - a shine layer and a murky body over "
-        "the same lake - and stacking refracting interfaces is not what water is; overlapping "
-        "normal maps do not blend correctly either. This hides the surfaces carrying one MAxx tag "
-        "so a lake becomes one moving surface. 0 hides none. The tag= field on each "
-        "dusklight.water log line says what a given lake is made of; 6 (MA06, the murky body) is "
-        "the first thing to try.");
+        "A body of water is drawn as several stacked surfaces, and stacking refracting "
+        "interfaces is not what water is - overlapping normal maps do not blend correctly "
+        "either, so a lake wants one moving surface. These are the game's own names for its "
+        "passes, kept from the Japanese original. All off by default: which layer should "
+        "survive is a look decision. The layer= field on each dusklight.water log line says "
+        "what a given body of water is made of, and a layer the classifier does not recognise "
+        "is never hidden.");
       RemixGui::Checkbox("Apply To Replaced Materials", &DusklightWater::applyToReplacementsObject());
       ImGui::TextWrapped(
         "A capture cannot express water - it writes an albedo texture path and nothing else - so a "

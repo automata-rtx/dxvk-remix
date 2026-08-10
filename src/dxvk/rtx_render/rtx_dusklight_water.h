@@ -117,15 +117,38 @@ namespace dxvk {
                "The two components deliberately differ so the pattern does not travel along a "
                "diagonal. Zero on both stops the animation without disabling animateTexcoords.");
 
-    RTX_OPTION("rtx.dusklight.water", int, hideSurfaceTag, 0,
-               "Hide water surfaces carrying this MAxx tag; 0 hides none.\n"
-               "A body of water is drawn as more than one surface - the 2026-08-09 sessions saw a "
-               "shine layer and a murky body over the same lake - and stacking refracting interfaces "
-               "is not what water is. Overlapping normal maps also do not blend correctly in Remix, "
-               "so a lake wants ONE moving surface. dusklight.water reports tag= per material, which "
-               "is how to find out what a given lake is made of; 6 (MA06, dKy_murky_set) is the "
-               "first thing to try, and it is deliberately not the default because no session has "
-               "yet confirmed which layer should survive.");
+    // Which layers of a body of water to drop. A lake is drawn as several stacked
+    // surfaces, and stacking refracting interfaces is not what water is - nor do
+    // overlapping normal maps blend correctly in Remix, so a lake wants ONE moving
+    // surface.
+    //
+    // These are the game's own words for its passes. Twilight Princess is a Japanese
+    // production and the decompilation preserves its naming, so "nami" (waves),
+    // "mizugiwa" (the water's edge), "nigori" (murk) and "mera" (shimmer) are the
+    // developers' labels, not a scheme invented here. An earlier revision cut on the
+    // MAxx tag instead and was wrong: three of those four are all MA06, so hiding that
+    // tag would have deleted a lake's waves and shoreline to be rid of its murk.
+    //
+    // All default off. Which layer should survive is a look decision, and dropping a
+    // surface nobody asked to drop is the worse failure.
+    RTX_OPTION("rtx.dusklight.water", bool, hideShimmerLayer, false,
+               "Hide the water's shimmer pass (the game calls it 'mera').");
+
+    RTX_OPTION("rtx.dusklight.water", bool, hideWavesLayer, false,
+               "Hide the water's wave pass (the game calls it 'nami').");
+
+    RTX_OPTION("rtx.dusklight.water", bool, hideShorelineLayer, false,
+               "Hide the water's edge pass, where it meets the shore (the game calls it 'mizugiwa').");
+
+    RTX_OPTION("rtx.dusklight.water", bool, hideMurkLayer, false,
+               "Hide the murky body of the water (the game calls it 'nigori').");
+
+    RTX_OPTION("rtx.dusklight.water", bool, hideAdditiveLayer, false,
+               "Hide additively blended water passes (the game calls them 'kasan', which is\n"
+               "Japanese for addition - and every material carrying it measured SRC_ALPHA,ONE).\n"
+               "An additive pass is light over a surface rather than a surface, so it is a\n"
+               "candidate for dropping when a lake has too many interfaces. Note fountains draw\n"
+               "an additive pass too, so this is not lake-only.");
 
     RTX_OPTION("rtx.dusklight.water", bool, applyToReplacements, true,
                "Keep water translucent even where a replacement material was authored for it.\n"
@@ -181,6 +204,46 @@ namespace dxvk {
     // game's own material names do.
     inline uint32_t waterTag(const LegacyMaterialData& mat) {
       return static_cast<uint32_t>(mat.getLegacyMaterial().Ambient.a + 0.5f);
+    }
+
+    // Which layer of a body of water this draw is, classified game-side from the
+    // material's name. Values are GX_AURORA_DUSKLIGHT_WATER_LAYER_* (aurora-ao
+    // include/dolphin/gx/GXAurora.h), carried in D3DMATERIAL9::Power - the last
+    // unused field of the side channel.
+    enum class WaterLayer : uint32_t {
+      Unknown = 0, Shimmer = 1, Waves = 2, Shoreline = 3,
+      Murk = 4, Fountain = 5, Additive = 6, Indirect = 7,
+    };
+
+    inline WaterLayer waterLayer(const LegacyMaterialData& mat) {
+      return static_cast<WaterLayer>(
+        static_cast<uint32_t>(mat.getLegacyMaterial().Power + 0.5f));
+    }
+
+    inline const char* waterLayerName(WaterLayer layer) {
+      switch (layer) {
+      case WaterLayer::Shimmer:   return "shimmer";
+      case WaterLayer::Waves:     return "waves";
+      case WaterLayer::Shoreline: return "shoreline";
+      case WaterLayer::Murk:      return "murk";
+      case WaterLayer::Fountain:  return "fountain";
+      case WaterLayer::Additive:  return "additive";
+      case WaterLayer::Indirect:  return "indirect";
+      default:                    return "unknown";
+      }
+    }
+
+    // An unclassified layer is never hidden. A name nobody has taught the classifier
+    // stays visible, which is the failure worth having.
+    inline bool isLayerHidden(WaterLayer layer) {
+      switch (layer) {
+      case WaterLayer::Shimmer:   return DusklightWater::hideShimmerLayer();
+      case WaterLayer::Waves:     return DusklightWater::hideWavesLayer();
+      case WaterLayer::Shoreline: return DusklightWater::hideShorelineLayer();
+      case WaterLayer::Murk:      return DusklightWater::hideMurkLayer();
+      case WaterLayer::Additive:  return DusklightWater::hideAdditiveLayer();
+      default:                    return false;
+      }
     }
 
     // Water as a translucent material.

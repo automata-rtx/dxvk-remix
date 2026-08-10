@@ -1036,13 +1036,11 @@ namespace dxvk {
 
     // Dusklight: a body of water is drawn as more than one surface, and stacking refracting
     // interfaces is not what water is - nor do overlapping normal maps blend correctly in
-    // Remix. This drops the surfaces carrying one MAxx tag so a lake is one moving surface.
-    // Off by default: which layer should survive is a look decision, and dusklight.water's
-    // tag= field is how to find out what a given lake is made of.
-    if (DusklightWater::hideSurfaceTag() != 0 &&
-        dusklightWater::isWater(drawCall.getMaterialData()) &&
-        dusklightWater::waterTag(drawCall.getMaterialData()) ==
-          static_cast<uint32_t>(DusklightWater::hideSurfaceTag())) {
+    // Remix. This drops whole layers by what the game calls them, so a lake can be one
+    // moving surface. All off by default: which layer should survive is a look decision, and
+    // dusklight.water's layer= field is how to find out what a given lake is made of.
+    if (dusklightWater::isWater(drawCall.getMaterialData()) &&
+        dusklightWater::isLayerHidden(dusklightWater::waterLayer(drawCall.getMaterialData()))) {
       currentInstance.m_isHidden = true;
     }
 

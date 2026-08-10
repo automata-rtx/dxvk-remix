@@ -859,10 +859,13 @@ namespace dxvk {
           // passes can be told apart the same way, or need the blend state, is unanswered.
           // These two are what would answer it - an additive pass is light over a surface,
           // not a second surface - so they are reported before anything is built on them.
-          // Which MAxx tag the game's material carried. This is the field that says what a
-          // given body of water is actually made of - a lake arrives as more than one
-          // surface, and rtx.dusklight.water.hideSurfaceTag is set from what shows up here.
+          // What the game calls this draw. tag= is the MAxx group; layer= is the pass, from
+          // the game's own vocabulary - waves, shoreline, murk, shimmer. Together they say
+          // what a given body of water is made of, which is what the hide*Layer switches are
+          // set from. The layer is the one that matters: MA06 alone covers three of them.
           " tag=MA", dusklightWater::waterTag(input.getMaterialData()),
+          " layer=", dusklightWater::waterLayerName(
+                       dusklightWater::waterLayer(input.getMaterialData())),
           " blend=", input.getMaterialData().blendMode.enableBlending,
           " blendSrcDst=", static_cast<uint32_t>(input.getMaterialData().blendMode.colorSrcFactor),
           ",", static_cast<uint32_t>(input.getMaterialData().blendMode.colorDstFactor),
