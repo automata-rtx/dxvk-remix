@@ -107,6 +107,26 @@ game state*, not *tag the asset*. Tagging gives one answer per texture; this
 game reuses textures across contexts constantly, so a tag is wrong somewhere
 almost by construction. Translation is per-draw and is right everywhere.
 
+> **This is an aim, not a description of the current state, and reading it as
+> the latter has already misled one session.** The owner *does* tag textures in
+> the Remix runtime today, particle effects among them, and **a number of them
+> genuinely look better for it.** So:
+>
+> - Never infer from this rule that a given draw is untagged. It is not evidence
+>   about what is on screen; only a log is.
+> - The goal is that the owner should have to tag **as little as possible** —
+>   Remix's translation should be right out of the box. Every tag that survives
+>   is a translation we have not written yet.
+> - "Tagging helps here" and "translation would be better here" are both true at
+>   once and are not in tension. Do not propose removing a tag that is working
+>   unless the translation replacing it is actually landed.
+>
+> Corollary that cost this session a wrong first diagnosis: tagging a draw as a
+> particle does **not** merely improve it, it moves it to a different renderer
+> with different lighting (see the transparency row below). "Tagged and still
+> wrong" is a completely different question from "untagged and wrong", and the
+> two need different fixes.
+
 ### 2. A question we would have to ask the owner is a defect in the logging
 
 The owner should not be the diagnostic instrument. Asking them to describe a
@@ -170,7 +190,7 @@ anything else.
 | `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` | the ambient grade stage |
 | `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. **A rule, not a score**: self-lit (no TEV colour stage reads the rasterized channel) AND a colour of its own (authored in GX constants, not the vertex stream and not a bare texture pass-through) AND that colour reading as a glow (saturated **or** near-white-hot). Aurora ships the three facts in `D3DMATERIAL9::Specular.{a,b}` and `Emissive.rgb`; `Emissive.a` still carries the old evidence score but **nothing decides on it** — three revisions cut on it and all three missed the lava, which scores 0.00. Applied at one site in `rtx_instance_manager.cpp`. **Note the trap around the emissive colour: by default the shader re-applies the albedo's texture op to it** — `RtSurface::emissiveSource` (`textureFlags` bits 19–20) is what selects out of that. Also holds `rtx.dusklight.rampMaterials`, the two-colour ramp, which shares the same `D3DMATERIAL9` transport: the fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints rather than squeezing it into one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork can |
 | `src/dxvk/rtx_render/rtx_dusklight_texrep.{h,cpp}` | `rtx.dusklight.texrep.*` — HD texture packs. The game loads its pack through `remixapi_CreateMaterial` (used purely as a file loader) and tags each draw with a 1-based index in `D3DMATERIAL9::Ambient.g`, with the stage it refers to in `Ambient.b`; this substitutes the loaded albedo at the **two** places a draw can consume a texture — `determineMaterialData` for ray-traced draws, `D3D9DeviceEx::BindTexture` for rasterized ones. Both are needed: UI draws never reach material resolution. **The pack never travels through D3D9**, so the game's own textures stay what Remix hashes — tagging, `rtx.conf` categories and USD bindings are unaffected by installing or changing a pack. **Tested good 2026-08-06.** Note `d3d9_device.cpp` `BindTexture` is the *only* place this fork touches that file: a rebase that drops it loses the HUD half silently while the world half keeps working |
-| `src/dxvk/rtx_render/rtx_dusklight_transparency.{h,cpp}` | `rtx.dusklight.transparency.*` — **which of Remix's two transparency renderers a blended draw gets.** Stock Remix picks by texture tag (`out.isParticle = testCategoryFlags(Particle)`), which is one answer per texture and unreachable entirely for draws past the RTX injection boundary. Aurora ships a per-draw class in `D3DMATERIAL9::Ambient.a` (`GXSetDrawClass`, game-side) and this OR's it into the same flag at the one site in `rtx_instance_manager.cpp`. **The two paths are not a quality dial, they are different renderers:** untagged means a *stochastic single-layer pick* lit from a neighbouring opaque pixel (`rtx.enableStochasticAlphaBlend`, default true) — that is why dense smoke is noisy; tagged means the unordered TLAS, all layers accumulated, lit from the volumetric cache. `particle` is promoted, `haze` is **not**, and the reason is the 120 m froxel cap — see `aurora-ao/docs/dx9/remix-material-interface.md` §11.3 before changing that default. A draw with no class reads 0 and behaves exactly as before, which is why this needed no protocol bump |
+| `src/dxvk/rtx_render/rtx_dusklight_transparency.{h,cpp}` | `rtx.dusklight.transparency.*` — **which of Remix's two transparency renderers a blended draw gets.** Stock Remix picks by texture tag (`out.isParticle = testCategoryFlags(Particle)`), which is one answer per texture and unreachable entirely for draws past the RTX injection boundary. Aurora ships a per-draw class in `D3DMATERIAL9::Ambient.a` (`GXSetDrawClass`, game-side) and this OR's it into the same flag at the one site in `rtx_instance_manager.cpp`. **The two paths are not a quality dial, they are different renderers:** untagged means a *stochastic single-layer pick* lit from a neighbouring opaque pixel (`rtx.enableStochasticAlphaBlend`, default true) — that is why dense smoke is noisy; tagged means the unordered TLAS, all layers accumulated, lit from the volumetric cache. `particle` is promoted, `haze` is **not**, and the reason is the 120 m froxel cap — see `aurora-ao/docs/dx9/remix-material-interface.md` §11.3 before changing that default. A draw with no class reads 0 and behaves exactly as before, which is why this needed no protocol bump. **Know the cost before reaching for this as a fix:** the particle path returns `true` from `evaluateOpaqueApproximations`, so the hit is never resolved as a surface and the particle **never reaches NEE, RTXDI or any direct lighting** — its only light is the volumetric froxel cache plus its own emissive. That is why tagging (which the owner does today) improves dense smoke and does nothing for a particle that needs to read as sunlit. "Tagged and still wrong" is a *shading* problem and the knobs are on `rtx.volumetrics.*`, not here. §11.2b |
 | `src/dxvk/rtx_render/rtx_agx.{h,cpp}` | AgX look presets, the shared `TonemapOperator` enum, and the `finalizeWithACES` → operator migration. **Not Dusklight-specific** |
 | `src/dxvk/rtx_render/rtx_gt7.{h,cpp}` | GT7 setup, a transcription of Polyphony's `initializeAsSDR()`. The reference `.cpp` is kept verbatim at `shaders/rtx/pass/tonemap/reference/` — fix the port, never the reference. **Not Dusklight-specific** |
 | `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
