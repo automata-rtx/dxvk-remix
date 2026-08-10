@@ -314,6 +314,33 @@ integration already produced, so the two never double-count.
 **This is the answer to "which system owns fog": one owner per unit of
 distance, not one owner overall.**
 
+#### 5.2.1 The transparent layer was outside both owners — fixed 2026-08-10
+
+The range split above was implemented against `radianceOutput`, which is the
+*opaque* surface's radiance. `applyFog` never touched the alpha-blend layer, and
+the froxel integration that layer does get (`composite.comp.slang`, the
+`cb.enableStochasticAlphaBlend` block calling `integrateVolumetricNEE` over
+`surface.hitT`) stops accumulating at the grid's last slice like everything else.
+
+So a transparency past `froxelMaxDistance` — capped at 120 m, so *any* distant
+one — belonged to neither owner and simply never faded, while the opaque geometry
+around it faded correctly. That is not subtle at distance: a layered fog wall
+stays crisp and noisy in front of a mountain that has properly dissolved into the
+sky, which reads as the transparency being broken rather than as fog being
+absent.
+
+The ramp is now factored out as `dusklightFarFogRamp()` and run for the
+alpha-blend layer too — same numbers, same handover — applied to the surface term
+*before* the coverage weight and before the near in-scatter is added. That
+ordering is stricter than the opaque path can manage, where the two arrive
+already summed and `t` has to be weighted by the near transmittance to
+compensate.
+
+**Untested in game.** Regression signature: distant transparencies over-fogging,
+or the sky picking up fog it should not (the `primaryMiss` guard is unchanged and
+still returns early, so that one would be a surprise). The classification half of
+the same work is `aurora-ao/docs/dx9/remix-material-interface.md` §11.
+
 ---
 
 ## 6. Live configuration

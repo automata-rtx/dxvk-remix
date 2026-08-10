@@ -34,6 +34,7 @@
 #include "rtx_ray_portal_manager.h"
 #include "rtx_terrain_baker.h"
 #include "rtx_dusklight_emissive.h"
+#include "rtx_dusklight_transparency.h"
 
 #include "../d3d9/d3d9_state.h"
 #include "rtx_matrix_helpers.h"
@@ -835,7 +836,15 @@ namespace dxvk {
       // or through the manually specified alpha state.
 
       // Note: Particles are differentiated from typical objects with opacity by labeling their source material textures as being particle textures.
-      out.isParticle = drawCall.testCategoryFlags(InstanceCategories::Particle);
+      // Dusklight adds a second, per-draw route to the same flag. Tagging answers "is this a
+      // particle" once per texture, and this game reuses textures across contexts constantly, so
+      // a tag is wrong somewhere almost by construction - and the draws that most need it land
+      // after the RTX injection boundary, where the categorization UI cannot reach them at all.
+      // So the game says it per draw, through GXSetDrawClass -> D3DMATERIAL9::Ambient.a. A draw
+      // carrying no class reads 0 and takes the stock path, which is what makes this additive.
+      // rtx_dusklight_transparency.h explains which classes are promoted and why haze is not.
+      out.isParticle = drawCall.testCategoryFlags(InstanceCategories::Particle) ||
+                       DusklightTransparency::treatAsParticle(drawCall.getMaterialData().getLegacyMaterial());
       out.isDecal = drawCall.testCategoryFlags(DECAL_CATEGORY_FLAGS);
     } else {
       out.invertedBlend = false;

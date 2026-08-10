@@ -37,10 +37,11 @@ form a script can read.
 | `Ambient.r` | which ramp endpoint TFACTOR holds | `rtx_dusklight_emissive.h` | 2026-08-04 |
 | `Ambient.g` | 1-based HD texture replacement index, 0 for none | `rtx_dusklight_texrep.cpp` | 2026-08-05 |
 | `Ambient.b` | the D3D9 stage `Ambient.g` refers to | `rtx_dusklight_texrep.cpp` | 2026-08-05 |
+| `Ambient.a` | what this draw's transparency represents — 0 none, 1 particle, 2 haze | `rtx_dusklight_transparency.cpp` | 2026-08-10 |
 
 ## Spare
 
-`Ambient.a`, and `Power`.
+`Power`.
 
 That is the whole of what is left. **Take one only by adding its row above in
 the same commit** — the CI check enforces the reverse direction (a read with no

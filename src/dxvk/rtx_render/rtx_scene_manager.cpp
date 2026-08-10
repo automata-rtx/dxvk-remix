@@ -36,6 +36,7 @@
 #include "rtx_texture.h"
 #include "rtx_xess.h"
 #include "rtx_dusklight_texrep.h"
+#include "rtx_dusklight_transparency.h"
 
 #include <assert.h>
 
@@ -523,6 +524,9 @@ namespace dxvk {
     // rather than an empty one.
     dusklightTexRep::reportIfRequested();
     dusklightTexRep::onFrameEnd();
+    // Same reason, same place: the transparency classes were counted during this frame's
+    // instance processing, so the roll-over has to happen after it and not before.
+    DusklightTransparency::reportFrame();
     m_previousFrameSceneAvailable = raytracedThisFrame && RtxOptions::enablePreviousTLAS();
 
     m_bufferCache.clear();

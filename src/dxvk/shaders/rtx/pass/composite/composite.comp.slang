@@ -392,6 +392,83 @@ void loadInputRadiance(
   }
 }
 
+// The far ramp, solved for one surface at one distance.
+//
+// Split out of applyFog so the transparent layer can run the same ramp against the same numbers.
+// Distant transparencies were the one thing in the far field that never got it: applyFog only ever
+// touched radianceOutput, so a fog wall in front of a mountain stayed clear while the mountain
+// behind it faded, which reads as the transparency being wrong rather than as missing fog.
+// DusklightAtmosphere.md §5.2.
+//
+// Returns false when the ramp does not apply here, in which case the outputs are untouched.
+bool dusklightFarFogRamp(
+  float viewDistance,
+  float radianceScale,
+  vec3 volumeAttenuation,
+  vec3 worldDirection,
+  out vec3 farFogRadiance,
+  out float t)
+{
+  farFogRadiance = vec3(0.0f);
+  t = 0.0f;
+
+  if (cb.dusklightArgs.enable == 0)
+  {
+    return false;
+  }
+
+  const float span = cb.dusklightArgs.rampEnd - cb.dusklightArgs.rampStart;
+
+  if (span <= 0.0f || viewDistance <= cb.dusklightArgs.handoverDistance)
+  {
+    return false;
+  }
+
+  // How much of the ramp the grid already covered, and how much of what it left is still to be fogged. Expressing the
+  // remainder as a fraction of the *remaining* clear signal is what stops the two halves counting the same air twice,
+  // and it reaches exactly 1 at the ramp's end - which is where the original went fully opaque and where an
+  // exponential medium never quite arrives.
+  const float fogAtHandover = saturate((cb.dusklightArgs.handoverDistance - cb.dusklightArgs.rampStart) / span);
+  const float fogAtDistance = saturate((viewDistance - cb.dusklightArgs.rampStart) / span);
+  const float remaining = 1.0f - fogAtHandover;
+
+  if (remaining <= 1e-4f)
+  {
+    // The grid already reaches past the end of the ramp; there is nothing left to add.
+    return false;
+  }
+
+  t = saturate((fogAtDistance - fogAtHandover) / remaining);
+
+  // Scaled by how much light the near volume still lets past, since the far fog sits behind that volume and can only
+  // affect what survives it. It also stands in for a separation we cannot make here: radianceOutput already holds the
+  // surface radiance and the near in-scatter summed, and only the former is behind the far fog, so blending both would
+  // erase in-scatter that is in front of it. Weighting by the near transmittance keeps that error where the in-scatter
+  // is small, which is the same place the far fog is strong.
+  t *= saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
+
+  farFogRadiance = cb.dusklightArgs.fogColor;
+
+  // Distant geometry fades towards the sky that is behind it, which is what aerial perspective
+  // means and why the original's fog colour was authored in the same palette entry as its sky.
+  // Once the sky is simulated the palette no longer describes it, so the fog follows the sky
+  // itself - sampled in the view direction, so it varies across the frame the way the sky does.
+  if (cb.dusklightArgs.skyColorWeight > 0.0f && cb.domeLightArgs.active)
+  {
+    const vec3 skyRadiance = cb.domeLightArgs.radiance *
+      sampleDomeLightTexture(SkyLight, worldDirection, cb.domeLightArgs.worldToLightTransform);
+
+    farFogRadiance = lerp(farFogRadiance, skyRadiance, saturate(cb.dusklightArgs.skyColorWeight));
+  }
+
+  if (cb.sparseRenderingArgs.mode != SparseRenderingMode::Off)
+  {
+    farFogRadiance *= radianceScale;
+  }
+
+  return true;
+}
+
 void applyVolumetricLighting(
   uint2 pixelCoordinate,
   inout RNG randomState,
@@ -533,7 +610,33 @@ void applyVolumetricLighting(
           cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, false, cameraGetWorldPosition(cb.camera), surface.hitT, primaryRayDirections.worldDirection,
           alphaVolumetricPreintegratedRadiance, alphaVolumetricAttenuation);
 
-        alphaBlendOutput *= alphaVolumetricAttenuation * (1 - backgroundAlpha);
+        alphaBlendOutput *= alphaVolumetricAttenuation;
+
+        // The far half of the fog, on the transparent layer.
+        //
+        // integrateVolumetricNEE above stops accumulating at the froxel grid's last slice, and
+        // applyFog - which carries the rest of the distance for everything else - only ever touched
+        // radianceOutput. So a transparent surface past the grid kept whatever radiance the
+        // neighbour search or the saturated volume lookup handed it and never faded, while the
+        // opaque geometry around it did. In the far field that reads as the transparency being
+        // wrong rather than as fog being absent: a layered fog wall in front of a distant mountain
+        // stays crisp and noisy against a mountain that has correctly dissolved into the sky.
+        //
+        // Fogged before the coverage weight and before the near in-scatter is added, which is
+        // stricter than the opaque path can be: only the surface term sits behind the far fog, and
+        // here - unlike in applyFog, where the two arrive already summed - they are still separate.
+        // radianceScale is deliberately 1: per the note below, this layer is already dense.
+        vec3 alphaFarFogRadiance;
+        float alphaFarFogT;
+
+        if (dusklightFarFogRamp(
+              surface.hitT, 1.0f, alphaVolumetricAttenuation,
+              primaryRayDirections.worldDirection, alphaFarFogRadiance, alphaFarFogT))
+        {
+          alphaBlendOutput = lerp(alphaBlendOutput, alphaFarFogRadiance, alphaFarFogT);
+        }
+
+        alphaBlendOutput *= (1 - backgroundAlpha);
         alphaBlendOutput += alphaVolumetricPreintegratedRadiance * (1 - backgroundAlpha);
       }
       else
@@ -647,56 +750,13 @@ void applyFog(
       return;
     }
 
-    const float span = cb.dusklightArgs.rampEnd - cb.dusklightArgs.rampStart;
+    vec3 farFogRadiance;
+    float t;
 
-    if (span <= 0.0f || viewDistance <= cb.dusklightArgs.handoverDistance)
+    if (dusklightFarFogRamp(viewDistance, radianceScale, volumeAttenuation, worldDirection, farFogRadiance, t))
     {
-      return;
+      radianceOutput = lerp(radianceOutput, farFogRadiance, t);
     }
-
-    // How much of the ramp the grid already covered, and how much of what it left is still to be fogged. Expressing the
-    // remainder as a fraction of the *remaining* clear signal is what stops the two halves counting the same air twice,
-    // and it reaches exactly 1 at the ramp's end - which is where the original went fully opaque and where an
-    // exponential medium never quite arrives.
-    const float fogAtHandover = saturate((cb.dusklightArgs.handoverDistance - cb.dusklightArgs.rampStart) / span);
-    const float fogAtDistance = saturate((viewDistance - cb.dusklightArgs.rampStart) / span);
-    const float remaining = 1.0f - fogAtHandover;
-
-    if (remaining <= 1e-4f)
-    {
-      // The grid already reaches past the end of the ramp; there is nothing left to add.
-      return;
-    }
-
-    float t = saturate((fogAtDistance - fogAtHandover) / remaining);
-
-    // Scaled by how much light the near volume still lets past, since the far fog sits behind that volume and can only
-    // affect what survives it. It also stands in for a separation we cannot make here: radianceOutput already holds the
-    // surface radiance and the near in-scatter summed, and only the former is behind the far fog, so blending both would
-    // erase in-scatter that is in front of it. Weighting by the near transmittance keeps that error where the in-scatter
-    // is small, which is the same place the far fog is strong.
-    t *= saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
-
-    vec3 farFogRadiance = cb.dusklightArgs.fogColor;
-
-    // Distant geometry fades towards the sky that is behind it, which is what aerial perspective
-    // means and why the original's fog colour was authored in the same palette entry as its sky.
-    // Once the sky is simulated the palette no longer describes it, so the fog follows the sky
-    // itself - sampled in the view direction, so it varies across the frame the way the sky does.
-    if (cb.dusklightArgs.skyColorWeight > 0.0f && cb.domeLightArgs.active)
-    {
-      const vec3 skyRadiance = cb.domeLightArgs.radiance *
-        sampleDomeLightTexture(SkyLight, worldDirection, cb.domeLightArgs.worldToLightTransform);
-
-      farFogRadiance = lerp(farFogRadiance, skyRadiance, saturate(cb.dusklightArgs.skyColorWeight));
-    }
-
-    if (cb.sparseRenderingArgs.mode != SparseRenderingMode::Off)
-    {
-      farFogRadiance *= radianceScale;
-    }
-
-    radianceOutput = lerp(radianceOutput, farFogRadiance, t);
 
     return;
   }
