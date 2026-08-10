@@ -150,6 +150,16 @@ namespace dxvk {
                "candidate for dropping when a lake has too many interfaces. Note fountains draw\n"
                "an additive pass too, so this is not lake-only.");
 
+    RTX_OPTION("rtx.dusklight.water", bool, shorelineAsBlend, true,
+               "Leave the water's edge pass ('mizugiwa') as the alpha-blended overlay it is,\n"
+               "rather than making it a refracting surface.\n"
+               "A translucent material in Remix has NO partial coverage - its only opacity term is\n"
+               "diffuseOpacity, which feeds the diffuse layer this code disables\n"
+               "(translucent_surface_material_interaction.slangh). So the moment a draw becomes\n"
+               "translucent, the alpha that feathered it into the shore is gone and the boundary\n"
+               "becomes a hard glass edge. That pass exists precisely to soften that boundary, so\n"
+               "converting it destroys the one thing it does. Off makes it refract like the rest.");
+
     RTX_OPTION("rtx.dusklight.water", bool, applyToReplacements, true,
                "Keep water translucent even where a replacement material was authored for it.\n"
                "A capture cannot express water: GameCapturer::captureMaterial writes an albedo\n"
@@ -220,6 +230,11 @@ namespace dxvk {
         static_cast<uint32_t>(mat.getLegacyMaterial().Power + 0.5f));
     }
 
+    // Whether this draw should keep its alpha blend rather than become a refracting
+    // surface. See shorelineAsBlend: a translucent material has no partial coverage, so
+    // a pass whose job is feathering an edge has nothing left to do once converted.
+    inline bool keepAsBlendedOverlay(const LegacyMaterialData& mat);
+
     inline const char* waterLayerName(WaterLayer layer) {
       switch (layer) {
       case WaterLayer::Shimmer:   return "shimmer";
@@ -230,6 +245,25 @@ namespace dxvk {
       case WaterLayer::Additive:  return "additive";
       case WaterLayer::Indirect:  return "indirect";
       default:                    return "unknown";
+      }
+    }
+
+    inline bool keepAsBlendedOverlay(const LegacyMaterialData& mat) {
+      return DusklightWater::shorelineAsBlend() && waterLayer(mat) == WaterLayer::Shoreline;
+    }
+
+    // The dimensions of the texture Remix actually received, or 0x0. Reported because
+    // "the wave texture looks low resolution" is otherwise unanswerable from a log - and
+    // the answer matters: aurora uploads GX textures at their native size with the full
+    // mip chain (dx9_texture.cpp create_from_rgba8, obj.width()/height()/mip_count()), so
+    // a small number here is the game's own texture, not something lost in translation.
+    inline void textureExtent(const LegacyMaterialData& mat, uint32_t& width, uint32_t& height) {
+      width = 0;
+      height = 0;
+      const DxvkImageView* view = mat.getColorTexture().getImageView();
+      if (view != nullptr && view->image().ptr() != nullptr) {
+        width = view->image()->info().extent.width;
+        height = view->image()->info().extent.height;
       }
     }
 

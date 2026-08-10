@@ -3249,6 +3249,14 @@ namespace dxvk {
         "survive is a look decision. The layer= field on each dusklight.water log line says "
         "what a given body of water is made of, and a layer the classifier does not recognise "
         "is never hidden.");
+      RemixGui::Checkbox("Shoreline Keeps Its Blend", &DusklightWater::shorelineAsBlendObject());
+      ImGui::TextWrapped(
+        "A translucent material in Remix has no partial coverage - its only opacity feeds the "
+        "diffuse layer, which water does not use. So a pass whose job is feathering the water "
+        "into the shore has nothing left to do once it becomes refracting glass, and the "
+        "boundary goes hard. This leaves the edge pass ('mizugiwa') as the alpha-blended "
+        "overlay the game drew, and is the first thing to try for a visible seam between water "
+        "and the ground around it.");
       RemixGui::Checkbox("Apply To Replaced Materials", &DusklightWater::applyToReplacementsObject());
       ImGui::TextWrapped(
         "A capture cannot express water - it writes an albedo texture path and nothing else - so a "

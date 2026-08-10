@@ -842,7 +842,16 @@ namespace dxvk {
     // legacy conversion below, which is the line that made every water layer an opaque
     // white-ish dielectric. See rtx_dusklight_water.h.
     if (dusklightWater::isWater(input.getMaterialData())) {
+      // The water's edge keeps its alpha blend. A translucent material has no partial
+      // coverage, so converting the pass whose entire job is feathering the boundary into
+      // the shore is what turns that boundary into a hard glass edge.
+      const bool asBlend = dusklightWater::keepAsBlendedOverlay(input.getMaterialData());
+
       if (dusklightWater::shouldLog(input.getMaterialData().getHash())) {
+        uint32_t texWidth = 0;
+        uint32_t texHeight = 0;
+        dusklightWater::textureExtent(input.getMaterialData(), texWidth, texHeight);
+
         Logger::info(str::format(
           "dusklight.water tex0hash=", std::hex, input.getMaterialData().getHash(), std::dec,
           " ior=", DusklightWater::refractiveIndex(),
@@ -866,13 +875,20 @@ namespace dxvk {
           " tag=MA", dusklightWater::waterTag(input.getMaterialData()),
           " layer=", dusklightWater::waterLayerName(
                        dusklightWater::waterLayer(input.getMaterialData())),
+          " asBlend=", asBlend,
+          // The size Remix actually got. Aurora uploads at the GX texture's native size, so
+          // a small number here is the game's own art, not a loss in the pipeline.
+          " tex=", texWidth, "x", texHeight,
           " blend=", input.getMaterialData().blendMode.enableBlending,
           " blendSrcDst=", static_cast<uint32_t>(input.getMaterialData().blendMode.colorSrcFactor),
           ",", static_cast<uint32_t>(input.getMaterialData().blendMode.colorDstFactor),
           " alphaTest=", input.getMaterialData().alphaTestEnabled));
       }
 
-      return dusklightWater::makeMaterial(input.getMaterialData());
+      if (!asBlend) {
+        return dusklightWater::makeMaterial(input.getMaterialData());
+      }
+      // else: fall through to the legacy conversion, which keeps the draw's alpha.
     }
 
     // Standard legacy material conversion
