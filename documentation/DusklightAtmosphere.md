@@ -336,7 +336,7 @@ ordering is stricter than the opaque path can manage, where the two arrive
 already summed and `t` has to be weighted by the near transmittance to
 compensate.
 
-**Untested in game.** Regression signature: distant transparencies over-fogging,
+**CI-green on all three Windows configs, untested in game.** Regression signature: distant transparencies over-fogging,
 or the sky picking up fog it should not (the `primaryMiss` guard is unchanged and
 still returns early, so that one would be a surprise). The classification half of
 the same work is `aurora-ao/docs/dx9/remix-material-interface.md` §11.
