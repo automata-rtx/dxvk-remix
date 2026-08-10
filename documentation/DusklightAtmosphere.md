@@ -21,6 +21,14 @@ Companion docs:
   renderer is the product, D3D9 is the feed — which is the frame every decision
   below is made in.
 
+- `dusklight-ao/docs/japanese-naming.md` — **how to read the game symbols this
+  document quotes.** They are romanized Japanese, kept from the original team:
+  `kankyo` (環境) is *environment*, `kumo` (雲) is *cloud*, `kasumi` (霞) is the
+  horizon haze band, `moya` (靄) is mist, and `kytag` is a *kankyo tag* actor.
+  This document glosses each on first use; that file explains the system,
+  including why a grep for one of these can come back empty for a symbol that
+  exists.
+
 Everything below is grounded in code as of 2026-07-28. File references are
 repo-relative; `dusklight-ao/` and `aurora-ao/` prefixes point at the other two
 repos.
@@ -271,7 +279,9 @@ Scale-free, no magic endpoints, and correct across every regime the game uses:
 | Goron Mines | near | near | dense, hot |
 | Lake Hylia, kytag01 at full | `-2000`, `200` | clamped to `zHalfMin` | near-whiteout |
 
-Note the Lake Hylia case: the tag passes a **negative start** with
+Note the Lake Hylia case: the tag — a **kytag**, i.e. a *kankyo tag*:
+`d_a_kytag00`…`d_a_kytag17` are invisible actors that override environment state
+for the area they sit in — passes a **negative start** with
 `start < end` (`dusklight-ao/src/d/actor/d_a_kytag01.cpp:94`), which in the
 vanilla ramp means "already ~90% fogged at z=0". The clamp turns that into a
 very dense medium, which is the right answer. (An earlier revision of this
@@ -398,9 +408,10 @@ architecture.
 
 ### 8.1 Moya particles vs volumetric density
 
-`mMoyaMode`/`mMoyaCount` drive *billboard* haze particles, separate from GX
-fog: mode 3 is the Lake Hylia fog (`d_a_kytag01.cpp`), 4 is kytag02, 10/11 are
-weather (`d_a_kytag06.cpp`), 1 is cutscene. Under a path tracer these become
+`mMoyaMode`/`mMoyaCount` — **moya** is 靄, mist — drive *billboard* haze
+particles, separate from GX fog: mode 3 is the Lake Hylia fog
+(`d_a_kytag01.cpp`), 4 is kytag02, 10/11 are weather (`d_a_kytag06.cpp`), 1 is
+cutscene. Under a path tracer these become
 camera-facing quads. Keeping them *and* a dense medium double-counts the haze.
 
 **Resolution:** suppress the moya billboards (same mechanism as
@@ -484,7 +495,7 @@ shows, and the first knob to reach for.
 | C10 | **Fog is composited in linear HDR, not the game's display space.** The original blended fog over a finished, display-referred image; here both halves of the range split happen pre-tonemap. | Fog reads with a different contrast curve than vanilla - typically holding its colour longer in the bright end. | `rtx.dusklight.atmosphere.fogRadianceScale`. The structural fix is moving the far ramp post-tonemap, the same correction the bloom needed. |
 | C1 | **Dusk saturation.** Physical twilight is more graduated and less saturated than TP's authored dusk. | Sunsets read calmer / less punchy than vanilla. | Lower `physicalWeight`'s `elevationTerm` at low sun; or add a saturation push applied to the *medium's* Rayleigh/Mie tint, not to output pixels. |
 | C2 | **Exponential never fully closes.** | Distant terrain slightly more visible than vanilla at `fog_end_z`. | The §5.2 range split is the fix; if still short, lower the split distance so the vanilla ramp owns more. |
-| C3 | **Clouds have no physical analogue.** `kumo_top/bottom/shadow` describe painted cloud bands. | Skies read emptier than vanilla if the vrbox is replaced wholesale. | Keep TP's cloud layer as geometry over our sky (Phase D). |
+| C3 | **Clouds have no physical analogue.** `kumo_top/bottom/shadow` (**kumo** = 雲, cloud) describe painted cloud bands. | Skies read emptier than vanilla if the vrbox — the game's skybox dome — is replaced wholesale. | Keep TP's cloud layer as geometry over our sky (Phase D). |
 | C4 | **Weather has no physical analogue.** Clear-sky scattering cannot do "rain grey". | Storms look insufficiently oppressive. | `styleTerm` drops `physicalWeight` on weather colpats; overcast can also be faked with high Mie + suppressed sun. |
 | C5 | ~~Moya swirl replaced by noise.~~ **Withdrawn - the problem does not exist on this backend.** `mMoyaCount` feeds `mpCloudPacket->mCount` (`d_kankyo_rain.cpp:1616`, inside `cloud_shadow_move`), and `dKankyo_cloud_Packet::draw` already returns early on D3D9 (`d_kankyo_wether.cpp:119-126`). The haze billboards were never drawn here, so there is nothing to double count and no switch was needed. `moyaMode`/`moyaCount` are still pushed, as a signal of how much haze an area wants folded into the medium. | — | — |
 | C6 | **Fog-avoid tag ignored.** (§8.2) | No clear bubble around the player in heavy fog. | Deferred feature, not a tuning knob. |
