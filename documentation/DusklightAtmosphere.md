@@ -29,6 +29,15 @@ Companion docs:
   including why a grep for one of these can come back empty for a symbol that
   exists.
 
+  **One correction that came out of reading them properly (2026-08-10):**
+  `kasumi_outer` is the **near** haze band and `kasumi_inner` the **far** one —
+  the reverse of what the English suggests, and the game says so in three
+  independent places. `rtx_dusklight_env.h` previously described the pair as
+  "on the sun's side" / "away from the sun"; **nothing in the game relates
+  either to sun position.** The header is corrected; `RtxOptions.md` is
+  generated and still carries the old wording. Derivation:
+  `dusklight-ao/docs/japanese-naming.md` §6.
+
 Everything below is grounded in code as of 2026-07-28. File references are
 repo-relative; `dusklight-ao/` and `aurora-ao/` prefixes point at the other two
 repos.
