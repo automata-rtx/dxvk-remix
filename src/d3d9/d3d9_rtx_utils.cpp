@@ -102,24 +102,35 @@ namespace dxvk {
     const DWORD texcoordIndex = d3d9State.textureStages[stageIdx][DXVK_TSS_TEXCOORDINDEX];
     const DWORD transformFlags = d3d9State.textureStages[stageIdx][DXVK_TSS_TEXTURETRANSFORMFLAGS];
 
-    const auto textureTransformCount = transformFlags & 0x3;
+    // Note: 0x7, not 0x3. D3DTTFF_COUNT4 is 4, so the narrower mask reports a 4-element
+    // transform as DISABLE and drops it entirely.
+    const auto textureTransformCount = transformFlags & 0x7;
 
     if (textureTransformCount != D3DTTFF_DISABLE) {
       transformData.textureTransform = d3d9State.transforms[GetTransformIndex(D3DTS_TEXTURE0) + stageIdx];
+      transformData.texcoordElementCount = static_cast<uint8_t>(textureTransformCount);
 
-      if (textureTransformCount > 2) {
-        ONCE(Logger::info(str::format("[RTX-Compatibility-Info] Use of texture transform element counts beyond 2 is not supported in Remix yet (and thus will be clamped to 2 elements).")));
+      // Note: Remix samples 2D textures, so only the first two output elements are ever
+      // used as coordinates. A count above 2 is meaningful only when projected, where the
+      // last element is the divisor rather than a coordinate - that case is handled below.
+      // An unprojected count above 2 still has nothing to do with the extra elements.
+      if (textureTransformCount > 2 && !(transformFlags & D3DTTFF_PROJECTED)) {
+        ONCE(Logger::info(str::format("[RTX-Compatibility-Info] Use of non-projected texture transform element counts beyond 2 is not supported in Remix (extra elements are ignored).")));
       }
-
-      // Todo: Store texture transform element count (1-4) in the future.
     } else {
       transformData.textureTransform = Matrix4();
+      transformData.texcoordElementCount = 0;
     }
 
-    if (transformFlags & D3DTTFF_PROJECTED) {
-      ONCE(Logger::info(str::format("[RTX-Compatibility-Info] Use of projected texture transform detected, but it's not supported in Remix yet.")));
+    // A projective transform divides the coordinate elements by the last element. Needs at
+    // least 3 elements to mean anything for a 2D coordinate: with 2, the "coordinate" is a
+    // single element and there is nothing sensible to sample a 2D texture with.
+    transformData.texcoordProjected =
+      (transformFlags & D3DTTFF_PROJECTED) != 0 &&
+      textureTransformCount >= 3;
 
-      // Todo: Store texture transform projection flag in the future.
+    if ((transformFlags & D3DTTFF_PROJECTED) && !transformData.texcoordProjected) {
+      ONCE(Logger::info(str::format("[RTX-Compatibility-Info] Projected texture transform with fewer than 3 elements is not supported; the projection is ignored.")));
     }
 
     switch (texcoordIndex) {
@@ -220,7 +231,13 @@ namespace dxvk {
     materialData.d3dMaterial = d3d9State.material;
 
     // Allow the users to configure vertex color as baked lighting for legacy draw calls.
-    materialData.isVertexColorBakedLighting = RtxOptions::vertexColorIsBakedLighting();
+    // Dusklight overrides this per draw: the game backend knows from GX whether
+    // a vertex colour stream is authored material colour or baked lighting, and
+    // says so in Specular.r (>= 0.5 means material colour, so forward it).
+    // A global answer is necessarily wrong for one of the two cases.
+    // See aurora-ao/docs/dx9/remix-material-interface.md §7c.
+    materialData.isVertexColorBakedLighting =
+      d3d9State.material.Specular.r >= 0.5f ? false : RtxOptions::vertexColorIsBakedLighting();
   }
 
 

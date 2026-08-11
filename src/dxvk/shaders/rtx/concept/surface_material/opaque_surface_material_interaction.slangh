@@ -601,7 +601,12 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   const bool normalLoaded = surfaceMaterialInteractionTextureReadHelper(opaqueSurfaceMaterial.normalTextureIndex, opaqueSurfaceMaterial.samplerIndex, surfaceInteraction, normalSample);
 
   bool secondNormalLoaded = false;
-  if (cb.opaqueMaterialArgs.layeredWaterNormalEnable && surface.isAnimatedWater)
+  // Note: excluded for projective transforms. Surface::textureTransform is pre-scaled on a
+  // projective surface so that its divisor's constant term can be left implicit, which is
+  // only meaningful once the divide is applied - and this re-application does not apply it.
+  // The scale would silently move the second sample rather than reporting anything.
+  if (cb.opaqueMaterialArgs.layeredWaterNormalEnable && surface.isAnimatedWater &&
+      !surface.isTexcoordProjected)
   {
     // take a second sample from a higher LOD using a modified texture xform
     const vec2 motionScale = vec2(cb.opaqueMaterialArgs.layeredWaterNormalMotionX, cb.opaqueMaterialArgs.layeredWaterNormalMotionY) * cb.opaqueMaterialArgs.layeredWaterNormalMotionScale;
@@ -714,17 +719,53 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
     vec3 textureArg1 = vec3(1.0), textureArg2 = vec3(1.0);
     chooseTextureArgument(textureArg1, surface.textureColorArg1Source, albedo, surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
     chooseTextureArgument(textureArg2, surface.textureColorArg2Source, albedo, surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
-    chooseTextureOperationColor(albedo, surface.textureColorOperation, textureArg1, textureArg2);
-    if (surface.isTextureFactorBlend) {
-      albedo *= tFactor.rgb;
+
+    if (surface.isRampMaterial)
+    {
+      // Dusklight: evaluate the GX combiner a*(1-c)+b*c exactly - it is a
+      // per-channel mix, and the shape most of this game's materials use. Both
+      // single-op approximations fail it: multiply goes black where the texture
+      // is dark, add drives the bright end to white. .bgr for the same reason as
+      // tFactor above - the value is packed 0x00RRGGBB.
+      // aurora-ao/docs/dx9/remix-material-interface.md §10.
+      const vec3 rampOther = unorm4x8ToFloat4x32(surface.rampOtherColor).bgr;
+      const vec3 rampLo = surface.rampTFactorIsHigh ? rampOther : tFactor.rgb;
+      const vec3 rampHi = surface.rampTFactorIsHigh ? tFactor.rgb : rampOther;
+      albedo = mix(rampLo, rampHi, albedo);
+    }
+    else
+    {
+      chooseTextureOperationColor(albedo, surface.textureColorOperation, textureArg1, textureArg2);
+      if (surface.isTextureFactorBlend) {
+        albedo *= tFactor.rgb;
+      }
     }
 
-    // Fixed function texture stage setting (emissive)
-    chooseTextureArgument(textureArg1, surface.textureColorArg1Source, emissiveColor, surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
-    chooseTextureArgument(textureArg2, surface.textureColorArg2Source, emissiveColor, surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
-    chooseTextureOperationColor(emissiveColor, surface.textureColorOperation, textureArg1, textureArg2);
-    if (surface.isTextureFactorBlend) {
-      emissiveColor *= tFactor.rgb;
+    // Dusklight: GX records no emissive term, so which of these an emitter
+    // glows is a choice made in the F1 overlay rather than a translation.
+    // kEmissiveSourceTextureOp is upstream's behaviour and the path every
+    // non-Dusklight surface still takes.
+    // aurora-ao/docs/dx9/remix-material-interface.md §9.
+    if (surface.emissiveSource == kEmissiveSourceAlbedo)
+    {
+      emissiveColor = albedo;
+    }
+    else if (surface.emissiveSource == kEmissiveSourceConstant)
+    {
+      // Left exactly as set. The texture op below substitutes emissiveColor for
+      // the texture sample, so running a constant through it yields
+      // op(constant, tFactor) instead of the constant - the trap that used to
+      // need a pre-image inversion to work around.
+    }
+    else
+    {
+      // Fixed function texture stage setting (emissive)
+      chooseTextureArgument(textureArg1, surface.textureColorArg1Source, emissiveColor, surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
+      chooseTextureArgument(textureArg2, surface.textureColorArg2Source, emissiveColor, surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
+      chooseTextureOperationColor(emissiveColor, surface.textureColorOperation, textureArg1, textureArg2);
+      if (surface.isTextureFactorBlend) {
+        emissiveColor *= tFactor.rgb;
+      }
     }
     
     // Adjust opacity via texture operations.

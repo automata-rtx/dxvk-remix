@@ -59,6 +59,17 @@ enum class AlphaTestType : uint8_t {
 
 static const uint32_t alphaTestTypeMask = 0x7u;
 
+// Dusklight self-illumination. Which reading of the material an emissive
+// surface glows - GX has no emissive term, so none of these is a translation of
+// something the console recorded and the owner picks one live from the F1
+// overlay. Mirrors DusklightEmissiveSource in rtx_dusklight_emissive.h; two
+// bits in Surface's textureFlags.
+// aurora-ao/docs/dx9/remix-material-interface.md §9.
+static const uint32_t kEmissiveSourceTextureOp = 0u;  // upstream: emissive through the albedo's texture op
+static const uint32_t kEmissiveSourceAlbedo = 1u;     // the reconstructed albedo, two-colour ramp included
+static const uint32_t kEmissiveSourceConstant = 2u;   // emissiveColorConstant verbatim, no texture op
+static const uint32_t emissiveSourceMask = 0x3u;
+
 enum class RtTextureArgSource : uint8_t {
   None = 0,
   Texture,

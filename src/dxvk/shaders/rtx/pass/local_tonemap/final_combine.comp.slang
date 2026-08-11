@@ -21,6 +21,8 @@
 */
 #include "rtx/pass/local_tonemap/local_tonemapping.slangh"
 #include "rtx/pass/tonemap/tonemapping.slangh"
+#include "rtx/pass/tonemap/agx.slangh"
+#include "rtx/pass/tonemap/gt7.slangh"
 
 [[vk::binding(FINAL_COMBINE_MIP_ASSEMBLE)]]
 Sampler2D MipAssembleTexture;
@@ -92,7 +94,11 @@ void main(uint2 threadId : SV_DispatchThreadID)
 
   // Apply local exposure adjustment as a crude multiplier on all RGB channels.
   // This is... generally pretty wrong, but enough for the demo purpose.
-  vec3 texelOriginal = linearToGamma(ACESFilm(originalColor.xyz, cb.useLegacyACES, true));
+  //
+  // The local intensity probe. Same ruler as the three synthetic exposures in
+  // luminance.comp.slang - it follows the selected operator, so ACES keeps behaving as it does in
+  // stock Remix while AgX and GT7 are each measured on their own response curve.
+  vec3 texelOriginal = linearToGamma(localTonemapRuler(originalColor.xyz, cb.tonemapOperator, cb.useLegacyACES, cb.agx, cb.gt7));
   float luminance = calcBt709Luminance(texelOriginal) + 0.00001;
   float finalMultiplier = max(A * luminance + B, 0.0) / luminance;
   // This is a hack to prevent super dark pixels getting boosted by a lot and showing compression artifacts.
@@ -101,9 +107,17 @@ void main(uint2 threadId : SV_DispatchThreadID)
     mix(1.0, finalMultiplier, (luminance / lerpToUnityThreshold) * (luminance / lerpToUnityThreshold));
 
   vec3 texelFinal = originalColor.xyz * finalMultiplier;
-  if (cb.finalizeWithACES)
+  if (cb.tonemapOperator == tonemapOperatorACES)
   {
     texelFinal = ACESFilm(texelFinal, cb.useLegacyACES);
+  }
+  else if (cb.tonemapOperator == tonemapOperatorAgX)
+  {
+    texelFinal = agxToneMapping(texelFinal, cb.agx);
+  }
+  else if (cb.tonemapOperator == tonemapOperatorGT7)
+  {
+    texelFinal = gt7ToneMapping(texelFinal, cb.gt7);
   }
 
   // sRGB conversion and dithering are now performed by the final output pass,

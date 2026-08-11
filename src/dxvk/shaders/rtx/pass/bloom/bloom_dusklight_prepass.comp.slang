@@ -56,9 +56,15 @@ void main(uint2 ipos : SV_DispatchThreadID)
     return;
   }
 
-  const float grey = cb.useLuminance != 0 ? calcBt709Luminance(color.rgb) : color.r;
+  // Applied where the original applied it: over display values, after everything else. Blending
+  // towards grey is not a linear operation, so the space it happens in shows.
+  float3 rgb = cb.displaySpace != 0 ? linearToGamma(max(color.rgb, float3(0.0))) : color.rgb;
 
-  color.rgb = lerp(color.rgb, grey * cb.monoColor, cb.monoAmount);
+  const float grey = cb.useLuminance != 0 ? calcBt709Luminance(rgb) : rgb.r;
+
+  rgb = lerp(rgb, grey * cb.monoColor, cb.monoAmount);
+
+  color.rgb = cb.displaySpace != 0 ? gammaToLinear(max(rgb, float3(0.0))) : rgb;
 
   InOutColorBuffer[ipos] = color;
 }

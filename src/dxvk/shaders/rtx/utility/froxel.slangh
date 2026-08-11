@@ -235,12 +235,15 @@ VolumeLookup froxelCoordinateToPrev(VolumeArgs volumeArgs, uint froxelDepthSlice
   // We need to convert from new camera's current translated world space into old camera's previous translated world space. 
   const vec3 previousLookupFroxelPreviousTranslatedWorldPosition =
     previousLookupFroxelTranslatedWorldPosition + (camera.translatedWorldOffset - previousCamera.previousTranslatedWorldOffset);
-  // Note: Current froxel depth slices, depth slice distribution exponent and max distance are used even though these may have changed
-  // between now and the previous frame, resulting in incorrect reprojection. This is not a huge issue though as these settings should not
-  // be changed dynamically in production and things should stabilize out when messing with them in development.
+  // Note: Current froxel depth slices and depth slice distribution exponent are used even though these may have changed between now and
+  // the previous frame, resulting in incorrect reprojection. This is not a huge issue though as those two are rebuild gated, so they
+  // cannot move without the history being thrown away anyway.
+  // Max distance is the exception: it is sized from the game's fog range where that is driven per area, so it does move while history is
+  // live, and using the current frame's value here would misplace every reprojected sample for the whole transition. The previous frame's
+  // value is carried explicitly for that reason. DusklightAtmosphere.md §6.2.
   const vec3 previousFroxelUVW = translatedWorldPositionToFroxelUVW(
     previousCamera.prevTranslatedWorldToView, previousCamera.prevTranslatedWorldToProjection, packedFlagGet(previousCamera.flags, rightHandedFlag),
-    froxelDepthSlices, volumeArgs.froxelDepthSliceDistributionExponent, volumeArgs.froxelMaxDistance, previousCamera.nearPlane,
+    froxelDepthSlices, volumeArgs.froxelDepthSliceDistributionExponent, volumeArgs.previousFroxelMaxDistance, previousCamera.nearPlane,
     previousLookupFroxelPreviousTranslatedWorldPosition);
   
   reprojectionValid = all(previousFroxelUVW > vec3(0.0f, 0.0f, 0.0f) && previousFroxelUVW < vec3(1.0f, 1.0f, 1.0f)) && !volumeArgs.resetHistory;

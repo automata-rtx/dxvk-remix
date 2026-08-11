@@ -434,6 +434,10 @@ namespace dxvk {
     compositeArgs.enableReSTIRGI = RtxOptions::useReSTIRGI();
     compositeArgs.sparseRenderingArgs = rtOutput.m_raytraceArgs.sparseRenderingArgs;
     compositeArgs.volumeArgs = rtOutput.m_raytraceArgs.volumeArgs;
+    // Note: The far half of Dusklight's fog - the distance the froxel grid does not reach. Carries its own copy of the
+    // fog colour because the legacy fog fields above have already been through rtx.fogColorScale, which is calibrated
+    // against a different fog path.
+    ctx->getCommonObjects()->metaDusklightAtmosphere().fillCompositeArgs(compositeArgs.dusklightArgs);
     compositeArgs.outputParticleLayer = ctx->useRayReconstruction() && rayReconstruction.useParticleBuffer();
     compositeArgs.outputSecondarySignalToParticleLayer = ctx->useRayReconstruction() && rayReconstruction.preprocessSecondarySignal();
     compositeArgs.enableDemodulateAttenuation = ctx->useRayReconstruction() && rayReconstruction.demodulateAttenuation();

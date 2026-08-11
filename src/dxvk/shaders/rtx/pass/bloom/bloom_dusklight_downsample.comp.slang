@@ -21,19 +21,25 @@
 */
 #include "rtx/pass/bloom/bloom.h"
 #include "rtx/pass/bloom/bloom_downsample.slangh"
+#include "rtx/utility/color.slangh"
 
-// Downsample step of the Dusklight bloom pyramid.
+// Downsample step of the Dusklight bloom pyramid. Its settings: DusklightOverlay.md.
 //
-// The default Remix pyramid gets all of its blur from the downsample kernel itself. Dusklight
-// instead runs an explicit blur at every level of the pyramid: eight taps spread evenly around a
-// ring of a fixed screen-space radius, with no center tap, each scaled by a per-pass gain. Because
-// the gain is applied once per level and the intermediate results saturate, bright cores wash out
-// to white while the surrounding halo keeps a smooth, wide falloff. That saturation is not an
-// artifact to be avoided - it is a large part of what the effect looks like.
+// The default Remix pyramid gets all of its blur from the downsample kernel; this runs an explicit
+// ring blur at every level instead - eight taps at a fixed screen-space radius, no center tap, each
+// scaled by a per-pass gain. Per-level gain plus saturating intermediates is what washes bright
+// cores to white while the halo keeps a wide smooth falloff. That saturation is the effect, not an
+// artifact to be removed.
 //
-// The first step of the chain does not blur. It thresholds instead, subtracting a constant from
-// every channel and letting the result clamp at zero. Subtracting per channel rather than
-// weighting by luminance is what keeps strongly coloured highlights saturated in the bloom.
+// The first step thresholds rather than blurring, and that threshold's shape is the most
+// distinctive thing about the effect. Measured from the original's three TEV stages:
+//
+//   key    = 0.25 * R + 0.25 * G + 0.5 * B      (swap tables R,R,R,G then B,B,B,A, mixed by HALF)
+//   source = colour * saturate(key - threshold)
+//
+// A luminance keyed mask, not a per channel subtraction, so the bloom keeps the source's own hue.
+// The weights are not a standard luma either - blue counts double red or green, which is why blue
+// highlights in this game bloom far more readily than their brightness alone suggests.
 
 layout(binding = BLOOM_DUSKLIGHT_DOWNSAMPLE_INPUT)
 Sampler2D<float4> InColorBuffer;
@@ -93,15 +99,21 @@ void main(uint2 ipos : SV_DispatchThreadID)
   if (cb.isInitial != 0)
   {
     // Use the same downsample kernel as the default pyramid here. The original effect just point
-    // samples the framebuffer, but the input at this point is raytraced HDR colour and a wider
-    // kernel keeps single bright pixels from making the whole bloom flicker.
+    // samples the framebuffer, but a wider kernel keeps single bright pixels from making the whole
+    // bloom flicker, which matters more here than the point sample's exactness.
     result = bloomDownsample13tap(InColorBuffer, calcUV(int2(ipos)), cb.inputSizeInverse);
 
-    if (cb.threshold > 0)
+    // The pyramid runs in whatever space the original did: display referred, so that the threshold
+    // means what it meant, and so the per pass saturation below clips at white rather than at some
+    // arbitrary point in an open ended range.
+    if (cb.displaySpace != 0)
     {
-      result = max(result - float3(cb.threshold), float3(0));
+      result = linearToGamma(max(result, float3(0)));
     }
 
+    const float key = dot(result, float3(0.25f, 0.25f, 0.5f));
+
+    result *= saturate(key - cb.threshold);
     result *= cb.gain;
   }
   else

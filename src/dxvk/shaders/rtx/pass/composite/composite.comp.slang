@@ -438,6 +438,26 @@ void applyVolumetricLighting(
       randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
       cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, primaryMiss, cameraGetWorldPosition(cb.camera), viewDistance, primaryRayDirections.worldDirection,
       volumetricPreintegratedRadiance, volumeAttenuation);
+
+    // Keep the medium off the sky (dusklight_composite_args.h, skyFogMode;
+    // DusklightAtmosphere.md §14.8).
+    //
+    // Done here rather than at applySkyContribution because the sky is fogged by two quantities,
+    // not one: the transmittance the dome is multiplied by, and the in-scatter added on top.
+    // Treating only the first leaves the sky the right brightness and still the wrong colour.
+    //
+    // Safe to touch volumeAttenuation on a miss: the only other consumer is
+    // remodulatedTotalPrimaryRadiance, which is what the primary ray hit, and on a miss it hit
+    // nothing.
+    if (primaryMiss && cb.dusklightArgs.enable != 0 && cb.dusklightArgs.skyFogMode != 0)
+    {
+      const float skyFog = (cb.dusklightArgs.skyFogMode == 1)
+        ? 0.0f
+        : saturate(cb.dusklightArgs.skyFogAmount);
+
+      volumetricPreintegratedRadiance *= skyFog;
+      volumeAttenuation = lerp(vec3(1.0f), volumeAttenuation, skyFog);
+    }
   }
 
   // Stochastic alpha blend
@@ -602,12 +622,83 @@ void applySkyContribution(
 void applyFog(
   float viewDistance,
   float radianceScale,
+  vec3 volumeAttenuation,
+  bool primaryMiss,
+  vec3 worldDirection,
   inout vec3 radianceOutput,
   inout vec4 particleLayerOutput)
 {
   if (cb.volumeArgs.enable)
   {
-    return; // Volumetric fog is applied in volume integration
+    // Volumetric fog is applied in volume integration - but only as far as the froxel grid reaches, because the froxel
+    // lookup saturates past its last slice and stops accumulating there. Dusklight's fog regularly runs far beyond that,
+    // so the game's own ramp carries the rest of the distance. DusklightAtmosphere.md §5.2.
+    if (cb.dusklightArgs.enable == 0)
+    {
+      return;
+    }
+
+    // Nothing was hit, so there is no surface at a distance to fog towards - the radiance here is the sky, which was
+    // just added above and is at infinity. Running the ramp on it would drive it to full fog and replace the sky with a
+    // flat colour, which is what the legacy path's maxFogDistance escape hatch existed to prevent. The two agree anyway:
+    // the game authors its fog colour and its sky colour from the same palette entry.
+    if (primaryMiss)
+    {
+      return;
+    }
+
+    const float span = cb.dusklightArgs.rampEnd - cb.dusklightArgs.rampStart;
+
+    if (span <= 0.0f || viewDistance <= cb.dusklightArgs.handoverDistance)
+    {
+      return;
+    }
+
+    // How much of the ramp the grid already covered, and how much of what it left is still to be fogged. Expressing the
+    // remainder as a fraction of the *remaining* clear signal is what stops the two halves counting the same air twice,
+    // and it reaches exactly 1 at the ramp's end - which is where the original went fully opaque and where an
+    // exponential medium never quite arrives.
+    const float fogAtHandover = saturate((cb.dusklightArgs.handoverDistance - cb.dusklightArgs.rampStart) / span);
+    const float fogAtDistance = saturate((viewDistance - cb.dusklightArgs.rampStart) / span);
+    const float remaining = 1.0f - fogAtHandover;
+
+    if (remaining <= 1e-4f)
+    {
+      // The grid already reaches past the end of the ramp; there is nothing left to add.
+      return;
+    }
+
+    float t = saturate((fogAtDistance - fogAtHandover) / remaining);
+
+    // Scaled by how much light the near volume still lets past, since the far fog sits behind that volume and can only
+    // affect what survives it. It also stands in for a separation we cannot make here: radianceOutput already holds the
+    // surface radiance and the near in-scatter summed, and only the former is behind the far fog, so blending both would
+    // erase in-scatter that is in front of it. Weighting by the near transmittance keeps that error where the in-scatter
+    // is small, which is the same place the far fog is strong.
+    t *= saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
+
+    vec3 farFogRadiance = cb.dusklightArgs.fogColor;
+
+    // Distant geometry fades towards the sky that is behind it, which is what aerial perspective
+    // means and why the original's fog colour was authored in the same palette entry as its sky.
+    // Once the sky is simulated the palette no longer describes it, so the fog follows the sky
+    // itself - sampled in the view direction, so it varies across the frame the way the sky does.
+    if (cb.dusklightArgs.skyColorWeight > 0.0f && cb.domeLightArgs.active)
+    {
+      const vec3 skyRadiance = cb.domeLightArgs.radiance *
+        sampleDomeLightTexture(SkyLight, worldDirection, cb.domeLightArgs.worldToLightTransform);
+
+      farFogRadiance = lerp(farFogRadiance, skyRadiance, saturate(cb.dusklightArgs.skyColorWeight));
+    }
+
+    if (cb.sparseRenderingArgs.mode != SparseRenderingMode::Off)
+    {
+      farFogRadiance *= radianceScale;
+    }
+
+    radianceOutput = lerp(radianceOutput, farFogRadiance, t);
+
+    return;
   }
 
   // Todo: Using view distance is a bit of a hack here, the primary emissive contribution will not be fully weighted correctly
@@ -778,7 +869,8 @@ vec4 compositeResult(
   applySkyContribution(pixelCoordinate, primaryRayDirections, primaryMiss, radianceScale, volumeAttenuation, radianceOutput);
 
   // Apply fog 
-  applyFog(viewDistance, radianceScale, radianceOutput, particleLayerOutput);
+  applyFog(viewDistance, radianceScale, volumeAttenuation, primaryMiss,
+           primaryRayDirections.worldDirection, radianceOutput, particleLayerOutput);
 
   // DLSS-RR needs to do alpha blending using the backgroundAlpha, so the input is untouched here.
   // Output final composite result for NRD denoiser.

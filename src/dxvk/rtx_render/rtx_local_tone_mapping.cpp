@@ -26,6 +26,7 @@
 #include "rtx.h"
 #include "rtx/pass/tonemap/tonemapping.h"
 #include "rtx/pass/local_tonemap/local_tonemapping.h"
+#include "dxvk_limits.h"
 #include "rtx_debug_view.h"
 
 #include <rtx_shaders/luminance.h>
@@ -34,8 +35,15 @@
 #include <rtx_shaders/blend.h>
 #include <rtx_shaders/blend_laplacian.h>
 #include <rtx_shaders/final_combine.h>
+#include "rtx_gt7.h"
 #include "rtx_imgui.h"
 #include "rtx/utility/debug_view_indices.h"
+
+// See the matching note in rtx_tone_mapping.cpp - the push constant budget is full.
+static_assert(sizeof(FinalCombineArgs) <= dxvk::MaxPushConstantSize,
+              "FinalCombineArgs no longer fits in the push constant budget.");
+static_assert(sizeof(LuminanceArgs) <= dxvk::MaxPushConstantSize,
+              "LuminanceArgs no longer fits in the push constant budget.");
 
 namespace dxvk {
   // Defined within an unnamed namespace to ensure unique definition across binary
@@ -132,7 +140,12 @@ namespace dxvk {
     RemixGui::DragInt("Display Mip", &displayMipObject(), 0.06f, 0, 16);
     RemixGui::Checkbox("Boost Local Contrast", &boostLocalContrastObject());
     RemixGui::Checkbox("Use Gaussian Kernel", &useGaussianObject());
-    RemixGui::Checkbox("Finalize With ACES", &finalizeWithACESObject());
+    RemixGui::Combo("Final Operator", &tonemapOperatorObject(), "None\0ACES\0AgX\0GT7\0");
+    if (tonemapOperator() == TonemapOperator::AgX) {
+      AgxSettings::showImguiSettings();
+    } else if (tonemapOperator() == TonemapOperator::GT7) {
+      Gt7Settings::showImguiSettings();
+    }
     RemixGui::DragFloat("Exposure Level", &exposureObject(), 0.01f, 0.f, 1000.f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     RemixGui::DragFloat("Shadow Level", &shadowsObject(), 0.01f, -10.f, 10.f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
     RemixGui::DragFloat("Highlight Level", &highlightsObject(), 0.01f, -10.f, 10.f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
@@ -151,6 +164,12 @@ namespace dxvk {
      const Resources::RaytracingOutput& rtOutput,
      const float frameTimeMilliseconds,
      bool enableAutoExposure) {
+
+    if (!m_migratedOperator) {
+      m_migratedOperator = true;
+      migrateFinalizeWithACES(finalizeWithACESObject(), tonemapOperatorObject(),
+                              "rtx.localtonemap.finalizeWithACES", "rtx.localtonemap.tonemapOperator");
+    }
 
     if (m_mips.views.size() == 0) {
       return;
@@ -181,6 +200,12 @@ namespace dxvk {
       pushArgs.debugView = debugView.debugViewIdx();
       pushArgs.enableAutoExposure = enableAutoExposure;
       pushArgs.useLegacyACES = RtxOptions::useLegacyACES();
+      // The fusion's ruler follows the selected operator - see localTonemapRuler() in
+      // local_tonemapping.slangh - so this pass needs the same operator parameters the final
+      // combine does.
+      pushArgs.tonemapOperator = static_cast<uint32_t>(tonemapOperator());
+      pushArgs.agx = AgxSettings::buildArgs();
+      pushArgs.gt7 = Gt7Settings::buildArgs();
       ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
       ctx->bindResourceView(LUMINANCE_ORIGINAL, rtOutput.m_finalOutput.view(Resources::AccessType::Read), nullptr);
       ctx->bindResourceView(LUMINANCE_OUTPUT, m_mips.views[0], nullptr);
@@ -271,8 +296,10 @@ namespace dxvk {
       pushArgs.resolution = uvec2 { finalResolution.width, finalResolution.height };
       pushArgs.debugView = debugView.debugViewIdx();
       pushArgs.enableAutoExposure = enableAutoExposure;
-      pushArgs.finalizeWithACES = finalizeWithACES();
+      pushArgs.tonemapOperator = static_cast<uint32_t>(tonemapOperator());
       pushArgs.useLegacyACES = RtxOptions::useLegacyACES();
+      pushArgs.agx = AgxSettings::buildArgs();
+      pushArgs.gt7 = Gt7Settings::buildArgs();
 
       ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 

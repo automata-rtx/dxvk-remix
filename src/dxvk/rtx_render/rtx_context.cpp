@@ -728,12 +728,22 @@ namespace dxvk {
         RtxDustParticles& dust = m_common->metaDustParticles();
         dust.simulateAndDraw(this, m_state, rtOutput);
 
-        dispatchBloom(rtOutput);
+        // The game's ambient grade stands in for lighting the path tracer replaced, so it
+        // runs on the shaded image before bloom gathers from it - the order the original
+        // frame had.
+        dispatchDusklightGrade(rtOutput);
+
+        dispatchBloom(rtOutput, DxvkBloom::Stage::PreTonemap);
 
         // Motion blur runs before tonemapping while the image is still in linear HDR space.
         dispatchPostFxMotionBlur(rtOutput);
 
         dispatchToneMapping(rtOutput);
+
+        // The Dusklight bloom runs here instead: it reproduces an effect that was authored
+        // against a finished 8 bit framebuffer, and almost everything about it - the threshold,
+        // the per pass clipping, the screen blend - is defined against display values.
+        dispatchBloom(rtOutput, DxvkBloom::Stage::PostTonemap);
 
         // Lens effects (chromatic aberration, vignette) run AFTER tonemapping. They are
         // display-space artifacts so they operate on post-tonemap LDR data.
@@ -1777,12 +1787,16 @@ namespace dxvk {
     this->spillRenderPass(false);
     this->unbindComputePipeline();
 
+    const bool resetToneMapperHistory = m_resetHistory || getSceneManager().getCamera().isCameraCut();
+
+    // Auto exposure gets the same reset signal as the tone mapper. It previously never received
+    // one at all - dispatch() defaulted resetHistory to false - so eye adaptation eased across
+    // level loads and camera cuts instead of snapping.
     DxvkAutoExposure& autoExposure = m_common->metaAutoExposure();
     autoExposure.dispatch(this,
       getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER),
-      rtOutput, GlobalTime::get().deltaTimeMs());
+      rtOutput, GlobalTime::get().deltaTimeMs(), resetToneMapperHistory);
 
-    const bool resetToneMapperHistory = m_resetHistory || getSceneManager().getCamera().isCameraCut();
     setFramePassStage(RtxFramePassStage::ToneMapping);
     if (RtxOptions::tonemappingMode() == TonemappingMode::Global) {
       DxvkToneMapping& toneMapper = m_common->metaToneMapping();
@@ -1805,10 +1819,23 @@ namespace dxvk {
     }
   }
 
-  void RtxContext::dispatchBloom(const Resources::RaytracingOutput& rtOutput) {
+  void RtxContext::dispatchDusklightGrade(const Resources::RaytracingOutput& rtOutput) {
+    ScopedCpuProfileZone();
+    DxvkDusklightGrade& grade = m_common->metaDusklightGrade();
+    if (!grade.isActive()) {
+      return;
+    }
+
+    this->spillRenderPass(false);
+    this->unbindComputePipeline();
+
+    grade.dispatch(this, rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite));
+  }
+
+  void RtxContext::dispatchBloom(const Resources::RaytracingOutput& rtOutput, DxvkBloom::Stage stage) {
     ScopedCpuProfileZone();
     DxvkBloom& bloom = m_common->metaBloom();
-    if (!bloom.isActive()) {
+    if (!bloom.isActive() || bloom.activeStage() != stage) {
       return;
     }
 
@@ -1818,7 +1845,8 @@ namespace dxvk {
 
     bloom.dispatch(this,
       getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE),
-      rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite));
+      rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite),
+      stage);
   }
 
   void RtxContext::dispatchPostFxMotionBlur(Resources::RaytracingOutput& rtOutput) {

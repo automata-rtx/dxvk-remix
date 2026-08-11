@@ -465,11 +465,21 @@ namespace dxvk {
     float transmittanceMeasurementDistance = transmittanceMeasurementDistanceMeters() * RtxOptions::getMeterToWorldUnitScale();
     Vector3 multiScatteringEstimate = Vector3();
 
+    // The Dusklight bridge derives one medium for the whole environment - fog, sky and volumetrics
+    // together - from the game's own palette, so when it is running the remap below has nothing to
+    // add and would only disagree with it.
+    const auto& dusklightAtmosphere = m_device->getCommon()->metaDusklightAtmosphere();
+    const bool dusklight = dusklightAtmosphere.active();
+
     // Check if fog density is below the configurable threshold to determine if physical volumetrics should be used.
     // This threshold was created specifically for Portal RTX's underwater fixed function fog.
-    const bool canUsePhysicalFog = shouldConvertToPhysicalFog(fogState, waterFogDensityThreshold());
+    // Note: The threshold's density approximation was fitted to another game's underwater fog and reads the captured
+    // linear fog's scale and end directly. Dusklight's ramps routinely start behind the camera, which is a regime it was
+    // never tuned for, so its answer is not consulted there.
+    const bool canUsePhysicalFog = dusklight || shouldConvertToPhysicalFog(fogState, waterFogDensityThreshold());
 
     if (
+      !dusklight &&
       enableFogRemap() &&
       // Note: Only consider remapping fog if any fixed function fog is actually enabled (not the "none" mode).
       fogState.mode != D3DFOG_NONE &&
@@ -541,12 +551,20 @@ namespace dxvk {
 
     // Calculate scattering and attenuation coefficients for the volume
 
-    Vector3 const volumetricAttenuationCoefficient{
+    Vector3 volumetricAttenuationCoefficient{
       -log(transmittanceColorLinear.x) / transmittanceMeasurementDistance,
       -log(transmittanceColorLinear.y) / transmittanceMeasurementDistance,
       -log(transmittanceColorLinear.z) / transmittanceMeasurementDistance
     };
-    Vector3 const volumetricScatteringCoefficient{ volumetricAttenuationCoefficient * singleScatteringAlbedo() };
+    Vector3 volumetricScatteringCoefficient{ volumetricAttenuationCoefficient * singleScatteringAlbedo() };
+
+    // Note: Replaces the medium wholesale rather than adjusting it, and reports back the distance and multi scattering
+    // terms it implies, so everything downstream that is derived from the medium stays consistent with the one actually
+    // in use rather than with the options it would otherwise have come from.
+    if (dusklight) {
+      dusklightAtmosphere.applyVolumeArgs(volumetricAttenuationCoefficient, volumetricScatteringCoefficient,
+                                          transmittanceMeasurementDistance, multiScatteringEstimate);
+    }
 
     const RtCamera& mainCamera = cameraManager.getMainCamera();
 
@@ -569,10 +587,15 @@ namespace dxvk {
 
     volumeArgs.maxAccumulationFrames = static_cast<uint16_t>(maxAccumulationFrames());
     volumeArgs.froxelDepthSliceDistributionExponent = froxelDepthSliceDistributionExponent();
-    volumeArgs.froxelMaxDistance = froxelMaxDistanceMeters() * RtxOptions::getMeterToWorldUnitScale();
+    // Note: Sized from the game's own fog range when the Dusklight bridge is running, so the grid's fixed slice count
+    // lands where the fog actually is - tight in a dense interior, wide across an open field. Already in render units,
+    // so it deliberately does not round trip through the metres option.
+    volumeArgs.froxelMaxDistance = dusklight
+      ? dusklightAtmosphere.derived().froxelMaxDistance
+      : froxelMaxDistanceMeters() * RtxOptions::getMeterToWorldUnitScale();
     volumeArgs.froxelFireflyFilteringLuminanceThreshold = froxelFireflyFilteringLuminanceThreshold();
     volumeArgs.attenuationCoefficient = volumetricAttenuationCoefficient;
-    volumeArgs.enable = enable() && canUsePhysicalFog;
+    volumeArgs.enable = enable() && (dusklight || canUsePhysicalFog);
     volumeArgs.enableTranslucentShadows = volumeArgs.enable && enableTranslucentShadows();
     volumeArgs.scatteringCoefficient = volumetricScatteringCoefficient;
     volumeArgs.enableVolumeRISInitialVisibility = enableInitialVisibility();
@@ -581,6 +604,13 @@ namespace dxvk {
     // Note: We need to invalidate the volumetric reservoir when detecting camera cut to avoid accumulating the history from different scenes
     volumeArgs.enableVolumeTemporalResampling = enableTemporalResampling() && !isViewHistoryInvalidated;
     volumeArgs.enableVolumeSpatialResampling = enableSpatialResampling() && !isViewHistoryInvalidated;
+    // Note: Reprojection rebuilds the previous frame's froxel mapping, which needs the extent that frame actually had.
+    // It only differs from the current one while the grid is following the game's fog range, but during those
+    // transitions using the current value would misplace every reprojected sample. On the first frame, and across a cut
+    // where there is no history to reproject anyway, the current extent is the honest answer.
+    volumeArgs.previousFroxelMaxDistance = (m_previousFroxelMaxDistance <= 0.0f || isViewHistoryInvalidated)
+      ? volumeArgs.froxelMaxDistance
+      : m_previousFroxelMaxDistance;
     volumeArgs.numSpatialSamples = spatialReuseMaxSampleCount();
     volumeArgs.spatialSamplingRadius = spatialReuseSamplingRadius();
     volumeArgs.numFroxelVolumes = m_numFroxelVolumes;     
@@ -609,7 +639,15 @@ namespace dxvk {
     const float invertedWorld = atmosphereInverted() ? -1.f : 1.f;
     const Vector3 sceneUpDirection = RtxOptions::zUp() ? Vector3(0, 0, invertedWorld) : Vector3(0, invertedWorld, 0);
 
-    const float atmosphereHeight = atmosphereHeightMeters() * RtxOptions::getMeterToWorldUnitScale();
+    // Note: The shell has to actually contain the fog, or forcing the atmosphere on below trades one problem for a worse
+    // one: the medium gets clipped at the shell's ceiling and an open field's fog stops partway up. The option's own
+    // default is 30 m, which is shorter than most of this game's fog ranges.
+    float atmosphereHeight = atmosphereHeightMeters() * RtxOptions::getMeterToWorldUnitScale();
+
+    if (dusklight && dusklightAtmosphere.outdoor()) {
+      atmosphereHeight = std::max(atmosphereHeight, dusklightAtmosphere.derived().rampEnd);
+    }
+
     const float planetRadius = atmospherePlanetRadiusMeters() * RtxOptions::getMeterToWorldUnitScale();
     // Create a virtual planet center by projecting the camera position onto the plane defined by the origin and scene up direction.
     // Todo: Consider pre-transforming this planet center into the various volume camera translated world spaces to avoid needing to do this translation on the GPU constantly. May be just as costly however
@@ -617,7 +655,10 @@ namespace dxvk {
     const Vector3 planetCenter = project(mainCamera.getPosition(), Vector3(), sceneUpDirection) - sceneUpDirection * planetRadius;
     const float atmosphereRadius = atmosphereHeight + planetRadius;
 
-    volumeArgs.enableAtmosphere = enableAtmosphere();
+    // Note: A finite atmosphere is not optional outdoors - without one the volume reaches to infinity in every
+    // direction and the sky and distant lights, which are themselves infinitely far away, never resolve properly. The
+    // game tells us which areas have a sky, so outdoors it is forced on rather than left to a config file.
+    volumeArgs.enableAtmosphere = enableAtmosphere() || (dusklight && dusklightAtmosphere.outdoor());
     volumeArgs.sceneUpDirection = sceneUpDirection;
     volumeArgs.atmosphereHeight = atmosphereHeight;
     volumeArgs.planetCenter = planetCenter;
@@ -652,6 +693,8 @@ namespace dxvk {
 
     // Note: We need to invalidate the volumetric history buffers (radiance and age buffers) when detecting camera cut to avoid accumulating the history from different scenes
     volumeArgs.resetHistory = isViewHistoryInvalidated;
+
+    m_previousFroxelMaxDistance = volumeArgs.froxelMaxDistance;
 
     return volumeArgs;
   }

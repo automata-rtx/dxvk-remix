@@ -1,10 +1,17 @@
 name: Build
 
 on:
+  # Session work happens on claude/** branches, so those are built directly -
+  # without them a feature branch gets no build until a PR opens, which is
+  # exactly when a compile error is most expensive to find.
+  #
+  # Fixed-Function-dev is the branch this fork actually develops on (CLAUDE.md).
+  # It was missing here, so every merge into it landed unbuilt and a bad
+  # conflict resolution could sit undetected until someone else pulled it.
   push:
-    branches: [ main, 'release/**' ]
+    branches: [ main, 'release/**', 'claude/**', Fixed-Function-dev ]
   pull_request:
-    branches: [ main, 'release/**' ]
+    branches: [ main, 'release/**', Fixed-Function-dev ]
 
 jobs:
   build-windows:
@@ -54,41 +61,14 @@ jobs:
           _output\*.txt
           _output\usd\*
 
-    - name: Move DXVK
-      shell: pwsh
-      run: |
-        mkdir _output\.trex
-        Move-Item -Path _output\*.dll -Destination _output\.trex\
-        Move-Item -Path _output\*.pdb -Destination _output\.trex\
-        Move-Item -Path _output\usd -Destination _output\.trex\usd
-
-    - name: Build Bridge
-      shell: pwsh
-      run: |
-        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
-        pushd bridge
-        . .\build_bridge_${{matrix.build-flavour}}.bat
-        popd
-
-    - name: Copy Bridge
-      shell: pwsh
-      run: |
-        Copy-Item -Recurse -Path bridge\_output\* -Destination _output\ -Force
-
-    - name: Upload x86 binaries
-      uses: actions/upload-artifact@v7
-      with:
-        name: rtx-remix-for-x86-games-${{github.run_number}}-${{env.GITHUB_SHA_SHORT}}-${{matrix.build-flavour}}
-        include-hidden-files: true
-        path: |
-          _output\*.dll
-          _output\*.exe
-          _output\*.pdb
-          _output\*.txt
-          _output\.trex\*.dll
-          _output\.trex\*.exe
-          _output\.trex\*.pdb
-          _output\.trex\usd\*
+    # The x86 bridge is deliberately not built here. It exists so that 32 bit games can reach a 64
+    # bit Remix across a process boundary; Dusklight is 64 bit and loads this d3d9.dll directly, so
+    # nothing in this fork's workflow consumes that artifact. Building it cost roughly a third of
+    # every run's wall clock and was the only reason _output had to be restructured into .trex\
+    # after the x64 artifact was already uploaded.
+    #
+    # Upstream still needs it. If this fork is ever rebased onto a version that changes the bridge,
+    # this is the deletion to reapply rather than a conflict to resolve.
 
   notify-slack-on-failure:
     runs-on: ubuntu-latest

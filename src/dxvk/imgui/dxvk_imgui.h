@@ -99,6 +99,10 @@ namespace dxvk {
     static void SetFogStates(const fast_unordered_cache<FogState>& fogStates, XXH64_hash_t usedFogHash);
 
     void switchMenu(UIType type, bool force = false);
+
+    // The Dusklight overlay is a plain ImGui window rather than a tab, drawn outside the gate that
+    // hides Remix's own menus, so the two are independent and either can be up without the other.
+    bool isDusklightWindowOpen() const { return m_dusklightWindowOpen; }
     
     enum Tabs {
       kTab_Rendering = 0,
@@ -200,6 +204,8 @@ namespace dxvk {
     std::unique_ptr<RtxGraphGUI> m_graphGUI;
 
     static constexpr const char* tabNames[] = { "Rendering", "Game Setup", "Enhancements", "About" , "Dev Settings"};
+    static_assert(sizeof(tabNames) / sizeof(tabNames[0]) == kTab_Count,
+                  "tabNames must stay in step with Tabs");
     Tabs m_curTab = kTab_Count;
     Tabs m_triggerTab = kTab_Count;
     void triggerTab(const Tabs tab) {
@@ -243,6 +249,14 @@ namespace dxvk {
     void showEnhancementsWindow(const Rc<DxvkContext>& ctx);
     void showEnhancementsTab(const Rc<DxvkContext>& ctx);
     void showDevelopmentSettings(const Rc<DxvkContext>& ctx);
+
+    void showDusklightWindow(const Rc<DxvkContext>& ctx);
+    void showDusklightRemixTab(const Rc<DxvkContext>& ctx);
+    void showDusklightWarpTab(const Rc<DxvkContext>& ctx);
+    void showDusklightTimeOfDay();
+    void showDusklightControlsTab(const Rc<DxvkContext>& ctx);
+    void showDusklightOverlay(const Rc<DxvkContext>& ctx);
+    bool m_dusklightWindowOpen = false;
 
     // helper to display a configurable grid of all textures currently hooked to ImGUI
     void showTextureSelectionGrid(const Rc<DxvkContext>& ctx, const char* uniqueId, const uint32_t texturesPerRow, const float thumbnailSize, const float minChildHeight = 600.0f);

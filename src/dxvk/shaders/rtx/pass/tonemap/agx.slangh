@@ -1,0 +1,133 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// AgX tone mapping.
+//
+// The sigmoid approximation is "Minimal AgX Implementation" by Benjamin Wrensch (MIT):
+//   https://iolite-engine.com/blog_posts/minimal_agx_implementation
+// The surrounding transform follows three.js's AgXToneMapping, which in turn follows Filament
+// (https://github.com/google/filament/pull/7236) and Blender in doing the work on Rec.2020
+// primaries rather than folding the conversion into a single sRGB-space inset matrix. The wider
+// working gamut is where AgX's characteristic behaviour comes from: a saturated highlight has
+// somewhere to travel as it rolls off, so it desaturates toward white instead of clipping into a
+// flat primary. Constants below were taken from
+//   three.js src/renderers/shaders/ShaderChunk/tonemapping_pars_fragment.glsl.js
+// and are reproduced verbatim.
+//
+// Input and output are LINEAR Rec.709 / sRGB primaries, matching what the rest of this renderer
+// works in - ACES.hlsl documents the same input space - so no conversion is needed around it.
+//
+// On the trailing pow(x, 2.2): it is a DECODE, not a display transform. The AgX sigmoid emits
+// display-referred values, and this returns them to linear. It has to stay, because this
+// renderer applies the sRGB EOTF exactly once, later, in the srgb_dither pass. Removing it in
+// the belief that it double-applies gamma produces a washed out image with grey blacks.
+
+#include "rtx/utility/color.slangh"
+#include "rtx/pass/tonemap/tonemapping.h"
+
+// NOTE ON TRANSPOSITION. The reference is GLSL, where mat3(a, b, c) takes a, b and c as COLUMNS.
+// HLSL/Slang's float3x3(a, b, c) takes them as ROWS, and mul(M, v) dots v against the rows. Every
+// matrix below is therefore the transpose of how it appears in three.js. Each row here sums to
+// 1.0, which is the quick check that the transposition went the right way: all four of these are
+// white-preserving, so a row that does not sum to 1 means the matrix is sideways. Getting this
+// wrong yields an image that looks plausible but has wrong saturation everywhere.
+
+static const float3x3 kAgxLinearSRGBToRec2020 = float3x3(
+  float3(0.6274, 0.3293, 0.0433),
+  float3(0.0691, 0.9195, 0.0113),
+  float3(0.0164, 0.0880, 0.8956)
+);
+
+static const float3x3 kAgxRec2020ToLinearSRGB = float3x3(
+  float3( 1.6605, -0.5876, -0.0728),
+  float3(-0.1246,  1.1329, -0.0083),
+  float3(-0.0182, -0.1006,  1.1187)
+);
+
+static const float3x3 kAgxInsetMatrix = float3x3(
+  float3(0.856627153315983,  0.0951212405381588, 0.0482516061458583),
+  float3(0.137318972929847,  0.761241990602591,  0.101439036467562 ),
+  float3(0.11189821299995,   0.0767994186031903, 0.811302368396859 )
+);
+
+// Explicit outset matrix generated from Filament's AgXOutsetMatrixInv.
+static const float3x3 kAgxOutsetMatrix = float3x3(
+  float3( 1.1271005818144368,   -0.11060664309660323,  -0.016493938717834573),
+  float3(-0.1413297634984383,    1.157823702216272,    -0.016493938717834257),
+  float3(-0.14132976349843826,  -0.11060664309660294,   1.2519364065950405  )
+);
+
+// 6th order polynomial fit of the AgX contrast sigmoid. Mean error^2: 3.6705141e-06.
+float3 agxDefaultContrastApprox(float3 x)
+{
+  const float3 x2 = x * x;
+  const float3 x4 = x2 * x2;
+
+  return   15.5f    * x4 * x2
+         - 40.14f   * x4 * x
+         + 31.96f   * x4
+         -  6.868f  * x2 * x
+         +  0.4298f * x2
+         +  0.1191f * x
+         -  0.00232f;
+}
+
+// ASC-CDL style look transform, applied between the sigmoid and the outset matrix so that it
+// operates on the log-encoded, contrast-shaped signal the way the reference implementation
+// intends. Saturation is applied around Rec.709 luminance.
+float3 agxApplyLook(float3 color, AgxArgs args)
+{
+  const float luma = calcBt709Luminance(color);
+
+  color = pow(max(color * args.lookSlope + args.lookOffset, float3(0.0f)), float3(args.lookPower));
+
+  return luma + args.lookSaturation * (color - luma);
+}
+
+// color: linear Rec.709. Returns linear Rec.709.
+float3 agxToneMapping(float3 color, AgxArgs args)
+{
+  color = mul(kAgxLinearSRGBToRec2020, color);
+
+  color = mul(kAgxInsetMatrix, color);
+
+  // Log2 encode over the configured dynamic range, then normalise to [0, 1].
+  color = max(color, float3(1e-10f));
+  color = log2(color);
+  color = (color - args.minEv) / max(args.maxEv - args.minEv, 1e-4f);
+  color = saturate(color);
+
+  color = agxDefaultContrastApprox(color);
+
+  color = agxApplyLook(color, args);
+
+  color = mul(kAgxOutsetMatrix, color);
+
+  // Linearize. See the note at the top of this file - this is not a display transform.
+  color = pow(max(color, float3(0.0f)), float3(2.2f));
+
+  color = mul(kAgxRec2020ToLinearSRGB, color);
+
+  // Gamut mapping. Simple clamp, matching the reference.
+  return saturate(color);
+}

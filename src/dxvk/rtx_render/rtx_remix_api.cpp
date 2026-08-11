@@ -86,13 +86,10 @@ namespace {
   }
 
 
-  // from rtx_mod_usd.cpp
-  XXH64_hash_t hack_getNextGeomHash() {
-    static uint64_t s_id = UINT64_MAX;
-    std::lock_guard lock { s_mutex };
-    --s_id;
-    return XXH64(&s_id, sizeof(s_id), 0);
-  }
+  // (Removed: hack_getNextGeomHash, a creation-order counter that used to
+  //  supply API mesh hashes. Those are content-derived now so that an API
+  //  asset can be captured and replaced like a game asset - see the mesh
+  //  construction below.)
 
 
   template<typename T>
@@ -1021,11 +1018,24 @@ namespace {
         dst.indexCount = src.indices_count;
         static_assert(sizeof(src.indices_values[0]) == 4);
         dst.indexBuffer = dxvk::RasterBuffer { indexSlice, 0, sizeof(uint32_t), VK_INDEX_TYPE_UINT32 };
-        // look comments in UsdMod::Impl::processMesh, rtx_mod_usd.cpp
-        dst.hashes[dxvk::HashComponents::Indices] = dst.hashes[dxvk::HashComponents::VertexPosition] = hack_getNextGeomHash();
-        dst.hashes[dxvk::HashComponents::VertexTexcoord] = hack_getNextGeomHash();
-        dst.hashes[dxvk::HashComponents::GeometryDescriptor] = hack_getNextGeomHash();
-        dst.hashes[dxvk::HashComponents::VertexLayout] = hack_getNextGeomHash();
+        // Content-derived, not a counter. These hashes are what a capture writes
+        // and what a replacement is keyed on, so an API mesh whose hash came
+        // from creation order could be captured but never replaced: the value
+        // changed on the next launch. Hashing the submitted vertex and index
+        // data makes an API asset addressable exactly like a game asset.
+        const XXH64_hash_t vertexHash =
+          XXH64(src.vertices_values, src.vertices_count * sizeof(src.vertices_values[0]), 0);
+        const XXH64_hash_t indexHash =
+          XXH64(src.indices_values, src.indices_count * sizeof(src.indices_values[0]), 0);
+
+        dst.hashes[dxvk::HashComponents::VertexPosition] = vertexHash;
+        dst.hashes[dxvk::HashComponents::Indices] = indexHash;
+        dst.hashes[dxvk::HashComponents::VertexTexcoord] = vertexHash;
+        dst.hashes[dxvk::HashComponents::GeometryDescriptor] =
+          XXH64(&dst.vertexCount, sizeof(dst.vertexCount), dst.indexCount);
+        dst.hashes[dxvk::HashComponents::VertexLayout] =
+          XXH64(&dst.numBonesPerVertex, sizeof(dst.numBonesPerVertex),
+                src.skinning_hasvalue ? 1u : 0u);
         dst.hashes.precombine();
       }
       allocatedSurfaces.push_back(std::move(dst));

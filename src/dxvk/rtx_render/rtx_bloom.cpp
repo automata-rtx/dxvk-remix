@@ -120,36 +120,58 @@ namespace dxvk {
     ImGui::Indent();
     RemixGui::DragFloat("Intensity##bloom", &burnIntensityObject(), 0.05f, 0.f, 5.f, "%.2f");
 
-    RemixGui::Checkbox("Dusklight Bloom##bloom", &dusklightObject());
-
     if (dusklight()) {
-      ImGui::Indent();
-      RemixGui::Checkbox("Follow Game##bloomDusklight", &dusklightFollowGameObject());
-
-      const bool feedActive = dusklightFollowGame() && DusklightEnv::enable();
-      if (feedActive) {
-        ImGui::TextWrapped("Driven by the game's environment feed (rtx.dusklight.env.*).");
-        RemixGui::DragFloat("Threshold Scale##bloomDusklight", &dusklightThresholdScaleObject(), 0.01f, 0.f, 10.f, "%.2f");
-      } else {
-        RemixGui::DragFloat("Threshold##bloomDusklight", &dusklightThresholdObject(), 0.01f, 0.f, 100.f, "%.2f");
-        RemixGui::DragFloat("Blur Size##bloomDusklight", &dusklightBlurSizeObject(), 1.f, 0.f, 255.f, "%.0f");
-        RemixGui::DragFloat("Blur Ratio##bloomDusklight", &dusklightBlurRatioObject(), 1.f, 0.f, 255.f, "%.0f");
-        RemixGui::ColorEdit3("Tint##bloomDusklight", &dusklightTintObject());
-        RemixGui::Checkbox("Screen Blend##bloomDusklight", &dusklightScreenBlendObject());
-        RemixGui::DragFloat("Base Weight##bloomDusklight", &dusklightBaseWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
-        RemixGui::ColorEdit3("Mono Color##bloomDusklight", &dusklightMonoColorObject());
-        RemixGui::DragFloat("Mono Amount##bloomDusklight", &dusklightMonoAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
-      }
-
-      RemixGui::Checkbox("Mono Uses Luminance##bloomDusklight", &dusklightMonoUseLuminanceObject());
-      RemixGui::DragFloat("Level Falloff##bloomDusklight", &dusklightFalloffObject(), 0.01f, 0.01f, 1.f, "%.2f");
-      RemixGui::DragFloat("Saturation Point##bloomDusklight", &dusklightSaturationPointObject(), 0.05f, 0.f, 100.f, "%.2f");
-      ImGui::Unindent();
+      ImGui::TextWrapped(
+        "Running the game's own bloom. Its controls live in the Dusklight tab, with the rest of the "
+        "settings that reproduce that game rather than configure this renderer.");
     } else {
       RemixGui::DragFloat("Threshold##bloom", &luminanceThresholdObject(), 0.05f, 0.f, 100.f, "%.2f");
     }
 
     RemixGui::SliderInt("Radius##bloom", &stepsObject(), 4, MaxBloomSteps);
+    ImGui::Unindent();
+    ImGui::Unindent();
+  }
+
+  // Shown from the Dusklight tab rather than next to the bloom settings above. The two are one
+  // pass and one option block, but they answer different questions - the settings above configure
+  // this renderer, and these reproduce a specific game - and mixing them made both harder to find.
+  void DxvkBloom::showDusklightImguiSettings() {
+    ImGui::Indent();
+    RemixGui::Checkbox("Dusklight Bloom##bloom", &dusklightObject());
+
+    if (!dusklight()) {
+      ImGui::TextWrapped(
+        "Off: Remix's own bloom is running instead. Its intensity and radius are under "
+        "Rendering > Post-Processing > Bloom.");
+      ImGui::Unindent();
+      return;
+    }
+
+    ImGui::Indent();
+    RemixGui::Checkbox("Follow Game##bloomDusklight", &dusklightFollowGameObject());
+
+    const bool feedActive = dusklightFollowGame() && DusklightEnv::enable();
+    if (feedActive) {
+      ImGui::TextWrapped("Driven by the game's environment feed (rtx.dusklight.env.*).");
+      RemixGui::DragFloat("Threshold Scale##bloomDusklight", &dusklightThresholdScaleObject(), 0.01f, 0.f, 10.f, "%.2f");
+    } else {
+      RemixGui::DragFloat("Threshold##bloomDusklight", &dusklightThresholdObject(), 0.01f, 0.f, 100.f, "%.2f");
+      RemixGui::DragFloat("Blur Size##bloomDusklight", &dusklightBlurSizeObject(), 1.f, 0.f, 255.f, "%.0f");
+      RemixGui::DragFloat("Blur Ratio##bloomDusklight", &dusklightBlurRatioObject(), 1.f, 0.f, 255.f, "%.0f");
+      RemixGui::ColorEdit3("Tint##bloomDusklight", &dusklightTintObject());
+      RemixGui::Checkbox("Screen Blend##bloomDusklight", &dusklightScreenBlendObject());
+      RemixGui::DragFloat("Base Weight##bloomDusklight", &dusklightBaseWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
+      RemixGui::ColorEdit3("Mono Color##bloomDusklight", &dusklightMonoColorObject());
+      RemixGui::DragFloat("Mono Amount##bloomDusklight", &dusklightMonoAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
+    }
+
+    RemixGui::Checkbox("Display Referred##bloomDusklight", &dusklightDisplaySpaceObject());
+    RemixGui::Checkbox("Mono Uses Luminance##bloomDusklight", &dusklightMonoUseLuminanceObject());
+    RemixGui::DragFloat("Level Falloff##bloomDusklight", &dusklightFalloffObject(), 0.01f, 0.01f, 1.f, "%.2f");
+    RemixGui::DragFloat("Saturation Point##bloomDusklight", &dusklightSaturationPointObject(), 0.05f, 0.f, 100.f, "%.2f");
+    RemixGui::DragFloat("Intensity##bloomDusklightShared", &burnIntensityObject(), 0.05f, 0.f, 5.f, "%.2f");
+    RemixGui::SliderInt("Radius##bloomDusklightShared", &stepsObject(), 4, MaxBloomSteps);
     ImGui::Unindent();
     ImGui::Unindent();
   }
@@ -184,9 +206,18 @@ namespace dxvk {
     return p;
   }
 
+  DxvkBloom::Stage DxvkBloom::activeStage() const {
+    return dusklight() && dusklightDisplaySpace() ? Stage::PostTonemap : Stage::PreTonemap;
+  }
+
   void DxvkBloom::dispatch(Rc<RtxContext> ctx,
                            Rc<DxvkSampler> linearSampler,
-                           const Resources::Resource& inOutColorBuffer) {
+                           const Resources::Resource& inOutColorBuffer,
+                           Stage stage) {
+    if (stage != activeStage()) {
+      return;
+    }
+
     ScopedGpuProfileZone(ctx, "Bloom");
     ctx->setFramePassStage(RtxFramePassStage::Bloom);
 
@@ -252,6 +283,9 @@ namespace dxvk {
       // means the depth of the pyramid changes how wide the bloom is without changing how bright
       // it is. Every step past the first blurs; the first only thresholds, and picks up the gain
       // itself only when the pyramid is too shallow to have any blur passes at all.
+      // One blur per level below the threshold step. The original runs five of them (its divStart
+      // 2 through divNum 6), which corresponds to rtx.bloom.steps = 6 here - the default of 5 is
+      // one short, so the gain lands differently and the halo stops one level narrower.
       const int blurPassCount = std::max(bloomDepth - 1, 1);
       const float totalGain = std::max(dl.blurRatio, 0.0f) * 16.0f / 255.0f;
       const float gainPerPass = std::pow(totalGain, 1.0f / static_cast<float>(blurPassCount));
@@ -269,9 +303,12 @@ namespace dxvk {
       // instead of drowning them out the way an unweighted sum would.
       const float falloff = std::clamp(dusklightFalloff(), 0.01f, 1.0f);
 
+      // The original's exponent counts levels from the top of the blur chain, not from the top of
+      // the pyramid: alpha = falloff^(1/(i - divStart + 1)) with divStart 2, i.e. one less than
+      // the level index. Getting this off by one leaves every level slightly too faint.
       for (int i = bloomDepth; i > 1; i--) {
         dispatchUpsampleStep(ctx, linearSampler, *res[i], *res[i - 1],
-                             std::pow(falloff, 1.0f / static_cast<float>(i)));
+                             std::pow(falloff, 1.0f / static_cast<float>(i - 1)));
       }
     }
 
@@ -326,6 +363,7 @@ namespace dxvk {
     pushArgs.monoColor = monoColor;
     pushArgs.monoAmount = monoAmount;
     pushArgs.useLuminance = dusklightMonoUseLuminance() ? 1u : 0u;
+    pushArgs.displaySpace = dusklightDisplaySpace() ? 1u : 0u;
     ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 
     const VkExtent3D workgroups = util::computeBlockCount(imageSize, VkExtent3D{ 16, 16, 1 });
@@ -359,6 +397,7 @@ namespace dxvk {
     pushArgs.gain = gain;
     pushArgs.saturationPoint = std::max(dusklightSaturationPoint(), 0.0f);
     pushArgs.isInitial = initial ? 1u : 0u;
+    pushArgs.displaySpace = dusklightDisplaySpace() ? 1u : 0u;
     ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 
     const VkExtent3D workgroups = util::computeBlockCount(outputSize, VkExtent3D{ 16, 16, 1 });
@@ -416,10 +455,18 @@ namespace dxvk {
     BloomCompositeArgs pushArgs = {};
     pushArgs.imageSize = { outputSize.width, outputSize.height };
     pushArgs.imageSizeInverse = { 1.f / float(outputSize.width), 1.f / float(outputSize.height) };
-    pushArgs.intensity = 0.01f * std::max(burnIntensity(), 0.0f);
+    // Remix's own pyramid gathers broadly from unthresholded HDR and needs heavy attenuation
+    // here; the 0.01 is calibrated for it. The Dusklight path must not inherit that. Its
+    // brightness is already fully specified by the game's own blur ratio, and the original
+    // composite adds its bloom at full strength - modulated only by the blend colour and the
+    // hardware blend factors, with no scale factor anywhere. Inheriting Remix's attenuation made
+    // ours a hundred times too faint, which is exactly why it needed every brightness knob pinned
+    // to its maximum to show up at all, and why turning it off looked closer to the original.
+    pushArgs.intensity = std::max(burnIntensity(), 0.0f) * (dusklight() ? 1.0f : 0.01f);
     pushArgs.tint = tint;
     pushArgs.screenBlend = screenBlend ? 1u : 0u;
     pushArgs.baseWeight = baseWeight;
+    pushArgs.displaySpace = (dusklight() && dusklightDisplaySpace()) ? 1u : 0u;
     ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
 
     VkExtent3D workgroups = util::computeBlockCount(outputSize, VkExtent3D{ 16 , 16, 1 });

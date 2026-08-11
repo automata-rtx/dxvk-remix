@@ -1,0 +1,28 @@
+name: Invariants
+
+# Deliberately unfiltered by path. The drift these checks look for is between
+# code and documentation, so a documentation-only commit is the most likely way
+# to introduce it - a filtered check would miss the case it exists for.
+#
+# Also unfiltered by branch, unlike build.yml: a Fixed-Function-dev merge is
+# where two branches' facts first meet, and that is precisely when these
+# disagree. Runs in seconds.
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: invariants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  invariants:
+    name: Cross-file invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check Dusklight cross-file invariants
+        run: python3 scripts/check_dusklight_invariants.py

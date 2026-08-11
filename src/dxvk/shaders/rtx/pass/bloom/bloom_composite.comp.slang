@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx/pass/bloom/bloom.h"
+#include "rtx/utility/color.slangh"
 
 layout(binding = BLOOM_COMPOSITE_COLOR_INPUT_OUTPUT)
 RWTexture2D<float4> InOutColorBuffer; 
@@ -51,13 +52,31 @@ void main(uint2 ipos : SV_DispatchThreadID)
 
   float3 bloom = src.rgb * cb.intensity * cb.tint;
 
+  // The bloom was gathered in display referred space, so meet it there. Both remaining operations
+  // are defined against display values: the screen blend reads "how close to white is this pixel
+  // already", and the base weight is a blend alpha against a 0..1 framebuffer. Doing either to
+  // open ended linear radiance means something quite different.
+  float3 base = dst.rgb;
+
+  if (cb.displaySpace != 0)
+  {
+    base = linearToGamma(max(base, float3(0.0)));
+  }
+
   if (cb.screenBlend != 0)
   {
     // Screen style blend: the brighter the image already is here, the less bloom it takes. Keeps
     // highlights glowing instead of flattening them into a uniform white blob. Uses the
     // unweighted destination, matching the hardware blend this reproduces.
-    bloom *= max(float3(1.0) - dst.rgb, float3(0.0));
+    bloom *= max(float3(1.0) - base, float3(0.0));
   }
 
-  InOutColorBuffer[ipos] = float4(dst.rgb * cb.baseWeight + bloom, dst.a);
+  float3 result = base * cb.baseWeight + bloom;
+
+  if (cb.displaySpace != 0)
+  {
+    result = gammaToLinear(max(result, float3(0.0)));
+  }
+
+  InOutColorBuffer[ipos] = float4(result, dst.a);
 }

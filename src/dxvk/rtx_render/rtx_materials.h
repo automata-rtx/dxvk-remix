@@ -21,6 +21,7 @@
 */
 #pragma once
 
+#include <cmath>
 #include <memory>
 #include <variant>
 
@@ -226,6 +227,66 @@ struct RtSurface {
     writeGPUHelper(data, offset, instanceToWorld.data[3].y);
     writeGPUHelper(data, offset, instanceToWorld.data[3].z);
 
+    // Projective texture transform (D3DTTFF_PROJECTED) encoding. Computed here rather than
+    // where it is written, because it scales the two coordinate rows written immediately
+    // below as well as the divisor row written near the end of this function.
+    //
+    // The divisor row has four coefficients and only three words are free to carry it (see
+    // the eye origin below). The fourth is removed rather than approximated: every path
+    // that feeds this transform supplies a coordinate whose w is exactly 1 - a plain
+    // texcoord is (u, v, 1, 1) and a view position is an affine transform of (pos, 1) - so
+    // dividing the whole matrix through by the divisor row's w coefficient makes that
+    // coefficient exactly 1 and leaves it implicit. Scaling all three rows by the same
+    // factor leaves the quotient unchanged, so this costs nothing. When the coefficient is
+    // already zero there is nothing to remove and the rows are stored as they are.
+    //
+    // Every stored number keeps full float precision this way. An earlier revision packed
+    // four halves into the same space instead and measured up to 6% error on divisors that
+    // nearly cancel, which is exactly what a perspective divisor does near its focal plane.
+    float projectiveRowScale = 1.0f;
+    float projectiveRowX = 0.0f, projectiveRowY = 0.0f, projectiveRowZ = 0.0f;
+    bool projectiveConstantIsOne = false;
+    bool encodeProjection = false;
+
+    if (isTexcoordProjected && texcoordElementCount >= 3 && texcoordElementCount <= 4) {
+      // Shader row r, column c is textureTransform.data[c][r], matching how the coordinate
+      // rows are written below. The divisor is the last output element.
+      const size_t divisorRow = static_cast<size_t>(texcoordElementCount) - 1;
+      const float a = textureTransform.data[0][divisorRow];
+      const float b = textureTransform.data[1][divisorRow];
+      const float c = textureTransform.data[2][divisorRow];
+      const float d = textureTransform.data[3][divisorRow];
+
+      if (d != 0.0f) {
+        projectiveRowScale = 1.0f / d;
+        projectiveRowX = a * projectiveRowScale;
+        projectiveRowY = b * projectiveRowScale;
+        projectiveRowZ = c * projectiveRowScale;
+        projectiveConstantIsOne = true;
+      } else {
+        projectiveRowX = a;
+        projectiveRowY = b;
+        projectiveRowZ = c;
+      }
+
+      // An all zero divisor row divides every pixel by zero, and a pathologically small w
+      // coefficient overflows the scaled rows to infinity. Declining to encode either
+      // leaves the surface non-projective, which is what this runtime did before projective
+      // transforms were implemented at all - wrong in a familiar way rather than NaN.
+      const bool finite =
+        std::isfinite(projectiveRowScale) && std::isfinite(projectiveRowX) &&
+        std::isfinite(projectiveRowY) && std::isfinite(projectiveRowZ);
+      const bool nonZero =
+        projectiveConstantIsOne ||
+        projectiveRowX != 0.0f || projectiveRowY != 0.0f || projectiveRowZ != 0.0f;
+
+      encodeProjection = finite && nonZero;
+
+      if (!encodeProjection) {
+        projectiveRowScale = 1.0f;
+      }
+    }
+
     if (eyeParams) {
       // eye vectors are aliased with texture transform
       writeGPUHelper(data, offset, eyeParams->eyeRightU[0]);
@@ -237,15 +298,21 @@ struct RtSurface {
       writeGPUHelper(data, offset, eyeParams->eyeUpV[2]);
       writeGPUHelper(data, offset, uint32_t{});
     } else {
-      // Note: Only 2 rows of texture transform written for now due to limit of 2 element restriction.
-      writeGPUHelper(data, offset, textureTransform.data[0].x);
-      writeGPUHelper(data, offset, textureTransform.data[1].x);
-      writeGPUHelper(data, offset, textureTransform.data[2].x);
-      writeGPUHelper(data, offset, textureTransform.data[3].x);
-      writeGPUHelper(data, offset, textureTransform.data[0].y);
-      writeGPUHelper(data, offset, textureTransform.data[1].y);
-      writeGPUHelper(data, offset, textureTransform.data[2].y);
-      writeGPUHelper(data, offset, textureTransform.data[3].y);
+      // Note: Only the 2 coordinate rows of the texture transform are written; a third
+      // output element only ever exists on a projective transform, where it is a divisor
+      // rather than a coordinate and rides in the words below instead.
+      //
+      // projectiveRowScale is 1 for everything that is not projective. Where it is not, all
+      // three rows carry the same factor so the quotient is unchanged - see the encoding
+      // note above.
+      writeGPUHelper(data, offset, textureTransform.data[0].x * projectiveRowScale);
+      writeGPUHelper(data, offset, textureTransform.data[1].x * projectiveRowScale);
+      writeGPUHelper(data, offset, textureTransform.data[2].x * projectiveRowScale);
+      writeGPUHelper(data, offset, textureTransform.data[3].x * projectiveRowScale);
+      writeGPUHelper(data, offset, textureTransform.data[0].y * projectiveRowScale);
+      writeGPUHelper(data, offset, textureTransform.data[1].y * projectiveRowScale);
+      writeGPUHelper(data, offset, textureTransform.data[2].y * projectiveRowScale);
+      writeGPUHelper(data, offset, textureTransform.data[3].y * projectiveRowScale);
     }
 
     std::uint32_t textureSpritesheetData = 0;
@@ -275,11 +342,22 @@ struct RtSurface {
     textureFlags |= ((static_cast<uint32_t>(textureAlphaOperation)  & 0x7) << 11);
 
     textureFlags |= eyeParams ? (1 << 14) : 0;
-    // textureFlags bits 15-16 unused
+    // Dusklight two-colour ramp, see rampOtherColor.
+    textureFlags |= isRampMaterial ? (1 << 15) : 0;
+    textureFlags |= rampTFactorIsHigh ? (1 << 16) : 0;
+    // Dusklight self-illumination, see emissiveSource.
+    textureFlags |= ((static_cast<uint32_t>(emissiveSource) & emissiveSourceMask) << 19);
 
     static_assert(static_cast<uint32_t>(TexGenMode::Count) <= 4);
     textureFlags |= ((static_cast<uint32_t>(texgenMode) & 0x3) << 17);
-    // textureFlags bits 19-30 unused
+    // D3DTTFF_PROJECTED. The divisor row itself rides in the eye origin words below.
+    // Note: encodeProjection rather than isTexcoordProjected - a divisor the encoding could
+    // not represent leaves the surface non-projective rather than dividing by zero.
+    textureFlags |= encodeProjection ? (1 << 21) : 0;
+    // Whether the divisor row's implicit w coefficient is 1 (the matrix was divided through
+    // by it) or 0 (it was already zero). See the projective encoding note above.
+    textureFlags |= projectiveConstantIsOne ? (1 << 22) : 0;
+    // textureFlags bits 23-30 unused
 
     writeGPUHelper(data, offset, textureFlags);
 
@@ -288,17 +366,28 @@ struct RtSurface {
 
     writeGPUHelper(data, offset, clipPlane);
 
-    // eye origin
+    // eye origin, or - when there is no eye - the projective texture coordinate divisor.
     if (eyeParams) {
       writeGPUHelper(data, offset, eyeParams->eyeballOrigin.x);
       writeGPUHelper(data, offset, eyeParams->eyeballOrigin.y);
       writeGPUHelper(data, offset, eyeParams->eyeballOrigin.z);
     } else {
-      writeGPUHelper(data, offset, uint32_t{});
-      writeGPUHelper(data, offset, uint32_t{});
-      writeGPUHelper(data, offset, uint32_t{});
+      // A projective texture transform (D3DTTFF_PROJECTED) divides the coordinate elements
+      // by the last output element. That divisor is a further row of the same matrix, and
+      // the two coordinate rows already fill data11/data12, so it rides in the three words
+      // the eye origin would otherwise occupy. Safe as a union: eye parameters alias the
+      // texture transform itself, so a draw with an eye has no transform to project.
+      //
+      // Three floats: the divisor row's x, y and z coefficients, at full precision. Its w
+      // coefficient is not here because the encoding above removed it - see that note.
+      writeGPUHelper(data, offset, projectiveRowX);
+      writeGPUHelper(data, offset, projectiveRowY);
+      writeGPUHelper(data, offset, projectiveRowZ);
     }
-    writeGPUHelper(data, offset, uint32_t{});
+    // data15.w: was permanent padding, now the Dusklight ramp's second
+    // endpoint. Taken here rather than by growing Surface, which is sized to
+    // exactly two 128-byte cachelines.
+    writeGPUHelper(data, offset, rampOtherColor);
 
     assert(offset - oldOffset == kSurfaceGPUSize);
   }
@@ -348,6 +437,18 @@ struct RtSurface {
   RtTextureArgSource textureAlphaArg2Source = RtTextureArgSource::None;
   DxvkRtTextureOperation textureAlphaOperation = DxvkRtTextureOperation::SelectArg1;
   uint32_t tFactor = 0xffffffff;   // Value for D3DRS_TEXTUREFACTOR, default value of is opaque white
+  // Dusklight two-colour ramp. The dominant GameCube material shape is
+  // lerp(colourA, colourB, texture); no single D3D9 texture op carries it, so
+  // this fork evaluates the GX combiner in the shader from both endpoints.
+  // One endpoint rides tFactor; this is the other, 0x00RRGGBB.
+  // See aurora-ao/docs/dx9/remix-material-interface.md §10.
+  uint32_t rampOtherColor = 0;
+  bool isRampMaterial = false;
+  bool rampTFactorIsHigh = false;  // tFactor holds the texture-white endpoint
+  // Dusklight self-illumination: which reading of the material the shader
+  // emits. GX records no emissive term, so this is a choice - see
+  // DusklightEmissiveSource in rtx_dusklight_emissive.h and §9.
+  uint8_t emissiveSource = static_cast<uint8_t>(kEmissiveSourceTextureOp);
   TexGenMode texgenMode = TexGenMode::None;
   std::optional<RtEyeParams> eyeParams = {};
 
@@ -478,6 +579,16 @@ struct RtSurface {
   uint8_t spriteSheetRows = 1;
   uint8_t spriteSheetCols = 1;
   uint8_t spriteSheetFPS = 0;
+
+  // Texture coordinate projection (D3DTTFF_PROJECTED). Deliberately placed here, in the
+  // padding that already existed between the spritesheet bytes and the 8-byte aligned hash
+  // below, so RtSurface does not grow and CheckRtInstanceSize is not disturbed.
+  //
+  // texcoordElementCount is the D3DTTFF count (0 = disabled, else 1-4). When projected, the
+  // last of those elements is a divisor rather than a coordinate, so the count is what says
+  // which row of textureTransform holds it.
+  uint8_t texcoordElementCount = 0;
+  bool isTexcoordProjected = false;
 
   XXH64_hash_t associatedGeometryHash; // NOTE: This is used for the debug view
   uint32_t objectPickingValue = 0; // NOTE: a value to fill GBUFFER_BINDING_PRIMARY_OBJECT_PICKING_OUTPUT
