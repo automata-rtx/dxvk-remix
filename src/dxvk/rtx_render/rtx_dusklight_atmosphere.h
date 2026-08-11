@@ -248,6 +248,30 @@ namespace dxvk {
                     "in a thin band and let the sky colour own most of the dome; lower values bleed it further up.",
                     args.minValue = 0.25f,
                     args.maxValue = 16.0f);
+    // The game hands over two horizon haze bands, and how they become one horizon colour was
+    // implemented from a description of them that the game contradicts. The correction is here as
+    // an option rather than as an edit because it changes the look, and because the share the
+    // corrected version needs is the near band's alpha - which the bridge does not push, so the
+    // corrected version cannot simply be assumed better. documentation/DusklightAtmosphere.md 12.2.
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", int, kasumiBlendMode, 0,
+                    "How the game's two horizon haze bands are combined into the sky's horizon colour.\n"
+                    "0 - Sun-relative. Places one band at the sun and the other opposite it, so the horizon palette turns with the sun's compass bearing. "
+                    "This was written from a description of the two bands as 'on the sun's side' and 'away from the sun'; the game has no such split, and "
+                    "no code path in it relates either band to sun position. It is still the default so that changing the look stays a deliberate act.\n"
+                    "1 - Fixed composite. Azimuth independent, which is what the game does: it paints one band onto each of two sky dome shells and draws "
+                    "both at every bearing. The share of each is rtx.dusklight.atmosphere.kasumiFrontWeight.\n"
+                    "This matters past the sky itself. The generated sky is also the dome light and the colour distant geometry fades towards, so under "
+                    "mode 0 the light in the scene and the fog tint turn with the sun's bearing too, on a palette that is not moving.",
+                    args.minValue = 0,
+                    args.maxValue = 1);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, kasumiFrontWeight, 0.5f,
+                    "Share of the near haze band in the fixed composite, 0..1. Only used when kasumiBlendMode is 1.\n"
+                    "0 is the far band alone, 1 the near band alone. There is no derived value for this: in the game the near band is a separate dome shell "
+                    "drawn in front of the far one, so what decides the mix is that shell's alpha - and the bridge pushes only the two RGB triples. Until "
+                    "the alphas are carried, this is a knob rather than a translation.\n"
+                    "Note the two bands are named the other way round from how they read: 'outer' is the near one.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
     RTX_OPTION("rtx.dusklight.atmosphere", bool, physicalSky, false,
                "Computes the sky by simulating how light scatters through air, instead of reading the game's gradient off its palette.\n"
                "What this buys is structure the palette cannot describe: the sky correctly brightening towards the horizon and around the sun and darkening "

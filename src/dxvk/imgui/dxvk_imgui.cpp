@@ -3562,9 +3562,10 @@ namespace dxvk {
                     DusklightEnv::skyHidden() ? "none (interior)" : "present",
                     DusklightEnv::colpat(), DusklightEnv::moyaMode(), DusklightEnv::moyaCount());
         ImGui::Text("Sky colour:    %.3f, %.3f, %.3f", skyColor.x, skyColor.y, skyColor.z);
-        ImGui::Text("Haze in / out: %.3f, %.3f, %.3f  /  %.3f, %.3f, %.3f",
-                    kasumiInner.x, kasumiInner.y, kasumiInner.z,
-                    kasumiOuter.x, kasumiOuter.y, kasumiOuter.z);
+        // Named far/near rather than inner/outer: the game's own labels make "outer" the near band,
+        // and a reader comparing these two while tuning the haze blend needs to know which is which.
+        ImGui::Text("Haze far (inner):  %.3f, %.3f, %.3f", kasumiInner.x, kasumiInner.y, kasumiInner.z);
+        ImGui::Text("Haze near (outer): %.3f, %.3f, %.3f", kasumiOuter.x, kasumiOuter.y, kasumiOuter.z);
       } else {
         ImGui::TextUnformatted("Nothing reported yet.");
       }

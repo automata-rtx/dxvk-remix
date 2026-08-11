@@ -31,12 +31,28 @@ Companion docs:
 
   **One correction that came out of reading them properly (2026-08-10):**
   `kasumi_outer` is the **near** haze band and `kasumi_inner` the **far** one —
-  the reverse of what the English suggests, and the game says so in three
+  the reverse of what the English suggests, and the game says so in four
   independent places. `rtx_dusklight_env.h` previously described the pair as
   "on the sun's side" / "away from the sun"; **nothing in the game relates
-  either to sun position.** The header is corrected; `RtxOptions.md` is
-  generated and still carries the old wording. Derivation:
+  either to sun position.** Derivation:
   `dusklight-ao/docs/japanese-naming.md` §6.
+
+  **Where that correction had and had not reached, as of 2026-08-11.** The first
+  pass changed the option descriptions and the `.md` files and stopped there, so
+  for a day the prose said front/back while the code still said sun's-side:
+
+  | Site | State |
+  | :-- | :-- |
+  | `rtx_dusklight_env.h` descriptions | corrected 2026-08-10 |
+  | this file, `dusklight-ao/docs/japanese-naming.md` | corrected 2026-08-10 |
+  | `dusklight_atmosphere.h` field comments | **missed until 2026-08-11** |
+  | `dusklight_sky.comp.slang` comment | **missed until 2026-08-11** |
+  | `dusklight_sky.comp.slang` **blend itself** | still runs the old premise by default — §12.2 |
+  | `dxvk_imgui.cpp` haze readout | relabelled far/near 2026-08-11 |
+  | `RtxOptions.md` | generated on Windows; still carries the old wording |
+
+  The row that matters is the fifth: correcting a comment does not correct the
+  code under it, and the code was the thing the description was describing.
 
 Everything below is grounded in code as of 2026-07-28. File references are
 repo-relative; `dusklight-ao/` and `aurora-ao/` prefixes point at the other two
@@ -905,6 +921,77 @@ per-frame stall rather than the per-frame count), and the better one is
 prefetching the pack on a worker thread so the CS thread never waits on cold
 reads. Neither was done as part of the tested 2026-08-06 change.
 `aurora-ao/docs/dx9/texture-replacements.md` §9.
+
+### 12.2 The horizon haze blend runs on a premise the game contradicts
+
+**Found 2026-08-11, not fixed by default.** `rtx.dusklight.atmosphere.kasumiBlendMode`
+exists so this can be A/B'd; it defaults to the old behaviour.
+
+**What the code does.** `dusklight_sky.comp.slang` picks the horizon colour with
+
+```
+sunProximity = square(saturate(1 - deltaPhi / pi))     // deltaPhi = |phi - sunAzimuth|, folded
+horizonColor = lerp(kasumiOuter, kasumiInner, sunProximity)
+```
+
+so the two haze bands are placed *relative to the sun*: `kasumiInner` at the
+sun's bearing, `kasumiOuter` opposite it, everything else a blend of the two.
+
+**What the game does.** Nothing that resembles that. Read in the tree:
+
+- `d_a_vrbox2.cpp:358` paints `vrbox_kasumi_outer_col` onto `mpKasumimModel`,
+  loaded from `vrbox_kasumiM.bmd` (`:448`).
+- `d_a_vrbox.cpp:121` paints `vrbox_kasumi_inner_col` onto material 1 of
+  `vrbox_sora.bmd` (*sora* = 空, sky).
+- Both shells are painted and drawn every frame the sky is visible; **no code
+  path in the game reads sun position to choose between them.** The game's own
+  labels call them front and back — 前 *mae* / 奥 *oku* on the HIO sliders
+  (`d_kankyo.cpp:6369,6392`), `kasumiF` / `kasumiB` in the debug view
+  (`d_kankyo_debug.cpp:301,306`), 霞手前色 / 霞奥色 in the palette CSV exporter
+  (`d_kankyo.cpp:6582`). Full derivation, including the trap:
+  `dusklight-ao/docs/japanese-naming.md` §6.
+
+**Why it is worth more than a comment fix.** The generated sky is not only the
+sky. The shader's own header says this image is *"the visible sky, the light the
+sky casts, and the colour distant geometry fades towards"*
+(`dusklight_sky.comp.slang:39-42`) — which is the point of blending as radiance
+in the first place. So a horizon palette that turns with the sun's compass
+bearing turns the **sky light and the fog tint** with it as well, on a palette
+that is not itself moving. *(That the three share one image is read off that
+header comment and the blend site; it has not been traced through the
+sky-light and fog consumers as a separate exercise.)*
+
+**What the corrected mode does, and what it does not.** Mode 1 is azimuth
+independent: `lerp(kasumiInner, kasumiOuter, kasumiFrontWeight)`. That is the
+front-over-back composite the game draws — **except for the coverage.** In the
+game, how much of the far shell the near one hides is the near band's **alpha**,
+and the bridge pushes only two RGB triples (`DusklightEnv::kasumi*` are
+`Vector3`). So `kasumiFrontWeight` is a knob, not a translation, and it defaults
+to `0.5` because there is nothing to derive it from — **not** because 0.5 was
+measured. Carrying the alphas is phase 5.
+
+Two things deliberately **not** claimed here:
+
+- Which shell wins where the two overlap is not established. Actor draw priority
+  does not settle it — `fpcDwPi_VRBOX2_e` sorts before `fpcDwPi_VRBOX_e`, but
+  `fpcDw_Execute` *schedules* a draw rather than issuing one (the models go into
+  a J3D draw buffer walked later), so that ordering is not the compositing order.
+- Whether the near band is *also* the one that visibly carries sunrise — which
+  is what the original "on the sun's side" wording was probably reaching for — is
+  a question about **palette content**, and nobody has checked it. If it is true,
+  mode 0 was accidentally producing a defensible-looking result from a wrong
+  premise, and mode 1 will look worse until the alphas arrive.
+
+**Regression signature of enabling mode 1:** the horizon loses its warm side at
+sunrise and sunset and reads flat, the same colour all the way round. Sunsets
+show it first. Mode 0 is bit-identical to what shipped.
+
+**Status.** Written on Linux, so nothing here has been compiled — CI on the
+session branch is the first build, and the shader half of it is not checkable
+any other way from this checkout. **Never run in game**, and neither mode has
+been compared against the other by anyone. What *is* checked: the push constant
+struct is unchanged at 112 bytes (the two new fields took `pad0`/`pad1`), so the
+128-byte budget is untouched.
 
 ### The live defect: the medium dims the generated sky
 

@@ -176,14 +176,38 @@ void main(uint2 ipos : SV_DispatchThreadID)
   // Height above the horizon as a sine, +1 at the zenith and -1 straight down.
   const float height = direction.z;
 
-  // Angular distance from the sun about the up axis, folded to 0..1. The game keeps two horizon
-  // colours, one for the sun's side and one for away from it, and this is what chooses between
-  // them. Squared so the warm side stays a glow rather than washing over half the sky.
-  float deltaPhi = abs(phi - cb.sunAzimuthRadians);
-  deltaPhi = min(deltaPhi, twoPi - deltaPhi);
-  const float sunProximity = square(saturate(1.0f - deltaPhi / pi));
+  // The game's two horizon haze bands are front and back, not sun-relative. It paints kasumi_outer
+  // onto vrbox_kasumiM.bmd and kasumi_inner onto a material of vrbox_sora.bmd, and draws both at
+  // every bearing; no code path in it reads sun position to pick between them. "Outer" is the NEAR
+  // band, opposite to what the English reads like - the game's own labels say so (前 mae / 奥 oku
+  // on the HIO sliders, kasumiF / kasumiB in the debug view). dusklight-ao/docs/japanese-naming.md
+  // section 6.
+  //
+  // Two ways of collapsing them into one colour, selectable because the first is the one that
+  // shipped and the second is the one the game supports. DusklightAtmosphere.md section 12.2.
+  float3 horizonColor;
 
-  const float3 horizonColor = lerp(cb.kasumiOuter, cb.kasumiInner, sunProximity);
+  if (cb.kasumiBlendMode == DUSKLIGHT_KASUMI_BLEND_FIXED)
+  {
+    // What the game does, minus the coverage. The near band lies in front of the far one at every
+    // azimuth, so the mix is a constant - but *how much* of the far band it hides is the near
+    // band's alpha, which the bridge does not push, so the share is a setting rather than a
+    // translation. Nothing here varies with the sun, which is the point: with a static palette the
+    // horizon now stays put, and so do the sky light and the fog colour that come off this image.
+    horizonColor = lerp(cb.kasumiInner, cb.kasumiOuter, saturate(cb.kasumiFrontWeight));
+  }
+  else
+  {
+    // The original, kept as the default. Angular distance from the sun about the up axis, folded to
+    // 0..1, squared so the far band stays a glow rather than washing over half the sky. This puts
+    // the *far* band at the sun and turns the horizon palette with the sun's compass bearing, which
+    // is behaviour the game does not have.
+    float deltaPhi = abs(phi - cb.sunAzimuthRadians);
+    deltaPhi = min(deltaPhi, twoPi - deltaPhi);
+    const float sunProximity = square(saturate(1.0f - deltaPhi / pi));
+
+    horizonColor = lerp(cb.kasumiOuter, cb.kasumiInner, sunProximity);
+  }
 
   float3 color = evaluateStylisedSky(height, horizonColor);
 

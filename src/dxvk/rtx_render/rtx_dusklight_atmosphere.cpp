@@ -435,6 +435,9 @@ namespace dxvk {
     pushArgs.kasumiInner = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiInner()));
     pushArgs.physicalWeight = std::clamp(d.physicalWeight, 0.0f, 1.0f);
     pushArgs.kasumiOuter = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiOuter()));
+    pushArgs.kasumiBlendMode = static_cast<uint32_t>(
+      std::clamp(kasumiBlendMode(), 0, static_cast<int>(DUSKLIGHT_KASUMI_BLEND_FIXED)));
+    pushArgs.kasumiFrontWeight = std::clamp(kasumiFrontWeight(), 0.0f, 1.0f);
     pushArgs.paletteInfluence = clampedPaletteInfluence;
     pushArgs.horizonSharpness = std::max(skyHorizonSharpness(), 1e-3f);
     pushArgs.groundFraction = std::clamp(skyGroundFraction(), 0.0f, 1.0f);
@@ -570,6 +573,32 @@ namespace dxvk {
     RemixGui::DragFloat("Sky Intensity##dusklightAtmo", &skyIntensityObject(), 0.05f, 0.f, 32.f, "%.2f");
     RemixGui::DragFloat("Horizon Sharpness##dusklightAtmo", &skyHorizonSharpnessObject(), 0.05f, 0.25f, 16.f, "%.2f");
     RemixGui::DragFloat("Ground Fraction##dusklightAtmo", &skyGroundFractionObject(), 0.01f, 0.f, 1.f, "%.2f");
+
+    // The game's two haze bands, and how they become one horizon colour. Default is the version
+    // that shipped, which was built on a reading of the pair the game contradicts; the corrected
+    // one is opt-in because it changes the look and because the share it needs is not derivable
+    // from anything the bridge sends. DusklightAtmosphere.md 12.2.
+    {
+      static const char* kKasumiBlendModes[] = { "Sun-relative (as shipped)", "Fixed composite (front over back)" };
+      static int kasumiMode;
+      kasumiMode = std::clamp(kasumiBlendMode(), 0, 1);
+      if (RemixGui::Combo("Haze Bands##dusklightAtmo", &kasumiMode, kKasumiBlendModes, IM_ARRAYSIZE(kKasumiBlendModes))) {
+        kasumiBlendMode.setDeferred(kasumiMode);
+      }
+      if (kasumiMode == 1) {
+        RemixGui::DragFloat("Near Band Share##dusklightAtmo", &kasumiFrontWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
+        ImGui::TextWrapped("What the game does: it paints one band onto each of two dome shells and draws both at every "
+                           "bearing, so the horizon does not turn with the sun. How much of the far band the near one "
+                           "hides is that shell's alpha, which the bridge does not send - hence a share you set rather "
+                           "than a number we read. Watch a sunrise or sunset first; that is where the two disagree most.");
+      } else {
+        ImGui::TextWrapped("Puts one band at the sun and the other opposite it, turning the horizon palette with the "
+                           "sun's compass bearing. The game has no such split - its two bands are front and back, and "
+                           "nothing in it reads sun position to choose between them. Because this image is also the "
+                           "dome light and the colour distance fades towards, the rotation reaches the lighting and the "
+                           "fog tint as well. Kept as the default so switching is a decision, not a surprise.");
+      }
+    }
 
     RemixGui::Checkbox("Paint Moon##dusklightAtmo", &skyMoonEnableObject());
     if (skyMoonEnable()) {

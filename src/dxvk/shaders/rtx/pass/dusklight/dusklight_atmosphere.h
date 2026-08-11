@@ -35,6 +35,15 @@
 #define DUSKLIGHT_TRANSMITTANCE_HEIGHT   64
 #define DUSKLIGHT_MULTISCATTER_SIZE      32
 
+// How the two horizon haze bands become one horizon colour. See DusklightAtmosphereArgs::
+// kasumiBlendMode and DusklightAtmosphere.md section 12.2.
+// Rotates the palette with the sun's compass bearing. Built on a reading of the two bands that the
+// game contradicts, kept as the default so enabling the correction is a deliberate act.
+#define DUSKLIGHT_KASUMI_BLEND_SUN_RELATIVE 0
+// Azimuth independent, which is what the game does: it paints one band onto each of two dome
+// shells and draws both at every bearing.
+#define DUSKLIGHT_KASUMI_BLEND_FIXED        1
+
 // Everything the three atmosphere passes need that is not a compile time constant of the medium
 // itself. Kept under the push constant budget by leaving the Earth coefficients in the shader and
 // passing only what the game moves.
@@ -50,14 +59,21 @@ struct DusklightAtmosphereArgs {
   // Radiance multiplier applied to the finished sky, whichever way it was produced.
   float intensity;
 
-  // Horizon haze on the sun's side.
+  // The game's two horizon haze bands. The split is front/back, not sun-relative: the game paints
+  // one onto each of two dome shells at every azimuth, and no code path in it relates either field
+  // to sun position. Note "outer" is the NEAR band and "inner" the FAR one, opposite to what the
+  // English reads like - the member names are the decompilation's reconstruction, while the game's
+  // own labels (前 mae / 奥 oku, kasumiF / kasumiB) say front and back.
+  // dusklight-ao/docs/japanese-naming.md section 6.
+  //
+  // The far ("back") band.
   vec3 kasumiInner;
   // 0 reproduces the game's gradient, 1 is the scattering model. Blended on the radiance rather
   // than on finished pixels, so the visible sky, the light it casts and the fog it tints all move
   // together instead of drifting apart.
   float physicalWeight;
 
-  // Horizon haze away from the sun.
+  // The near ("front") band, despite being the one called "outer".
   vec3 kasumiOuter;
   // How far the medium's own coefficients are steered towards the game's palette. This is the
   // "palette as parameters, not as pixels" knob: at 0 the model runs on Earth's numbers, at 1 its
@@ -89,8 +105,14 @@ struct DusklightAtmosphereArgs {
   // Width of the disc's edge falloff as a fraction of its radius. A hard edge aliases badly in a
   // lat-long map, where the sampling rate varies with latitude.
   float moonEdgeSoftness;
-  float pad0;
-  float pad1;
+  // How the two kasumi bands are combined into the one horizon colour. Values are
+  // DUSKLIGHT_KASUMI_BLEND_*, below. Took pad0/pad1 rather than growing the struct, so the push
+  // constant footprint is unchanged.
+  uint kasumiBlendMode;
+  // Share of the near ("front") band in DUSKLIGHT_KASUMI_BLEND_FIXED, 0..1. Stands in for the
+  // near band's alpha, which is what actually decides its coverage in the game and which the
+  // bridge does not push. Unused in the sun-relative mode.
+  float kasumiFrontWeight;
 };
 
 #endif  // DUSKLIGHT_ATMOSPHERE_H
