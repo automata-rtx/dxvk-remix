@@ -501,6 +501,32 @@ struct Surface
     get { return asfloat(data15.xyz); }
   }
 
+  // D3DTTFF_PROJECTED: the texture transform emits one more element than it has
+  // coordinates, and the coordinates are divided by it. Without the divide a projected
+  // transform samples along the wrong line entirely, and because the divisor usually
+  // varies with view depth the error moves with the camera rather than sitting still.
+  property bool isTexcoordProjected
+  {
+    get { return packedFlagGet(data13.z, 1 << 21); }
+    set { data13.z = newValue ? packedFlagSet(data13.z, 1 << 21) : packedFlagUnset(data13.z, 1 << 21); }
+  }
+
+  // The x, y and z coefficients of the texture transform's divisor row, at full precision.
+  // Shares the eye origin's words - see RtSurface::writeGPUData for why that union is safe,
+  // and for why the w coefficient is not stored.
+  property vec3 texcoordProjectiveRow
+  {
+    get { return asfloat(data15.xyz); }
+  }
+
+  // The divisor row's implicit w coefficient: 1 when the transform was divided through by
+  // it, 0 when it was already zero.
+  property bool texcoordProjectiveConstantIsOne
+  {
+    get { return packedFlagGet(data13.z, 1 << 22); }
+    set { data13.z = newValue ? packedFlagSet(data13.z, 1 << 22) : packedFlagUnset(data13.z, 1 << 22); }
+  }
+
   // Dusklight two-colour ramp: the GX combiner a*(1-c) + b*c, c the texture
   // sample. chooseTextureOperationColor has no lerp op and D3D9 carries one
   // TFACTOR, so the second endpoint rides here in what was data15.w padding.

@@ -91,7 +91,11 @@ namespace dxvk {
       uint32_t cameraType;
       uint32_t categories;
       uint32_t texgenMode;
-      uint32_t _pad0;
+      // Element count and projection flag, packed. Not derivable from the matrix above:
+      // the same matrix means different coordinates depending on how many of its rows are
+      // outputs and whether the last is a divisor, so a draw toggling projection has to
+      // re-key rather than reuse a surface built the other way.
+      uint32_t texcoordProjection;
     };
 
     // {} value-initializes the entire object.
@@ -108,6 +112,9 @@ namespace dxvk {
     data.cameraType = static_cast<uint32_t>(drawCallState.cameraType);
     data.textureTransform = drawCallState.getTransformData().textureTransform;
     data.texgenMode = static_cast<uint32_t>(drawCallState.getTransformData().texgenMode);
+    data.texcoordProjection =
+      static_cast<uint32_t>(drawCallState.getTransformData().texcoordElementCount) |
+      (drawCallState.getTransformData().texcoordProjected ? (1u << 8) : 0u);
 
     return hashStructByMemory<IdentityHashData,
         &IdentityHashData::geoHash,
@@ -119,7 +126,7 @@ namespace dxvk {
         &IdentityHashData::cameraType,
         &IdentityHashData::categories,
         &IdentityHashData::texgenMode,
-        &IdentityHashData::_pad0>(data);
+        &IdentityHashData::texcoordProjection>(data);
   }
 
   void DrawCallTracker::eraseFromSpatialMap(

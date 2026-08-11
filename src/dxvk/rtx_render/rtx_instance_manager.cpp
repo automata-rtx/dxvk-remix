@@ -20,7 +20,9 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include <assert.h>
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -34,6 +36,8 @@
 #include "rtx_ray_portal_manager.h"
 #include "rtx_terrain_baker.h"
 #include "rtx_dusklight_emissive.h"
+#include "rtx_dusklight_water.h"
+#include "../../util/util_global_time.h"
 
 #include "../d3d9/d3d9_state.h"
 #include "rtx_matrix_helpers.h"
@@ -1011,6 +1015,35 @@ namespace dxvk {
       currentInstance.m_isHidden = true;
     }
 
+    // Dusklight: drop the game's camera-projected water overlay.
+    //
+    // MA02/MA10 are not the water surface - dKy_bg_MAxx_proc installs a perspective matrix
+    // built from the live camera as their texture matrix, making them a painted reflection
+    // over the water. Remix traces that reflection for real, so keeping this layer paints a
+    // screen-space image on top of a correct one, and (once water became translucent) added
+    // a second refracting interface just above the first. Same reasoning as the blob
+    // shadows. See rtx_dusklight_water.h.
+    if (DusklightWater::hideProjectedLayer() &&
+        dusklightWater::isProjectedOverlay(drawCall.getMaterialData())) {
+      currentInstance.m_isHidden = true;
+
+      if (dusklightWater::shouldLogProjected(drawCall.getMaterialData().getHash())) {
+        Logger::info(str::format(
+          "dusklight.water.projected tex0hash=", std::hex, drawCall.getMaterialData().getHash(),
+          std::dec, " hidden=1 - camera-projected water overlay (MA02/MA10), not the surface"));
+      }
+    }
+
+    // Dusklight: a body of water is drawn as more than one surface, and stacking refracting
+    // interfaces is not what water is - nor do overlapping normal maps blend correctly in
+    // Remix. This drops whole layers by what the game calls them, so a lake can be one
+    // moving surface. All off by default: which layer should survive is a look decision, and
+    // dusklight.water's layer= field is how to find out what a given lake is made of.
+    if (dusklightWater::isWater(drawCall.getMaterialData()) &&
+        dusklightWater::isLayerHidden(dusklightWater::waterLayer(drawCall.getMaterialData()))) {
+      currentInstance.m_isHidden = true;
+    }
+
     // Snapshot whether this is a brand-new camera before the call to preserveInstance() at the
     // bottom (which always re-registers via RtInstance::registerCamera) so the override logic
     // below sees the "is this the first time we've seen this camera type?" state.
@@ -1210,6 +1243,30 @@ namespace dxvk {
         }
 
         currentInstance.surface.textureTransform = drawCall.getTransformData().textureTransform;
+        currentInstance.surface.texcoordElementCount = drawCall.getTransformData().texcoordElementCount;
+        currentInstance.surface.isTexcoordProjected = drawCall.getTransformData().texcoordProjected;
+
+        // Dusklight: drive water's texcoords from the fork's own tiling and scroll instead of
+        // the transform the draw arrived with. The game's scroll is authored for its own scale
+        // and a rasterizer's; a path traced lake has no reason to inherit either, and a ripple
+        // texture stretched once across Lake Hylia reads as a smear. Same clock as the shader's
+        // timeSinceStartSeconds (rtx_context.cpp), so this and Remix's own animated water agree.
+        if (DusklightWater::animateTexcoords() && dusklightWater::isWater(drawCall.getMaterialData())) {
+          const float timeSeconds =
+            (static_cast<uint32_t>(GlobalTime::get().absoluteTimeMs()) & ((1U << 24U) - 1U)) / 1000.f;
+          const Vector2 scroll = timeSeconds * DusklightWater::scrollSpeed();
+          const float tiling = std::max(DusklightWater::uvTiling(), 0.0001f);
+
+          Matrix4 waterTransform;
+          waterTransform[0][0] = tiling;
+          waterTransform[1][1] = tiling;
+          waterTransform[3][0] = std::fmod(scroll.x, 1.0f) * tiling;
+          waterTransform[3][1] = std::fmod(scroll.y, 1.0f) * tiling;
+
+          currentInstance.surface.textureTransform = waterTransform;
+          currentInstance.surface.texcoordElementCount = 2;
+          currentInstance.surface.isTexcoordProjected = false;
+        }
 
         currentInstance.surface.isStatic = !(hasTransformChanged || hasPreviousPositions) || currentInstance.m_materialType == MaterialDataType::RayPortal;
 

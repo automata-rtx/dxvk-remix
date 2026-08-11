@@ -116,6 +116,40 @@ the stage's alpha to build opacity and the alpha test).
 
 Full statement: `aurora-ao/docs/dx9/remix-material-interface.md` §0.
 
+## The game's names are Japanese, and they are load-bearing
+
+Twilight Princess is a Japanese production and this decompilation preserves the
+original team's naming, so a material, actor or function name is usually a
+*romanised Japanese word describing what the thing is*. Read it before inventing
+a classification — the answer is very often already in the name.
+
+Worked examples from the water work, all of which changed a decision:
+
+| Name | Reading | What it meant |
+| :-- | :-- | :-- |
+| `cc_MA06_nami_v_x` | nami — wave | a wave pass, **not** interchangeable with the murk pass beside it |
+| `cc_MA06_mizugiwa_v_x` | mizugiwa — water's edge | the shoreline |
+| `cc_MA06_NigoriWater_v_x` | nigori — turbidity | the murky body |
+| `cc_MA09_mera_v` | mera — shimmer | the shimmer pass |
+| `ce_MA03_WaterKasan_v_x` | kasan (加算) — **addition** | an additively blended pass — and every material carrying it measured `SRC_ALPHA,ONE` |
+| `cd_MA03_Funsui_v` | funsui — fountain | a fountain, an object rather than a lake layer |
+| `cc_MA02_IndirectWater_v` | (indirect texturing) | the warp the game uses to fake refraction |
+
+Two lessons worth carrying into unrelated features:
+
+- **`kasan` is the case to remember.** The blend state was measured a session
+  before anyone read the name, and the name had said it all along. Reading the
+  vocabulary first would have saved the measurement.
+- **A numeric tag is usually coarser than the name.** `MA06` alone covers the
+  waves, the shoreline and the murk; a control that cut on the tag was built,
+  recommended, and would have deleted two of the three. The suffix is where the
+  distinction lives.
+
+When adding a classifier over these names, prefer matching `_word` and `Word`
+(the convention lowercases after the tag and capitalises inside a compound) over
+a bare substring, so `minami` is not read as `nami` — and make "unrecognised"
+mean "leave it alone".
+
 ## How this project works — read before proposing a fix
 
 Five rules. They exist because each was learned the expensive way, and following
@@ -226,6 +260,7 @@ tab. Grepping this repo for `effectLight` hits both.
 | `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. **A rule, not a score**: self-lit (no TEV colour stage reads the rasterized channel) AND a colour of its own (authored in GX constants, not the vertex stream and not a bare texture pass-through) AND that colour reading as a glow (saturated **or** near-white-hot). Aurora ships the three facts in `D3DMATERIAL9::Specular.{a,b}` and `Emissive.rgb`; `Emissive.a` still carries the old evidence score but **nothing decides on it** — three revisions cut on it and all three missed the lava, which scores 0.00. Applied at one site in `rtx_instance_manager.cpp`. **Note the trap around the emissive colour: by default the shader re-applies the albedo's texture op to it** — `RtSurface::emissiveSource` (`textureFlags` bits 19–20) is what selects out of that. Also holds `rtx.dusklight.rampMaterials`, the two-colour ramp, which shares the same `D3DMATERIAL9` transport: the fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints rather than squeezing it into one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork can |
 | `src/dxvk/rtx_render/rtx_light_manager.cpp` | mostly upstream, but `addExternalLight` carries one fork change: it preserves the light's buffer index across an overwrite, the way the game-light path a few lines above already did. Without it every update to an API light drops its RTXDI temporal history for a frame, which upstream barely notices (its API lights are static scene lights) and this fork very much does (a flame's radiance animates, so its light updates constantly and would never accumulate any reuse at all). `prepareSceneData` carries a second, related correction: a buffer index is only meaningful if it was assigned during the previous frame, and a light that left `m_linearizedLights` entirely - which an API light does whenever `DrawLightInstance` is not called for it - is never reset by the loop's else branch. Trusting that stale index wrote past the end of the mapping buffer or mapped one light's temporal history onto another; it is now range-checked |
 | `src/dxvk/rtx_render/rtx_dusklight_texrep.{h,cpp}` | `rtx.dusklight.texrep.*` — HD texture packs. The game loads its pack through `remixapi_CreateMaterial` (used purely as a file loader) and tags each draw with a 1-based index in `D3DMATERIAL9::Ambient.g`, with the stage it refers to in `Ambient.b`; this substitutes the loaded albedo at the **two** places a draw can consume a texture — `determineMaterialData` for ray-traced draws, `D3D9DeviceEx::BindTexture` for rasterized ones. Both are needed: UI draws never reach material resolution. **The pack never travels through D3D9**, so the game's own textures stay what Remix hashes — tagging, `rtx.conf` categories and USD bindings are unaffected by installing or changing a pack. **Tested good 2026-08-06.** Note `d3d9_device.cpp` `BindTexture` is the *only* place this fork touches that file: a rebase that drops it loses the HUD half silently while the world half keeps working |
+| `src/dxvk/rtx_render/rtx_dusklight_water.h` | `rtx.dusklight.water.*` — water. The game recognises its own water by J3D material name (`dKy_bg_MAxx_proc`), which GX never carries, and marks each draw; aurora packs **all three facts into `D3DMATERIAL9::Power`** as `tag * 100 + layer * 10 + role`, and this decodes them. A `SURFACE` draw becomes a `TranslucentMaterialData` instead of falling through to `as<OpaqueMaterialData>()` — that fall-through is what made every water layer an opaque white sheet. A `PROJECTED` draw (MA02/MA10, a camera-projected fake reflection) is hidden. **One field for three facts on purpose**: the side band had two left and taking both would have left nothing. **The transport was rebased on 2026-08-11** — it was in `Ambient.g`/`.b`/`.a`, which HD texture packs already owned, and merging that as written would have deleted texture packs silently. Decimal packing, not bit fields, because `power=921` is legible in a log as MA09 / waves / surface. **Untested in game on this transport** |
 | `src/dxvk/rtx_render/rtx_agx.{h,cpp}` | AgX look presets, the shared `TonemapOperator` enum, and the `finalizeWithACES` → operator migration. **Not Dusklight-specific** |
 | `src/dxvk/rtx_render/rtx_gt7.{h,cpp}` | GT7 setup, a transcription of Polyphony's `initializeAsSDR()`. The reference `.cpp` is kept verbatim at `shaders/rtx/pass/tonemap/reference/` — fix the port, never the reference. **Not Dusklight-specific** |
 | `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
@@ -378,6 +413,29 @@ it is inconvenient.
 - whether two in-flight branches are about to take the same spare side channel
   or protocol number — nothing can see an unmerged branch, so **check the other
   live `claude/*` branches before taking either**
+
+**As of 2026-08-11 exactly one side channel is left: `Ambient.a`.** Water took
+`Power` — all three of its facts packed into that one field
+(`tag * 100 + layer * 10 + role`), specifically so `Ambient.a` would survive for
+something else. `claude/dusklight-remix-transparency-e7l766` has an unmerged
+claim on it, and after that there is nothing: the feature after next has to pack
+into an existing field or move to a different transport.
+
+The allocation table is `documentation/DusklightSideChannels.md` and it is
+CI-checked **both ways** — a channel read with no row fails, and a row nothing
+reads fails. **A third check requires every allocated channel to be in
+`LegacyMaterialData::computeIdentityHash`**, because a channel outside that hash
+lets two draws differing only in it collide, and the preserve path then serves a
+stale material with nothing logged. `Power` was outside it until 2026-08-11 on
+the stated grounds that nothing read it.
+
+**GX FIFO subcommand `0x0053` is water's.** Four branches had each taken it; the
+`else if` dispatch in aurora's `command_processor.cpp` merges both arms without
+conflict and the loser desyncs the FIFO. `include/dolphin/gx/GXAurora.h` now
+carries a registry comment reserving `0x0054`–`0x0057` for the other three, and
+aurora's `check_invariants.py` fails on a duplicate or an unregistered number.
+
+Full account: `aurora-ao/docs/dx9/in-flight-allocation.md`.
 
 **When auditing documentation after a merge, re-derive the file list from the
 diff, not from memory.** On the merge that prompted all of this, every gap found

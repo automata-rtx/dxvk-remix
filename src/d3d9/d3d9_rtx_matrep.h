@@ -39,8 +39,12 @@
 
 #include "../dxvk/rtx_render/rtx_option.h"
 #include "../dxvk/rtx_render/rtx_types.h"
+#include "../dxvk/rtx_render/rtx_options.h"
+#include "../dxvk/rtx_render/rtx_dusklight_env.h"
+#include "../dxvk/rtx_render/rtx_dusklight_game.h"
 #include "../util/util_string.h"
 
+#include <string>
 #include <unordered_set>
 
 namespace dxvk {
@@ -121,6 +125,82 @@ namespace dxvk {
       }
     }
 
+    // How the stage generated and transformed its texture coordinates.
+    //
+    // Here because this game's water is not one material but three stacked draws, and two
+    // of them are decided entirely by this state. dKy_bg_MAxx_proc (dusklight-ao
+    // d_kankyo.cpp) dispatches on the J3D material *name*: MA06 is the murky body, MA09
+    // the shine surface, and MA02/MA10 a reflection layer whose texture matrix is rebuilt
+    // every frame from the camera FOV via C_MTXLightPerspective, i.e. a projective texgen.
+    //
+    // Remix drops exactly that. d3d9_rtx_utils.cpp ignores D3DTTFF_PROJECTED and clamps any
+    // element count past 2, in both cases with a ONCE() info log and a // Todo. Camera-space
+    // reflection and spheremap TCI collapse to TexGenMode::None the same way. All of those
+    // are silent per-draw, so a water layer arriving with quietly wrong UVs has been
+    // indistinguishable from one that translated cleanly. These fields are what tells them
+    // apart in a log rather than in pixels.
+    enum class TciClass : uint8_t {
+      PassThru = 0,
+      CameraSpacePosition,
+      CameraSpaceNormal,
+      CameraSpaceReflectionVector,  // collapses to TexGenMode::None
+      SphereMap,                    // collapses to TexGenMode::None
+      Unknown,
+    };
+
+    inline const char* tciName(TciClass c) {
+      switch (c) {
+      case TciClass::PassThru:                    return "PassThru";
+      case TciClass::CameraSpacePosition:         return "CameraSpacePosition";
+      case TciClass::CameraSpaceNormal:           return "CameraSpaceNormal";
+      case TciClass::CameraSpaceReflectionVector: return "CameraSpaceReflection(dropped)";
+      case TciClass::SphereMap:                   return "SphereMap(dropped)";
+      default:                                    return "?";
+      }
+    }
+
+    inline const char* texgenName(TexGenMode m) {
+      switch (m) {
+      case TexGenMode::None:                 return "None";
+      case TexGenMode::ViewPositions:        return "ViewPositions";
+      case TexGenMode::CascadedViewPositions:return "CascadedViewPositions";
+      case TexGenMode::ViewNormals:          return "ViewNormals";
+      default:                               return "?";
+      }
+    }
+
+    // Texture transform / texgen state for the stage the material was reconstructed from.
+    // Not carried on LegacyMaterialData, so it travels alongside it. The caller fills this
+    // from d3d9State with an explicit switch rather than arithmetic on the D3DTSS_TCI_*
+    // encoding, so it stays correct if those values ever move.
+    struct StageXform {
+      // D3DTTFF element count: 0 when the transform is disabled, otherwise 1-4. Anything
+      // above 2 is clamped by Remix and the extra elements never reach the shader.
+      uint8_t elementCount = 0;
+      // D3DTTFF_PROJECTED was requested. Remix does not implement the projective divide,
+      // so when this is 1 the stage's UVs are wrong by construction.
+      uint8_t projected = 0;
+      TciClass tci = TciClass::PassThru;
+      TexGenMode texgen = TexGenMode::None;
+      // The divisor row itself, straight from the game's matrix. Printed for projected
+      // stages because the encoding that carries it is lossy in exactly one respect - it
+      // drops the w coefficient by dividing through - and a log that only says "projected"
+      // cannot distinguish an encoder producing (0, 0, -1, 0) from one producing rubbish.
+      // Raw rather than encoded: the encoding is deterministic from this, and this is the
+      // thing that can be checked against what C_MTXLightPerspective ought to have built.
+      float divisorRow[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    };
+
+    // Empty for a stage that is not projected, so the field costs nothing on the vast
+    // majority of lines.
+    inline std::string divisorRowText(const StageXform& x) {
+      if (x.projected == 0) {
+        return std::string();
+      }
+      return str::format(" projRow=(", x.divisorRow[0], ",", x.divisorRow[1], ",",
+                         x.divisorRow[2], ",", x.divisorRow[3], ")");
+    }
+
     inline const char* opName(DxvkRtTextureOperation op) {
       switch (op) {
       case DxvkRtTextureOperation::Disable:          return "Disable";
@@ -167,7 +247,7 @@ namespace dxvk {
     //
     // Still distinguishes one texture used in several contexts, because the ops
     // and arg sources differ there - which is the case the report exists for.
-    inline XXH64_hash_t shapeKey(const LegacyMaterialData& m) {
+    inline XXH64_hash_t shapeKey(const LegacyMaterialData& m, const StageXform& x) {
       // Zero-initialised, and laid out so there is no padding at all: hashing a
       // struct with indeterminate padding bytes would key on uninitialised
       // memory. Two 8-byte hashes plus sixteen 1-byte fields fill exactly 32.
@@ -186,7 +266,24 @@ namespace dxvk {
         // emissive-blend override - and collapsing them would hide exactly the
         // draw this field was added to find.
         uint8_t blend;
-        uint8_t pad[7];
+        // Texcoord generation and transform. Keyed on, not just printed, because
+        // one water texture is drawn by several MAxx layers that differ *only*
+        // here - the MA02/MA10 reflection layer is the same texture as the
+        // surface with a projective matrix on top. Collapsing them would report
+        // one material and hide the layer whose UVs Remix drops.
+        uint8_t xformCount, projected, tci, texgen;
+        // The MA00/MA01/MA04/MA16 fog materials swap their alpha compare and Z
+        // mode outright when the camera enters water (dKy_bg_MAxx_proc calls
+        // mat_p->change()), so the same texture legitimately arrives as two
+        // different materials. Both states are bounded, so this cannot multiply
+        // the report the way a continuous value like tFactor would.
+        //
+        // atOp is forced to zero while the test is disabled. A disabled compare
+        // decides nothing, and keying on it split one material into two lines
+        // that printed identically - which is worse than not reporting it, since
+        // the reader has no way to see why the two differ.
+        uint8_t atEnabled, atOp;
+        uint8_t pad[1];
       };
       static_assert(sizeof(Shape) == 2 * sizeof(XXH64_hash_t) + 16,
                     "Shape must have no implicit padding: it is hashed byte-wise");
@@ -202,7 +299,83 @@ namespace dxvk {
       shape.tfBlend = m.isTextureFactorBlend ? 1u : 0u;
       shape.vcBaked = m.isVertexColorBakedLighting ? 1u : 0u;
       shape.blend = static_cast<uint8_t>(blendClass(m.blendMode));
+      shape.xformCount = x.elementCount;
+      shape.projected = x.projected;
+      shape.tci = static_cast<uint8_t>(x.tci);
+      shape.texgen = static_cast<uint8_t>(x.texgen);
+      shape.atEnabled = m.alphaTestEnabled ? 1u : 0u;
+      shape.atOp = m.alphaTestEnabled ? static_cast<uint8_t>(m.alphaTestCompareOp) : 0u;
       return XXH3_64bits(&shape, sizeof(shape));
+    }
+
+    // Everything a reader would otherwise have to ask the owner about the run itself.
+    //
+    // A material report is only interpretable if you know how the runtime was configured
+    // while it was written, and every one of these has a plausible wrong value that makes
+    // the log say something false rather than nothing: water suppressed by a category that
+    // was never populated, a legacy fallback tuned differently, the game feed not connected
+    // so the markers below never fire. Printed once, at the first reported material, so it
+    // sits at the top of the run's report.
+    inline void emitContext() {
+      static bool s_emitted = false;
+      if (s_emitted) {
+        return;
+      }
+      s_emitted = true;
+
+      Logger::info(str::format(
+        "dusklight.ctx envFeed=", DusklightEnv::enable(),
+        " protocol=", DusklightEnv::protocol(),
+        // Whether the two built-in water paths would do anything at all. Both only ever
+        // act on draws in the AnimatedWater category, so a non-empty texture list is what
+        // decides whether either is reachable - and it is empty by default, which means
+        // "the water paths are off" no matter what the two enables say.
+        " layeredWaterNormal=", OpaqueMaterialOptions::layeredWaterNormalEnable(),
+        " animatedWaterTranslucent=", TranslucentMaterialOptions::animatedWaterEnable(),
+        " animatedWaterTextures=", RtxOptions::animatedWaterTextures().size(),
+        // What an unmatched draw becomes. Any water layer that finds no replacement lands
+        // on these numbers, so they are the milky look's actual parameters.
+        " legacyRoughness=", LegacyMaterialDefaults::roughnessConstant(),
+        " legacyMetallic=", LegacyMaterialDefaults::metallicConstant(),
+        " legacyAlbedoTex=", LegacyMaterialDefaults::useAlbedoTextureIfPresent(),
+        " hideDashEffect=", DusklightGame::hideDashEffect(),
+        // Capability, not a setting. A "proj=1" line means something different either side
+        // of the build that implemented the projective divide - before it, the projection
+        // was detected and discarded - so a log has to say which it came from rather than
+        // leaving the reader to date it from the filename.
+        " projectiveTexcoords=1"));
+    }
+
+    // Where in the run something happened. Emitted only when a tracked state changes, so
+    // this is a handful of lines per session rather than one per frame, and it lands
+    // interleaved with the matrep.rmx lines in the same file - which is the whole point.
+    // A new material shape appearing between a dash=1 and the following dash=0 is
+    // attributable to the dash without correlating two logs by wall clock.
+    //
+    // The initial values are latched without emitting, so connecting to a game already in
+    // one of these states does not report a transition that never happened.
+    inline void emitMarkers() {
+      static bool s_primed = false;
+      static bool s_dash = false;
+      static bool s_camInWater = false;
+
+      const bool dash = DusklightEnv::dash();
+      const bool camInWater = DusklightEnv::camInWater();
+
+      if (!s_primed) {
+        s_primed = true;
+        s_dash = dash;
+        s_camInWater = camInWater;
+        return;
+      }
+
+      if (dash == s_dash && camInWater == s_camInWater) {
+        return;
+      }
+
+      s_dash = dash;
+      s_camInWater = camInWater;
+      Logger::info(str::format("dusklight.mark dash=", dash, " camInWater=", camInWater));
     }
 
     // True the first time this shape is seen.

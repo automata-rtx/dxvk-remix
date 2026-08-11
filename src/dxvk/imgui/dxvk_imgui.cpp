@@ -50,6 +50,7 @@
 #include "rtx_render/rtx_dusklight_game.h"
 #include "rtx_render/rtx_dusklight_texrep.h"
 #include "rtx_render/rtx_dusklight_emissive.h"
+#include "rtx_render/rtx_dusklight_water.h"
 #include "../../d3d9/d3d9_rtx_matrep.h"
 #include "../rtx_render/rtx_dusklight_catrep.h"
 #include "rtx_render/rtx_global_volumetrics.h"
@@ -3381,6 +3382,15 @@ namespace dxvk {
       RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
       RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
       RemixGui::Checkbox("Per-Blade Grass", &DusklightGame::perBladeGrassObject());
+      RemixGui::Checkbox("Hide Epona Dash Effect", &DusklightGame::hideDashEffectObject());
+      ImGui::TextWrapped(
+        "The dash speed effect is placed in front of the camera rather than in the world, so Remix "
+        "captures it as a translucent wall travelling with the view. Off by default: it shipped on as a "
+        "suspect for water changing appearance while dashing, and the log refuted that - the water still "
+        "changed with the effect suppressed, and material changes were not clustered on the dashes. The "
+        "real cause was the projective texture transform on the water's reflection layer, now "
+        "implemented. Still worth enabling to see the scene without a translucent quad tracking the "
+        "camera, which is its own problem for a path tracer.");
       RemixGui::Checkbox("Game's Blob Shadows", &DusklightGame::blobShadowsObject());
       ImGui::TextWrapped(
         "Blob shadows are the flat discs the game paints under rupees, hearts and pots. Off by "
@@ -3424,6 +3434,79 @@ namespace dxvk {
         common->metaBloom().showDusklightImguiSettings();
         ImGui::EndDisabled();
       }
+    }
+
+    if (RemixGui::CollapsingHeader("Water", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Translucent Water", &DusklightWater::enableObject());
+      ImGui::TextWrapped(
+        "The game marks its own water draws by material name and carries that per draw. Without this "
+        "they fall through to the legacy opaque material and become a rough white sheet - several of "
+        "those layers sample a framebuffer copy the backend could not produce, and its stand-in is "
+        "white, which a pass-through material shows literally. A translucent material takes its "
+        "colour from transmittance instead, so that albedo stops being consulted.");
+      ImGui::BeginDisabled(!DusklightWater::enable());
+      RemixGui::DragFloat("Index of Refraction", &DusklightWater::refractiveIndexObject(), 0.005f, 1.0f, 3.0f);
+      RemixGui::ColorEdit3("Transmittance Color", &DusklightWater::transmittanceColorObject());
+      RemixGui::DragFloat("Transmittance Distance", &DusklightWater::transmittanceMeasurementDistanceObject(), 1.0f, 0.001f, 65504.0f);
+      ImGui::TextWrapped(
+        "Distance is the one to tune first: it sets how far light travels before reaching the colour "
+        "above, so it decides how quickly water reads as deep. The default is a starting value in the "
+        "game's units, not a measurement.");
+      RemixGui::Checkbox("Thin Walled", &DusklightWater::thinWalledObject());
+      RemixGui::DragFloat("Thin Wall Thickness", &DusklightWater::thinWallThicknessObject(), 0.01f, 0.001f, 65504.0f);
+      RemixGui::Checkbox("Animate Texcoords", &DusklightWater::animateTexcoordsObject());
+      RemixGui::DragFloat("UV Tiling", &DusklightWater::uvTilingObject(), 0.05f, 0.01f, 256.0f);
+      RemixGui::DragFloat2("Scroll Speed", &DusklightWater::scrollSpeedObject(), 0.001f, -1.0f, 1.0f);
+      RemixGui::DragFloat("Normal Intensity", &TranslucentMaterialOptions::normalIntensityObject(), 0.01f, 0.0f, 4.0f);
+      ImGui::TextWrapped(
+        "Drives the water surface's texture coordinates instead of the transform the draw arrived "
+        "with, so tiling and scroll rate are set here rather than inherited from a rasterizer at "
+        "the game's own scale. Tiling is the one to reach for on a large lake: a ripple texture "
+        "stretched once across Lake Hylia reads as a smear. Normal Intensity is the global "
+        "rtx.translucentMaterial.normalIntensity, and scales whatever normal map is authored onto "
+        "the surface.");
+      ImGui::Text("Hide water layers");
+      RemixGui::Checkbox("Shimmer (mera)", &DusklightWater::hideShimmerLayerObject());
+      RemixGui::Checkbox("Waves (nami)", &DusklightWater::hideWavesLayerObject());
+      RemixGui::Checkbox("Shoreline (mizugiwa)", &DusklightWater::hideShorelineLayerObject());
+      RemixGui::Checkbox("Murk (nigori)", &DusklightWater::hideMurkLayerObject());
+      RemixGui::Checkbox("Additive passes (kasan)", &DusklightWater::hideAdditiveLayerObject());
+      ImGui::TextWrapped(
+        "A body of water is drawn as several stacked surfaces, and stacking refracting "
+        "interfaces is not what water is - overlapping normal maps do not blend correctly "
+        "either, so a lake wants one moving surface. These are the game's own names for its "
+        "passes, kept from the Japanese original. All off by default: which layer should "
+        "survive is a look decision. The layer= field on each dusklight.water log line says "
+        "what a given body of water is made of, and a layer the classifier does not recognise "
+        "is never hidden.");
+      RemixGui::Checkbox("Shoreline Keeps Its Blend", &DusklightWater::shorelineAsBlendObject());
+      ImGui::TextWrapped(
+        "A translucent material in Remix has no partial coverage - its only opacity feeds the "
+        "diffuse layer, which water does not use. So a pass whose job is feathering the water "
+        "into the shore has nothing left to do once it becomes refracting glass, and the "
+        "boundary goes hard. This leaves the edge pass ('mizugiwa') as the alpha-blended "
+        "overlay the game drew, and is the first thing to try for a visible seam between water "
+        "and the ground around it.");
+      RemixGui::Checkbox("Apply To Replaced Materials", &DusklightWater::applyToReplacementsObject());
+      ImGui::TextWrapped(
+        "A capture cannot express water - it writes an albedo texture path and nothing else - so a "
+        "water draw captures as an OPAQUE material, and anything authored from that capture stays "
+        "opaque unless its type was changed by hand. Replaced and unreplaced draws on one lake then "
+        "render as two different kinds of surface, which is what large chunks with hard edges "
+        "between them look like. On, an opaque replacement on water keeps its authored normal map "
+        "and gets the water treatment around it; a replacement that is already translucent is left "
+        "completely alone.");
+      RemixGui::Checkbox("Hide Projected Reflection Layer", &DusklightWater::hideProjectedLayerObject());
+      ImGui::TextWrapped(
+        "A body of water is not one draw. Besides the surface, the game paints a fake reflection "
+        "over it (MA02/MA10) using a perspective matrix built from the live camera. Remix traces "
+        "that reflection for real, so the painted one is a screen-space image on top of a correct "
+        "one - and once water is translucent it is also a second refracting sheet just above the "
+        "first, which is what stops water reading as one continuous surface. Off shows it again.");
+      RemixGui::Checkbox("Log Water Materials", &DusklightWater::logObject());
+      ImGui::EndDisabled();
+      ImGui::Unindent();
     }
 
     if (RemixGui::CollapsingHeader("Ambient Grade", collapsingHeaderClosedFlags)) {

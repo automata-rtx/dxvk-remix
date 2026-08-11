@@ -266,6 +266,21 @@ namespace dxvk {
                     "How many replacements the game could not hand over. Written by the game's kankyo bridge.\n"
                     "Almost always PNG files: Remix's asset loader accepts .dds only, while the game's own registry accepts both. The game logs one "
                     "bounded line per skipped entry with the reason.");
+    // Diagnostic state. These drive no rendering at all - they exist so the material
+    // report's log can say *when* something happened, in the same file and in order,
+    // rather than requiring the game's log to be read alongside it and correlated by
+    // wall clock. Deliberately not part of kRequiredProtocol: the overlay has no
+    // control that depends on them, so an older game build should not be reported as
+    // out of date for lacking them. It simply produces no markers, and the context
+    // line says so.
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, dash, false, RtxOptionFlags::NoSave,
+                    "True while the player is dashing on horseback. Written by the game's kankyo bridge.\n"
+                    "Exists so a matrep.rmx line that appears mid dash can be attributed to the dash rather than "
+                    "to whatever else was on screen. Reported by the material report's dusklight.mark line.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, camInWater, false, RtxOptionFlags::NoSave,
+                    "True while the game considers the camera to be under water (dKy_camera_water_in_status_check).\n"
+                    "The MA00/MA01/MA04/MA16 fog materials swap their alpha compare and Z mode on this, so the same "
+                    "texture legitimately arrives as two different materials either side of it.");
   };
 
 }

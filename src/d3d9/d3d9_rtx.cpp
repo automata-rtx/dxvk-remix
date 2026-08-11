@@ -1150,14 +1150,59 @@ namespace dxvk {
     // live in d3d9_rtx_matrep.h to keep the rebase surface here small.
     // See aurora-ao/docs/dx9/material-report.md.
     if (DusklightMatrep::matrep()) {
+      // Run configuration, once, and state transitions as they happen. Both live in this
+      // block rather than on a frame hook so they land in the same file as the lines below,
+      // in order, and cost nothing when the report is off.
+      matrep::emitContext();
+      matrep::emitMarkers();
+
       const LegacyMaterialData& mat = m_activeDrawCallState.materialData;
-      // Keyed on the reconstruction *shape* -- texture, ops and arg sources --
-      // deliberately excluding tFactor's value. computeIdentityHash() includes
-      // it, and because the game's tints track fog and time of day, the
-      // 2026-08-03 session produced 828 distinct tFactor values and burned the
-      // whole 1024 cap on a few dozen materials inside 14 seconds. The value is
-      // still printed; it just does not multiply the number of reports.
-      const XXH64_hash_t identity = matrep::shapeKey(mat);
+      // Texcoord generation and transform for the stage the material came from.
+      // Read from d3d9State rather than from transformData so the line shows what
+      // the game asked for beside what Remix resolved it to - those differ silently
+      // for projected and for camera-space-reflection texgen, which is the whole
+      // reason these fields exist. See matrep::StageXform.
+      matrep::StageXform xform;
+      {
+        const DWORD ttff = d3d9State().textureStages[firstStage][DXVK_TSS_TEXTURETRANSFORMFLAGS];
+        // 0x7, not the 0x3 that setTextureStageState uses: D3DTTFF_COUNT4 is 4, so the
+        // narrower mask reports it as DISABLE. Logging the count the game actually
+        // requested keeps that failure visible instead of reproducing it.
+        xform.elementCount = static_cast<uint8_t>(ttff & 0x7);
+        xform.projected = (ttff & D3DTTFF_PROJECTED) != 0 ? 1u : 0u;
+
+        // Explicit mapping rather than arithmetic on the D3DTSS_TCI_* encoding. Masked
+        // to the flag bits because the low half of this field is the coordinate index.
+        switch (d3d9State().textureStages[firstStage][DXVK_TSS_TEXCOORDINDEX] & 0xFFFF0000) {
+        case D3DTSS_TCI_PASSTHRU:                    xform.tci = matrep::TciClass::PassThru; break;
+        case D3DTSS_TCI_CAMERASPACEPOSITION:         xform.tci = matrep::TciClass::CameraSpacePosition; break;
+        case D3DTSS_TCI_CAMERASPACENORMAL:           xform.tci = matrep::TciClass::CameraSpaceNormal; break;
+        case D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR: xform.tci = matrep::TciClass::CameraSpaceReflectionVector; break;
+        case D3DTSS_TCI_SPHEREMAP:                   xform.tci = matrep::TciClass::SphereMap; break;
+        default:                                     xform.tci = matrep::TciClass::Unknown; break;
+        }
+
+        xform.texgen = m_activeDrawCallState.getTransformData().texgenMode;
+
+        // The divisor row, in the same indexing the surface encoder uses: shader row r,
+        // column c is textureTransform.data[c][r], and the divisor is the last output
+        // element. Only meaningful when projected, which is the only case it is printed in.
+        if (xform.projected != 0 && xform.elementCount >= 3 && xform.elementCount <= 4) {
+          const Matrix4& transform = m_activeDrawCallState.getTransformData().textureTransform;
+          const size_t divisorRow = static_cast<size_t>(xform.elementCount) - 1;
+          for (size_t column = 0; column < 4; ++column) {
+            xform.divisorRow[column] = transform.data[column][divisorRow];
+          }
+        }
+      }
+
+      // Keyed on the reconstruction *shape* -- texture, ops, arg sources and the
+      // texcoord state above -- deliberately excluding tFactor's value.
+      // computeIdentityHash() includes it, and because the game's tints track fog
+      // and time of day, the 2026-08-03 session produced 828 distinct tFactor values
+      // and burned the whole 1024 cap on a few dozen materials inside 14 seconds. The
+      // value is still printed; it just does not multiply the number of reports.
+      const XXH64_hash_t identity = matrep::shapeKey(mat, xform);
       if (matrep::shouldEmit(identity)) {
         Logger::info(str::format(
           "matrep.rmx id=", std::hex, identity, std::dec,
@@ -1183,6 +1228,23 @@ namespace dxvk {
           // The second endpoint, without which "ramp=1" says the lerp happened
           // but not between what. Same 0x00RRGGBB packing the shader unpacks.
           " rampOther=", std::hex, dusklightRamp::otherColor(mat), std::dec,
+          // Texcoord state. "xform" is the element count the game requested; Remix
+          // clamps anything above 2. "proj=1" means the stage wanted a projective
+          // divide that Remix does not implement, so its UVs are wrong regardless of
+          // anything else on this line - that is the MA02/MA10 water reflection layer.
+          // "tci" is what the game asked for, "texgen" what Remix resolved it to; a
+          // dropped mode shows as the two disagreeing.
+          " xform=", static_cast<uint32_t>(xform.elementCount),
+          " proj=", static_cast<uint32_t>(xform.projected),
+          " tci=", matrep::tciName(xform.tci),
+          " texgen=", matrep::texgenName(xform.texgen),
+          // Swapped per-frame by dKy_bg_MAxx_proc on the water-in fog materials. The
+          // compare op is printed as well as keyed on: without it two lines that differ
+          // only there print identically and look like a duplicate report.
+          " alphaTest=", mat.alphaTestEnabled,
+          " alphaOp=", static_cast<uint32_t>(mat.alphaTestCompareOp),
+          " alphaRef=", static_cast<uint32_t>(mat.alphaTestReferenceValue),
+          matrep::divisorRowText(xform),
           " albedo=\"", matrep::albedoExpression(mat), "\""));
       }
     }

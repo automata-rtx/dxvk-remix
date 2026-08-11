@@ -631,6 +631,8 @@ design keeps the upstream diff to a checklist.
   two-colour ramp, which shares the same `D3DMATERIAL9` transport.
 - `src/dxvk/rtx_render/rtx_dusklight_texrep.{h,cpp}` — HD texture packs: handle
   decode, residency tracking, both substitution sites' logic, counters.
+- `src/dxvk/rtx_render/rtx_dusklight_water.h` — water: the `Power` decode, the
+  translucent material construction, the layer switches and the log.
 - `src/dxvk/rtx_render/rtx_dusklight_{env,game}.h` — the two option surfaces.
 - `src/d3d9/d3d9_rtx_matrep.h` — the material translation report.
 - `src/dxvk/shaders/rtx/pass/dusklight/*` and
@@ -703,11 +705,33 @@ conflict there. **Verified rather than assumed** —
 tracker returns exactly two hunks, the include and `BindTexture`. That command
 is also how to re-check it after any future change.
 
+*Water — 2026-08-11 (`aurora-ao/docs/dx9/remix-material-interface.md` §11):*
+
+> **Two of these rows are shared with HD texture packs and one is shared with the
+> ramp.** That is the whole reason this feature had to be rebased rather than
+> merged: it was developed against a side band that had since been claimed, and
+> the conflict's obvious resolution deletes texture packs. If a future rebase
+> conflicts here, read `aurora-ao/docs/dx9/in-flight-allocation.md` before
+> resolving.
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_scene_manager.cpp` `determineMaterialData` | the water branch, **after** the replacement lookup and **before** `as<OpaqueMaterialData>()`. Order is load-bearing in both directions: a hand-authored material must still win, and the legacy conversion is what made every water layer an opaque white sheet | `rtx.dusklight.water.enable` |
+| `rtx_scene_manager.cpp` | the replacement-coercion branch and the two bounded logs | `rtx.dusklight.water.applyToReplacements` |
+| `rtx_instance_manager.cpp` | hides the projected overlay; drives water texcoords from the options instead of the draw's transform | `hideProjectedLayer`, `animateTexcoords` |
+| `rtx_materials.h` | `RtSurface` gains `texcoordElementCount` and `isTexcoordProjected`, **placed in existing padding so the struct does not grow** — `CheckRtInstanceSize<784>` is therefore undisturbed. Also the projective-transform encoding in `writeGPUData` | additive |
+| `rtx_materials.cpp` | `Ambient.g`/`.b`/`.a` and `Power` added to `computeIdentityHash`. **Not optional:** a side channel outside that hash lets two draws differing only in it collide, and the preserve path then serves a stale material. `hashStructByMemory` must still sum to `sizeof(T)` — 152 bytes, `padding[3]` | must sum exactly |
+| `rtx_draw_call_tracker.cpp` | `_pad0` becomes `texcoordProjection`; same size, so the hash struct is unchanged in shape | additive |
+| `surface.h`, `surface_interaction.slangh` (shaders) | the projective texture divisor, carried in the eye-origin words when there is no eye | `textureFlags` bits 21–22 |
+| `opaque_surface_material_interaction.slangh` | one line, shared with the ramp | `rtx.dusklight.rampMaterials` |
+| `rtx_opacity_micromap_manager.cpp`, `rtx_types.h` | small plumbing for the above | additive |
+| `d3d9_rtx.cpp`, `d3d9_rtx_utils.cpp`, `d3d9_rtx_matrep.h` | texcoord element count and projection flag carried through; matrep reports them | additive |
+
 *Overlay, bloom and plumbing:*
 
 | File | Change | Guard |
 | :-- | :-- | :-- |
-| `dxvk_imgui.{cpp,h}` | the F1 Dusklight overlay and its three tabs — full surface in `DusklightOverlay.md` §5 | own functions, called from one place each |
+| `dxvk_imgui.{cpp,h}` | the F1 Dusklight overlay and its three tabs, including the Water panel — full surface in `DusklightOverlay.md` §5 | own functions, called from one place each |
 | `rtx_bloom.{h,cpp}` + `bloom.h` | the Dusklight bloom mode and its settings | `rtx.bloom.dusklight` |
 | `rtx_context.{h,cpp}` | `dispatchDusklightGrade`, and the bloom stage ordering | `DusklightGrade` enable |
 | `dxvk_objects.h`, `dxvk_device.cpp` | the two modules constructed and exposed as `metaDusklight*` | additive members |

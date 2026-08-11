@@ -232,6 +232,7 @@ dxvk_src = files([
   'rtx_render/rtx_dusklight_grade.h',
   'rtx_render/rtx_dusklight_texrep.cpp',
   'rtx_render/rtx_dusklight_texrep.h',
+  'rtx_render/rtx_dusklight_water.h',
   'rtx_render/rtx_dust_particles.cpp',
   'rtx_render/rtx_dust_particles.h',
   'rtx_render/rtx_env.cpp',

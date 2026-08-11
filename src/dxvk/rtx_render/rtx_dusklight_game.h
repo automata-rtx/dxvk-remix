@@ -182,6 +182,22 @@ namespace dxvk {
                "fixes it rather than masking it.\n"
                "It removes the visible stars and moon along with the occluder. rtx.dusklight.atmosphere.skyMoonEnable paints the moon back into the generated "
                "sky; these billboards also carry textures, so categorising them as Sky instead would keep all of them visible.");
+    RTX_OPTION("rtx.dusklight.game", bool, hideDashEffect, false,
+               "Stops the game drawing the speed effect it spawns while Epona dashes.\n"
+               "daHorse_c::setDashEffect places JPA particle 0x8657 at a computed offset in front of the *camera* rather "
+               "than in the world, so it is a screen-covering translucent quad that travels with the view. That is the "
+               "same shape of problem as the sky billboards above: a rasterizer composites it over the frame, but Remix "
+               "captures it as ordinary world geometry sitting directly in front of the camera, where it veils everything "
+               "behind it and is path traced as if it were real.\n"
+               "Off by default. It shipped on, encoding the hypothesis that this effect was why water changed appearance "
+               "while dashing, and the 2026-08-08 log refuted it: the effect was suppressed for that entire session and "
+               "the water still changed, new material shapes were not clustered on the nine dashes (2 within 250ms where "
+               "chance predicts ~10), and the gallop covered 29% of the session while producing 6% of them. The cause was "
+               "the projective texture transform on the water's reflection layer, which this runtime was discarding; that "
+               "is now implemented, so this option is back to preserving the game's behaviour.\n"
+               "Still worth turning on to see the scene without a translucent quad travelling with the camera, which "
+               "remains a real thing to do to a path tracer even though it was not this defect. Suppressed at the point "
+               "the emitter is created, so no draw call is issued. The game reads this every frame.");
     RTX_OPTION("rtx.dusklight.game", bool, perBladeGrass, false,
                "Draws each blade of grass as its own instance instead of batching a whole room into one.\n"
                "The batch is a dynamic world space vertex stream, so its asset hash churns the moment any blade sways, is cut or regrows, and Remix cannot "
