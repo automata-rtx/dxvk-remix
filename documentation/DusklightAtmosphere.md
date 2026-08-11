@@ -1381,12 +1381,23 @@ Three cautions against reading it as more than that:
   which is a genuinely dense regime and genuinely good news for the mapping, but
   it is not the `-2000`/`200` override.
 - **So it does not isolate `zHalfMin`.** That clamp only bites where the
-  half-density point falls behind the camera, which is what the tag's *negative*
-  start does (§14.7 — and `start < end`, the opposite of what an earlier recon
-  claimed). A palette regime has a positive start and would not fire the clamp
-  at all. "The dense case looks right" and "the clamp is correct" were already
-  different claims with evidence for only the first; the gap between them is now
-  wider, not narrower.
+  half-density point `(start + end)/2` falls behind the camera. For the mist tag
+  that is `(-2000 + 200)/2 = -900`, and the clamp fires hard. **This is done by
+  the near `end`, not by the negative `start`** — negative starts are ordinary
+  (`start` was zero or negative in *every* area measured on 2026-08-06), so the
+  sign of `start` discriminates nothing.
+
+  Which is settled empirically rather than by argument: Lake Hylia's own ramp
+  was **measured** at `[-3000, 70000]` on 2026-08-06, a half-density point of
+  ~33500 — three orders of magnitude clear of `zHalfMin`, and nothing like
+  `-2000`/`200`. So the visit demonstrably did not exercise the clamp, and that
+  measurement is also the nearest thing to positive evidence that Lake Hylia
+  does not show the kytag01 whiteout — which `.dzs` placement cannot settle
+  either way. (That measurement table lands in §5.1 with the volumetric-shell
+  work, which was still unmerged when this was written; if §5.1 has no ramp
+  table, it has not arrived yet.) "The dense case looks right" and "the clamp is correct" were
+  already different claims with evidence for only the first; the gap between
+  them is now wider, not narrower.
 - **The Goron Mines are still unvisited**, and they are the other regime — near
   and dense rather than scripted and dense.
 
