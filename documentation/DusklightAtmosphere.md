@@ -1006,7 +1006,10 @@ Two things deliberately **not** claimed here:
   is what the original "on the sun's side" wording was probably reaching for — is
   a question about **palette content**, and nobody has checked it. If it is true,
   mode 0 was accidentally producing a defensible-looking result from a wrong
-  premise, and mode 1 will look worse until the alphas arrive.
+  premise, and mode 1 could still read worse **even now that the share is the
+  game's own alpha** — because a correct composite of two bands is not the same
+  claim as "the warm band is the one you see at dusk". The alphas removed the
+  invented constant; they did not answer this.
 
 **Regression signature of enabling mode 1:** the horizon loses its warm side at
 sunrise and sunset and reads flat, the same colour all the way round. Sunsets
@@ -1016,8 +1019,13 @@ show it first. Mode 0 is bit-identical to what shipped.
 debugoptimized and debug — compiled and uploaded artifacts on 2026-08-11
 (`64893ab`), so the shader compiles and both branches of it are valid Slang.
 That is the whole of what is verified. **Neither mode has been looked at by
-anyone**, and mode 1's `kasumiFrontWeight` is an invented `0.5` until the alphas
-arrive, so a first A/B is indicative rather than decisive.
+anyone.**
+
+The invented `0.5` this paragraph used to warn about is gone: the alphas landed
+the same day at protocol 12, and mode 1's share now comes from the game unless
+someone turns that off. What is still true is the reason the warning existed —
+until a build carrying protocol 12 is actually run, nobody has seen the blend
+driven by a real number rather than a placeholder.
 
 The push constant struct is unchanged at 112 bytes — the two new fields took
 `pad0`/`pad1` — so the 128-byte budget is untouched.
