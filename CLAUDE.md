@@ -444,6 +444,43 @@ on the thorough pass was in a document nobody had edited — precisely the set
 recall does not surface. `documentation/DusklightAtmosphere.md` §11, the rebase
 surface, is the highest-consequence one to keep current.
 
+## Shader source must be ASCII — and `§` is not evidence otherwise
+
+**Cost one CI round on 2026-08-11.** All three Windows configs died 60 seconds in,
+before a single `.cpp` was compiled:
+
+```
+compile_shaders.py:492 in parseShaderVariants ->  for line in file:
+UnicodeDecodeError: 'charmap' codec can't decode byte 0x8d in position 184
+```
+
+`scripts-common/compile_shaders.py` opens every shader with a bare
+`open(inputFile, "r")`, so on Windows it decodes as **cp1252**. The commit had put
+the game's own kanji (前 / 奥) in a `.slang` comment; `前` is UTF-8
+`E5 89 8D`, and `0x8D` is **undefined** in cp1252.
+
+**The trap is that the tree looks like it already allows non-ASCII.** These files
+are full of `§` — and `§` is `0xA7`, a *perfectly valid* cp1252 byte, so it decodes
+(as a different character nobody ever looks at) and has never failed. `§`
+surviving says nothing about CJK, which does not.
+
+So: **anything under `src/dxvk/shaders/` stays ASCII.** Romanize the Japanese in
+the comment and cite `dusklight-ao/docs/japanese-naming.md` for the kanji. This
+matters more than it used to, because the naming work means sessions now routinely
+quote the game's labels — and this is the one place that quoting is fatal.
+
+Not a Linux-visible failure: Python defaults to UTF-8 there, so the container
+compiles the same file happily. Check with:
+
+```
+grep -rnP '[^\x00-\x7F]' src/dxvk/shaders/ | grep -vP '[\xa0-\xff]$'   # CJK etc.
+grep -rnP '[^\x00-\x7F]' src/dxvk/shaders/                            # everything
+```
+
+The proper fix is `encoding='utf-8'` in `compile_shaders.py` — deliberately **not**
+done, because that file is upstream's and the rebase surface is worth more than the
+convenience. If upstream ever fixes it, this section retires.
+
 ## Two tripwires that only fire in CI
 
 Both are deliberate guards, not bugs, and both have cost a CI round. Neither

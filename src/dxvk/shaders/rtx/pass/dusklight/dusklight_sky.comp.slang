@@ -179,9 +179,10 @@ void main(uint2 ipos : SV_DispatchThreadID)
   // The game's two horizon haze bands are front and back, not sun-relative. It paints kasumi_outer
   // onto vrbox_kasumiM.bmd and kasumi_inner onto a material of vrbox_sora.bmd, and draws both at
   // every bearing; no code path in it reads sun position to pick between them. "Outer" is the NEAR
-  // band, opposite to what the English reads like - the game's own labels say so (前 mae / 奥 oku
-  // on the HIO sliders, kasumiF / kasumiB in the debug view). dusklight-ao/docs/japanese-naming.md
-  // section 6.
+  // band, opposite to what the English reads like - the game's own labels say so ("mae" = front and
+  // "oku" = back on the HIO sliders, kasumiF / kasumiB in the debug view).
+  // dusklight-ao/docs/japanese-naming.md section 6 quotes them in the original kanji; this file
+  // cannot, because compile_shaders.py reads shader source in the platform's default encoding.
   //
   // Two ways of collapsing them into one colour, selectable because the first is the one that
   // shipped and the second is the one the game supports. DusklightAtmosphere.md section 12.2.

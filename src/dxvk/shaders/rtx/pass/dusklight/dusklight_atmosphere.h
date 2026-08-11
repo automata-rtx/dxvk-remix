@@ -63,8 +63,9 @@ struct DusklightAtmosphereArgs {
   // one onto each of two dome shells at every azimuth, and no code path in it relates either field
   // to sun position. Note "outer" is the NEAR band and "inner" the FAR one, opposite to what the
   // English reads like - the member names are the decompilation's reconstruction, while the game's
-  // own labels (前 mae / 奥 oku, kasumiF / kasumiB) say front and back.
-  // dusklight-ao/docs/japanese-naming.md section 6.
+  // own labels ("mae" = front, "oku" = back, and kasumiF / kasumiB) say front and back.
+  // dusklight-ao/docs/japanese-naming.md section 6, which quotes them in the original kanji - this
+  // file cannot, see the ASCII-only note there.
   //
   // The far ("back") band.
   vec3 kasumiInner;
