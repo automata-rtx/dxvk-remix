@@ -124,13 +124,23 @@ namespace dxvk {
     // which Remix computes for real from the geometry - so drawing them puts a
     // painted shadow on top of a traced one.
     RTX_OPTION("rtx.dusklight.game", bool, blobShadows, false,
-               "Let the game draw the flat circular shadows it puts under rupees, hearts, pots and small objects.\n"
+               "Let the game draw the flat circular ground shadow it puts under an actor.\n"
                "Off, because Remix traces a real shadow for every one of those objects and the painted disc lands on "
                "top of it. Turning it on restores the game's own behaviour, which is only useful for comparison. The "
                "game reads this every frame, so it takes effect immediately - and it is suppressed at the point the "
                "shadow is registered, so no draw call is issued at all rather than one being hidden later.\n"
-               "This covers the game's *simple* shadows only. Its projected shadows (Link, major actors) are a "
-               "separate system and are not touched.");
+               "SCOPE - wider than this description used to say. It drops the ground shadow of EVERY actor that "
+               "registers one, not just dropped items: pots, insects, enemies, NPCs and cutscene actors too. The "
+               "suppression sits inside dDlst_shadowControl_c::setSimple, which is the single funnel behind all 50 "
+               "dComIfGd_setSimpleShadow call sites in the game, and two of those are shared base classes that carry "
+               "most of the reach - daNpcT_c::draw (51 derived NPC classes) and daItemBase_c::setShadow. The "
+               "2026-08-06 in-game test that confirmed this correct only looked at dropped items, so the tested part "
+               "is much narrower than the changed part; the reasoning holds for anything whose caster geometry "
+               "reaches Remix, but an NPC losing its ground shadow is expected behaviour here, not a new bug.\n"
+               "This covers the game's *simple* shadow class only. Its projected shadows (Link, major actors, "
+               "dDlst_shadowReal_c) are a separate system and are not touched. Naming, since it confuses people: the "
+               "game has a word for the projected class and calls it \"riaru kage\" (real shadow) in its own debug "
+               "labels, but it has no name at all for the simple class - \"blob shadow\" is this project's coinage.");
 
     // Local point lights - superseded 2026-08-06 by rtx.dusklight.game.effectLights, kept as
     // the comparison path. Its description has to say so: this option's tooltip and its row in
@@ -216,7 +226,11 @@ namespace dxvk {
                "identify it from frame to frame: no tagging, no replacement, and no denoiser or ReSTIR history, which is why grass lighting lags the scene. "
                "Per blade it is static display list geometry plus a transform, so the hash holds still.\n"
                "Off by default because it costs exactly what the batching saves - one draw call per blade in dense grass. Built 2026-07-29, untested in game; "
-               "dusklight-ao/docs/remix-open-issues.md is where its state is tracked.");
+               "dusklight-ao/docs/remix-open-issues.md is where its state is tracked.\n"
+               "GRASS ONLY, which the name hides. The actor that plants grass plants flowers too - one kind spawns kusa (grass) into dGrass_packet_c, two "
+               "more spawn hana (flower) into dFlower_packet_c - and this switch reaches the grass packet alone. The flower packet batches in exactly the "
+               "same way, into the same kind of dynamic world-space stream with the same churning hash, and has no switch of its own. So if a grass-like "
+               "symptom is showing on flowers, this control will not move it, and that is a gap in the coverage rather than the diagnosis being wrong.");
     RTX_OPTION("rtx.dusklight.game", bool, hideVrbox, false,
                "Stops the game drawing its own sky dome.\n"
                "Turn this on together with rtx.dusklight.atmosphere.skyEnable, which generates a sky from the same colours the dome is painted "
@@ -405,6 +419,42 @@ namespace dxvk {
                     "That log is what turns 'additive blending means the effect emits light' from a reading of the format into a measurement of this game, "
                     "so one play session settles the classifier for the whole game. The game acts on the change rather than the value and latches the first "
                     "one it sees without acting, so connecting to a session that already has a non-zero count does not dump a report nobody asked for.");
+
+    // Three values the game's original artists had sliders for and nobody since has been able to
+    // reach. Their debug panel is compiled out of every build of this port (one #if DEBUG around
+    // the whole of d_kankyo.cpp's genMessage functions, and DEBUG is 0), so the bindings survive
+    // only as a specification - a label the authors wrote, the exact field, and the range they
+    // worked in. docs/kankyo-tuning-surface.md in the game repo has the extraction.
+    //
+    // These three and no others because these three are the only environment fields that are set
+    // once per scene rather than rebuilt every frame by the palette blend, which is what lets the
+    // game apply them at all. Each defaults to the game's own value, so nothing changes until a
+    // slider moves.
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, waterSurfaceShine, 1.0f,
+                    "How glossy a water surface reads. The game's own slider for this is labelled 'tera-tera' - the Japanese mimetic for a wet, "
+                    "glistening sheen - and its range is this one.\n"
+                    "It moves two things together, which is why it is worth a control rather than a constant: the konstant colour the water surface's "
+                    "shading is built from, and the speed its ripple texture animates at. Lower is duller and slower; 1 is what the game ships and is "
+                    "the default here.\n"
+                    "Applies to the MA09 water surface, which is one of the several stacked layers a body of water is drawn from - see the Water "
+                    "section for the others.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, grassLightInfluence, 1.0f,
+                    "How much the room's light colours the grass, on the game's own 0 to 2 scale with 1 as shipped.\n"
+                    "The game tints every blade from the room's first light before drawing it, and that tint is one of the colours that does reach "
+                    "Remix - so this is the dial for grass reading too dark or too flat against terrain the path tracer has lit for real. It reaches "
+                    "the flowers as well, which are planted by the same actor through a second batch.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 2.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, clockRate, 1.0f,
+                    "How fast the game's clock runs, as a multiplier on its normal speed. 1 is normal, 0 stops it, 10 makes a day take a tenth of the time.\n"
+                    "Slow is as useful as fast here: three of the six time-of-day palettes the game authors exist for a single instant each with a "
+                    "cross-fade either side, and a low rate is the only way to watch one of those transitions happen rather than land on it.\n"
+                    "Freeze Time is still the right tool for an A/B pair - it also holds the Twilight Realm's separate clock. This only scales the "
+                    "normal advance, and it deliberately keeps its hands off the wolf's howl-to-dawn skip while that is running.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 20.0f);
   };
 
 }

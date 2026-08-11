@@ -3437,10 +3437,14 @@ namespace dxvk {
         "camera, which is its own problem for a path tracer.");
       RemixGui::Checkbox("Game's Blob Shadows", &DusklightGame::blobShadowsObject());
       ImGui::TextWrapped(
-        "Blob shadows are the flat discs the game paints under rupees, hearts and pots. Off by "
+        "Blob shadows are the flat discs the game paints on the ground under an actor. Off by "
         "default: Remix traces a real shadow for each of those objects, so the disc lands on top of a "
         "correct one. The game drops them at registration, so no draw call is issued at all. Its "
-        "projected shadows - Link and the major actors - are a separate system and are untouched.");
+        "projected shadows - Link and the major actors - are a separate system and are untouched.\n"
+        "Wider than it sounds, and wider than this said until 2026-08-11: this is every actor that "
+        "registers a ground shadow, not just dropped items - pots, insects, enemies, NPCs and cutscene "
+        "actors too, through one shared suppression behind all 50 registration sites. The in-game test "
+        "that passed only looked at items, so an NPC losing its ground disc is expected, not a bug.");
       ImGui::TextWrapped(
         "The game drops geometry outside the camera's view, which a path tracer still needs: a wall "
         "culled because you turned away stops occluding, and light leaks through where it was. Costs "
@@ -3452,7 +3456,10 @@ namespace dxvk {
         "Per-blade grass gives every blade a stable hash, so it can be tagged, replaced with real "
         "geometry, and hold denoiser history - the batched form cannot, because its vertex positions "
         "change whenever any blade moves. It costs one draw call per blade, so expect a CPU cost in "
-        "dense grass.");
+        "dense grass.\n"
+        "Grass only. The same actor also plants the flowers, and those go through a second batch that "
+        "this does not reach and that has no switch of its own - so if flowers show the symptom too, "
+        "this control will not move them.");
       ImGui::Unindent();
     }
 
@@ -3570,6 +3577,38 @@ namespace dxvk {
         common->metaDusklightAtmosphere().showImguiSettings();
         ImGui::EndDisabled();
       }
+    }
+
+    if (RemixGui::CollapsingHeader("The Game's Own Tuning Values", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "Three values the game's original artists had sliders for, at the ranges they worked in. "
+        "Their tuning panel is compiled out of every build of this port, so these have not been "
+        "reachable by anyone since the game shipped - the labels and ranges survive in the source "
+        "and that is where these came from. Each starts at the value the game ships, so nothing "
+        "changes until you move one.");
+
+      RemixGui::DragFloat("Water Surface Gloss##dusklight", &DusklightGame::waterSurfaceShineObject(), 0.01f, 0.f, 1.f, "%.2f");
+      ImGui::TextWrapped(
+        "The game calls this 'tera-tera' - its word for a wet, glistening sheen. It dulls the water "
+        "surface's colour and slows its ripple animation together, which is how the game made one "
+        "lake look livelier than another. 1 is as shipped.");
+
+      RemixGui::DragFloat("Grass Light Influence##dusklight", &DusklightGame::grassLightInfluenceObject(), 0.01f, 0.f, 2.f, "%.2f");
+      ImGui::TextWrapped(
+        "How much the room's light colours each blade of grass before it is drawn. That tint is one "
+        "of the few colours that reaches Remix from the game, so this is the thing to reach for when "
+        "grass reads too dark or too flat against ground the path tracer has lit for real. Flowers "
+        "follow it too. 1 is as shipped.");
+
+      RemixGui::DragFloat("Clock Rate##dusklight", &DusklightGame::clockRateObject(), 0.05f, 0.f, 20.f, "%.2fx");
+      ImGui::TextWrapped(
+        "Speed of the game's clock, as a multiple of normal. Low is as useful as high: three of the "
+        "six time-of-day palettes exist for one instant each, and a slow clock is the only way to "
+        "watch one of those transitions instead of jumping onto it. Use Freeze Time in the Time of "
+        "day section for an A/B pair - that also holds the Twilight Realm's separate clock, which "
+        "this does not touch. The wolf's howl-to-dawn skip is left alone while it runs.");
+      ImGui::Unindent();
     }
 
     if (RemixGui::CollapsingHeader("Environment Response", collapsingHeaderFlags)) {
