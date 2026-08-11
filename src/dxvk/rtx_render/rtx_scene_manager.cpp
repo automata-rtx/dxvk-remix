@@ -46,6 +46,7 @@
 #include "rtx_matrix_helpers.h"
 #include "dxvk_scoped_annotation.h"
 #include "rtx_lights_data.h"
+#include "rtx_dusklight_water.h"
 #include "rtx_light_utils.h"
 
 #include "../util/util_global_time.h"
@@ -800,6 +801,34 @@ namespace dxvk {
     // test if any direct material replacements exist
     MaterialData* pReplacementMaterial = m_pReplacer->getReplacementMaterial(input.getMaterialData().getHash());
     if (pReplacementMaterial != nullptr) {
+      // A water draw with a replacement authored over it. Worth its own handling, because
+      // a capture cannot express water: GameCapturer::captureMaterial writes an albedo
+      // texture path and nothing else, so a water draw captures as an OPAQUE material and
+      // anything built from that capture is opaque unless its type was changed by hand.
+      // Replaced and unreplaced draws on one lake then render as two different kinds of
+      // surface - large chunks, hard edges between them. See rtx_dusklight_water.h.
+      if (dusklightWater::isWater(input.getMaterialData())) {
+        const bool alreadyTranslucent =
+          pReplacementMaterial->getType() == MaterialDataType::Translucent;
+        const bool coerce = DusklightWater::applyToReplacements() && !alreadyTranslucent;
+
+        if (dusklightWater::shouldLogReplaced(input.getMaterialData().getHash())) {
+          Logger::info(str::format(
+            "dusklight.water.replaced tex0hash=", std::hex, input.getMaterialData().getHash(),
+            std::dec, " type=", dusklightWater::materialTypeName(pReplacementMaterial->getType()),
+            " coerced=", coerce,
+            coerce ? " - opaque replacement on water; kept its normal map, applied the water treatment"
+                   : (alreadyTranslucent
+                        ? " - already translucent, left alone"
+                        : " - left as authored (rtx.dusklight.water.applyToReplacements is off)")));
+        }
+
+        if (coerce) {
+          return MaterialData(dusklightWater::makeMaterialFromReplacement(input.getMaterialData(),
+                                                                         *pReplacementMaterial));
+        }
+      }
+
       // Make a copy - dont modify the replacement data.
       MaterialData renderMaterialData = *pReplacementMaterial;
       // merge in the input material from game
@@ -816,6 +845,65 @@ namespace dxvk {
       MaterialData renderMaterialData = input.getMaterialData().as<RayPortalMaterialData>();
       renderMaterialData.getRayPortalMaterialData().setRayPortalIndex(rayPortalTextureIndex);
       return renderMaterialData;
+    }
+
+    // Dusklight water. Checked after replacements, so a hand-authored material for a water
+    // texture still wins - which is how a normal map gets onto the surface - and before the
+    // legacy conversion below, which is the line that made every water layer an opaque
+    // white-ish dielectric. See rtx_dusklight_water.h.
+    if (dusklightWater::isWater(input.getMaterialData())) {
+      // The water's edge keeps its alpha blend. A translucent material has no partial
+      // coverage, so converting the pass whose entire job is feathering the boundary into
+      // the shore is what turns that boundary into a hard glass edge.
+      const bool asBlend = dusklightWater::keepAsBlendedOverlay(input.getMaterialData());
+
+      if (dusklightWater::shouldLog(input.getMaterialData().getHash())) {
+        uint32_t texWidth = 0;
+        uint32_t texHeight = 0;
+        dusklightWater::textureExtent(input.getMaterialData(), texWidth, texHeight);
+
+        Logger::info(str::format(
+          "dusklight.water tex0hash=", std::hex, input.getMaterialData().getHash(), std::dec,
+          " ior=", DusklightWater::refractiveIndex(),
+          " dist=", DusklightWater::transmittanceMeasurementDistance(),
+          " thinWalled=", DusklightWater::thinWalled(),
+          // Whether this draw carries a texture transform at all, which is what separates the
+          // scrolling ripple layers from still water. Reported rather than acted on: every
+          // water surface is treated the same, and this only says which is which.
+          " texXform=", static_cast<uint32_t>(input.getTransformData().texcoordElementCount),
+          " proj=", input.getTransformData().texcoordProjected,
+          // The open question after 2026-08-08 23:47: a body of water arrives as more than
+          // one surface draw, and only one of them should be the refracting interface. The
+          // projected layer is handled by name; whether the remaining base and scrolling
+          // passes can be told apart the same way, or need the blend state, is unanswered.
+          // These two are what would answer it - an additive pass is light over a surface,
+          // not a second surface - so they are reported before anything is built on them.
+          // What the game calls this draw. tag= is the MAxx group; layer= is the pass, from
+          // the game's own vocabulary - waves, shoreline, murk, shimmer. Together they say
+          // what a given body of water is made of, which is what the hide*Layer switches are
+          // set from. The layer is the one that matters: MA06 alone covers three of them.
+          " tag=MA", dusklightWater::waterTag(input.getMaterialData()),
+          " layer=", dusklightWater::waterLayerName(
+                       dusklightWater::waterLayer(input.getMaterialData())),
+          // The raw packed value aurora sent, beside the three facts decoded from it.
+          // Both halves of one contract are in two repositories (rtx_dusklight_water.h),
+          // and if they ever drift this line is what says so: a power= that does not
+          // read as tag*100 + layer*10 + role means the wire changed on one side only.
+          " power=", dusklightWater::packedWater(input.getMaterialData()),
+          " asBlend=", asBlend,
+          // The size Remix actually got. Aurora uploads at the GX texture's native size, so
+          // a small number here is the game's own art, not a loss in the pipeline.
+          " tex=", texWidth, "x", texHeight,
+          " blend=", input.getMaterialData().blendMode.enableBlending,
+          " blendSrcDst=", static_cast<uint32_t>(input.getMaterialData().blendMode.colorSrcFactor),
+          ",", static_cast<uint32_t>(input.getMaterialData().blendMode.colorDstFactor),
+          " alphaTest=", input.getMaterialData().alphaTestEnabled));
+      }
+
+      if (!asBlend) {
+        return dusklightWater::makeMaterial(input.getMaterialData());
+      }
+      // else: fall through to the legacy conversion, which keeps the draw's alpha.
     }
 
     // Standard legacy material conversion

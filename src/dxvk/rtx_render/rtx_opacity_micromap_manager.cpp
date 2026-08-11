@@ -1006,7 +1006,12 @@ namespace dxvk {
     // Texcoord data is required
     if (instance.getTexcoordHash() == kEmptyHash ||
         // Texgen mode check excludes baked terrain as well
-        instance.surface.texgenMode != TexGenMode::None) {
+        instance.surface.texgenMode != TexGenMode::None ||
+        // The baker applies the texture transform without the projective divide, so for a
+        // projected transform it would bake opacity from coordinates the path tracer never
+        // samples. Excluded rather than divided here because the baker's own input is a
+        // flat (u, v, 1, 1), which is already not what a projected draw is transforming.
+        instance.surface.isTexcoordProjected) {
       ONCE(Logger::info("[RTX Opacity Micromap] Instance does not have compatible texture coordinates. Ignoring the Opacity Micromap request."));
       return false;
     }

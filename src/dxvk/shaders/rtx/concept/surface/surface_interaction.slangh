@@ -546,10 +546,36 @@ SurfaceInteraction surfaceInteractionCreate<let GenerateTangents : bool>(
         rawTextureCoordinate = float4(loadedTextureCoordinate, 1.0f, 1.0f);
       }
 
-      const vec2 transformedTextureCoordinate = mul(surface.textureTransform, rawTextureCoordinate);
+      vec2 transformedTextureCoordinate = mul(surface.textureTransform, rawTextureCoordinate);
 
-      // Todo: Perspective division here on the proper component (as specified by the number of elements the transform is expected to output)
-      // when projective texture transforms are enabled.
+      // Projective texture transforms (D3DTTFF_PROJECTED) emit one element beyond the
+      // coordinates and divide the coordinates by it. The divisor is another row of the
+      // same matrix, carried separately because the transform here only stores the two
+      // coordinate rows - see Surface::texcoordProjectiveRow.
+      //
+      // Done per vertex rather than after interpolation deliberately: the divide is what
+      // makes the mapping projective, so interpolating already divided coordinates across
+      // the triangle is the correct affine reconstruction of it. Dividing the interpolated
+      // sum instead would apply the projection to the wrong quantity.
+      if (surface.isTexcoordProjected)
+      {
+        // The divisor's w coefficient is implicit: the CPU side divided the whole matrix
+        // through by it so that it is exactly 1, or it was already 0. Both cases keep the
+        // three stored coefficients at full precision, which matters because a perspective
+        // divisor nearly cancels close to its focal plane.
+        const float constantTerm =
+          surface.texcoordProjectiveConstantIsOne ? rawTextureCoordinate.w : 0.0f;
+        const float divisor =
+          dot(surface.texcoordProjectiveRow, rawTextureCoordinate.xyz) + constantTerm;
+
+        // Geometry crossing the projection's plane of infinity legitimately reaches zero
+        // here. Leaving such a vertex undivided keeps a finite coordinate in the buffer;
+        // the sanitize() below can only replace a NaN with zero, which is a worse guess.
+        if (abs(divisor) > 1e-9f)
+        {
+          transformedTextureCoordinate /= divisor;
+        }
+      }
 
       // Todo: Use the full vec4 here if transformedTextureCoordinate is ever expanded to be a vec4 (right
       // now the other 2 components will never matter in our current implementation, and this covers the

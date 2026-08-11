@@ -116,6 +116,40 @@ the stage's alpha to build opacity and the alpha test).
 
 Full statement: `aurora-ao/docs/dx9/remix-material-interface.md` §0.
 
+## The game's names are Japanese, and they are load-bearing
+
+Twilight Princess is a Japanese production and this decompilation preserves the
+original team's naming, so a material, actor or function name is usually a
+*romanised Japanese word describing what the thing is*. Read it before inventing
+a classification — the answer is very often already in the name.
+
+Worked examples from the water work, all of which changed a decision:
+
+| Name | Reading | What it meant |
+| :-- | :-- | :-- |
+| `cc_MA06_nami_v_x` | nami — wave | a wave pass, **not** interchangeable with the murk pass beside it |
+| `cc_MA06_mizugiwa_v_x` | mizugiwa — water's edge | the shoreline |
+| `cc_MA06_NigoriWater_v_x` | nigori — turbidity | the murky body |
+| `cc_MA09_mera_v` | mera — shimmer | the shimmer pass |
+| `ce_MA03_WaterKasan_v_x` | kasan (加算) — **addition** | an additively blended pass — and every material carrying it measured `SRC_ALPHA,ONE` |
+| `cd_MA03_Funsui_v` | funsui — fountain | a fountain, an object rather than a lake layer |
+| `cc_MA02_IndirectWater_v` | (indirect texturing) | the warp the game uses to fake refraction |
+
+Two lessons worth carrying into unrelated features:
+
+- **`kasan` is the case to remember.** The blend state was measured a session
+  before anyone read the name, and the name had said it all along. Reading the
+  vocabulary first would have saved the measurement.
+- **A numeric tag is usually coarser than the name.** `MA06` alone covers the
+  waves, the shoreline and the murk; a control that cut on the tag was built,
+  recommended, and would have deleted two of the three. The suffix is where the
+  distinction lives.
+
+When adding a classifier over these names, prefer matching `_word` and `Word`
+(the convention lowercases after the tag and capitalises inside a compound) over
+a bare substring, so `minami` is not read as `nami` — and make "unrecognised"
+mean "leave it alone".
+
 ## How this project works — read before proposing a fix
 
 Five rules. They exist because each was learned the expensive way, and following
@@ -324,17 +358,28 @@ it is inconvenient.
   or protocol number — nothing can see an unmerged branch, so **check the other
   live `claude/*` branches before taking either**
 
-**As of 2026-08-11 there is no spare side channel left.** `Ambient.a` and `Power`
-are both claimed by unmerged branches — `Ambient.a` twice over — and
-`claude/water-rendering-investigation-7baezw` **reclaims `Ambient.g`/`.b`**, the
-HD texture pack channels tested good in game on 2026-08-06; on this side of the
-fork that branch is missing `rtx_dusklight_texrep.{h,cpp}` altogether. Its merge
-conflicts in aurora and the obvious resolution loses the feature silently — it
-needs a rebase, not a hand resolution. Separately, **four live branches have each
-taken GX FIFO subcommand `0x0053`**, where the dispatch chain merges without
-conflict and the losing arm desyncs the FIFO. Full audit and the recommended
-procedure: `aurora-ao/docs/dx9/in-flight-allocation.md`, mirrored in
-`documentation/DusklightSideChannels.md`.
+**As of 2026-08-11 exactly one side channel is left: `Ambient.a`.** Water took
+`Power` — all three of its facts packed into that one field
+(`tag * 100 + layer * 10 + role`), specifically so `Ambient.a` would survive for
+something else. `claude/dusklight-remix-transparency-e7l766` has an unmerged
+claim on it, and after that there is nothing: the feature after next has to pack
+into an existing field or move to a different transport.
+
+The allocation table is `documentation/DusklightSideChannels.md` and it is
+CI-checked **both ways** — a channel read with no row fails, and a row nothing
+reads fails. **A third check requires every allocated channel to be in
+`LegacyMaterialData::computeIdentityHash`**, because a channel outside that hash
+lets two draws differing only in it collide, and the preserve path then serves a
+stale material with nothing logged. `Power` was outside it until 2026-08-11 on
+the stated grounds that nothing read it.
+
+**GX FIFO subcommand `0x0053` is water's.** Four branches had each taken it; the
+`else if` dispatch in aurora's `command_processor.cpp` merges both arms without
+conflict and the loser desyncs the FIFO. `include/dolphin/gx/GXAurora.h` now
+carries a registry comment reserving `0x0054`–`0x0057` for the other three, and
+aurora's `check_invariants.py` fails on a duplicate or an unregistered number.
+
+Full account: `aurora-ao/docs/dx9/in-flight-allocation.md`.
 
 **When auditing documentation after a merge, re-derive the file list from the
 diff, not from memory.** On the merge that prompted all of this, every gap found

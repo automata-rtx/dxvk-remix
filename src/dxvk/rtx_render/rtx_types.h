@@ -593,6 +593,12 @@ struct DrawCallTransforms {
   bool enableClipPlane = false;
   Vector4 clipPlane{ 0.f };
   TexGenMode texgenMode = TexGenMode::None;
+  // D3DTTFF element count (0 when the transform is disabled, else 1-4) and whether
+  // D3DTTFF_PROJECTED was set. Kept beside the matrix because the matrix alone cannot
+  // say how many of its rows are outputs, nor that the last of them is a divisor rather
+  // than a coordinate.
+  uint8_t texcoordElementCount = 0;
+  bool texcoordProjected = false;
   std::shared_ptr<const std::vector<Matrix4>> instancesToObject;
 
   void sanitize() {

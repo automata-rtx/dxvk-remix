@@ -601,7 +601,12 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   const bool normalLoaded = surfaceMaterialInteractionTextureReadHelper(opaqueSurfaceMaterial.normalTextureIndex, opaqueSurfaceMaterial.samplerIndex, surfaceInteraction, normalSample);
 
   bool secondNormalLoaded = false;
-  if (cb.opaqueMaterialArgs.layeredWaterNormalEnable && surface.isAnimatedWater)
+  // Note: excluded for projective transforms. Surface::textureTransform is pre-scaled on a
+  // projective surface so that its divisor's constant term can be left implicit, which is
+  // only meaningful once the divide is applied - and this re-application does not apply it.
+  // The scale would silently move the second sample rather than reporting anything.
+  if (cb.opaqueMaterialArgs.layeredWaterNormalEnable && surface.isAnimatedWater &&
+      !surface.isTexcoordProjected)
   {
     // take a second sample from a higher LOD using a modified texture xform
     const vec2 motionScale = vec2(cb.opaqueMaterialArgs.layeredWaterNormalMotionX, cb.opaqueMaterialArgs.layeredWaterNormalMotionY) * cb.opaqueMaterialArgs.layeredWaterNormalMotionScale;

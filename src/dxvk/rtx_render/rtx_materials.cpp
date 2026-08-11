@@ -46,15 +46,21 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     uint32_t blendAlphaDstFactor;
     uint32_t blendAlphaBlendOp;
     uint32_t blendWriteMask;
-    // The half of D3DMATERIAL9 aurora uses to carry material intent: Emissive
-    // is the self-illumination evidence, Diffuse the two-colour ramp's second
-    // endpoint, Ambient.r which endpoint tFactor holds. See
-    // rtx_dusklight_emissive.h. Two draws differing only in these are different
-    // materials; without this they collapse onto whichever the cache saw first.
-    // Specular.r says whether the vertex colour stream is material colour,
-    // .g whether aurora evaluated this material at all, .b whether it has a
-    // colour of its own, .a whether it is self-lit. Power is not hashed -
-    // nothing reads it.
+    // The half of D3DMATERIAL9 aurora uses to carry material intent. Two draws
+    // differing only in these are different materials; without them in the hash
+    // they collapse onto whichever the cache saw first, and the preserve path in
+    // SceneManager keeps handing an instance a material built from the other one.
+    //
+    // THE INVARIANT: every field the fork reads is hashed here. The field map is
+    // aurora-ao/docs/dx9/remix-material-interface.md §2 and the mirror is
+    // documentation/DusklightSideChannels.md; scripts/check_dusklight_invariants.py
+    // checks the reads against those, so a channel added there without a line
+    // below is caught.
+    //
+    // It was not always so. Power was excluded on the stated grounds that nothing
+    // read it, and the water feature then read it - through a branch that never
+    // touched this file, so the comment saying so stayed true-looking for a week.
+    // Being exhaustive is cheaper than re-deriving which channels matter.
     float legacyEmissiveR;
     float legacyEmissiveG;
     float legacyEmissiveB;
@@ -64,10 +70,14 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     float legacyDiffuseB;
     float legacyDiffuseA;
     float legacyAmbientR;
+    float legacyAmbientG;
+    float legacyAmbientB;
+    float legacyAmbientA;
     float legacySpecularR;
     float legacySpecularG;
     float legacySpecularB;
     float legacySpecularA;
+    float legacyPower;
     uint8_t alphaTestReferenceValue;
     uint8_t textureColorArg1Source;
     uint8_t textureColorArg2Source;
@@ -104,10 +114,14 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
   data.legacyDiffuseB = d3dMaterial.Diffuse.b;
   data.legacyDiffuseA = d3dMaterial.Diffuse.a;
   data.legacyAmbientR = d3dMaterial.Ambient.r;
+  data.legacyAmbientG = d3dMaterial.Ambient.g;
+  data.legacyAmbientB = d3dMaterial.Ambient.b;
+  data.legacyAmbientA = d3dMaterial.Ambient.a;
   data.legacySpecularR = d3dMaterial.Specular.r;
   data.legacySpecularG = d3dMaterial.Specular.g;
   data.legacySpecularB = d3dMaterial.Specular.b;
   data.legacySpecularA = d3dMaterial.Specular.a;
+  data.legacyPower = d3dMaterial.Power;
   data.alphaTestReferenceValue = alphaTestReferenceValue;
   data.textureColorArg1Source = static_cast<uint8_t>(textureColorArg1Source);
   data.textureColorArg2Source = static_cast<uint8_t>(textureColorArg2Source);
@@ -142,10 +156,14 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
       &LegacyMaterialIdentityHashData::legacyDiffuseB,
       &LegacyMaterialIdentityHashData::legacyDiffuseA,
       &LegacyMaterialIdentityHashData::legacyAmbientR,
+      &LegacyMaterialIdentityHashData::legacyAmbientG,
+      &LegacyMaterialIdentityHashData::legacyAmbientB,
+      &LegacyMaterialIdentityHashData::legacyAmbientA,
       &LegacyMaterialIdentityHashData::legacySpecularR,
       &LegacyMaterialIdentityHashData::legacySpecularG,
       &LegacyMaterialIdentityHashData::legacySpecularB,
       &LegacyMaterialIdentityHashData::legacySpecularA,
+      &LegacyMaterialIdentityHashData::legacyPower,
       &LegacyMaterialIdentityHashData::alphaTestReferenceValue,
       &LegacyMaterialIdentityHashData::textureColorArg1Source,
       &LegacyMaterialIdentityHashData::textureColorArg2Source,

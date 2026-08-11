@@ -193,13 +193,24 @@ def check_side_channel_map() -> None:
             for c in chans:
                 documented.add((field, c))
 
+    if "`Power`" in registry:
+        documented.add(("Power", ""))
+
+    # rtx_materials.cpp is exhaustive on purpose - computeIdentityHash reads every
+    # channel including the spare ones, so that a future claim is covered by the
+    # hash the moment it is written. Scanning it here would report every spare
+    # channel as an undocumented read. It gets the opposite check instead, below.
+    HASH_SITE = "src/dxvk/rtx_render/rtx_materials.cpp"
+
     read_channels: dict[tuple[str, str], str] = {}
     pattern = re.compile(
         r"(?:getLegacyMaterial\(\)|d3dMaterial|legacy|material|mat)\s*\.\s*"
-        r"(Ambient|Diffuse|Specular|Emissive)\s*\.\s*([rgba])\b"
+        r"(?:(Ambient|Diffuse|Specular|Emissive)\s*\.\s*([rgba])|(Power))\b"
     )
     for rel in tracked_files():
         if not rel.startswith("src/") or Path(rel).suffix not in {".h", ".hpp", ".cpp"}:
+            continue
+        if rel == HASH_SITE:
             continue
         text = read(rel)
         if text is None:
@@ -208,17 +219,150 @@ def check_side_channel_map() -> None:
             stripped = line.lstrip()
             if stripped.startswith("//") or stripped.startswith("*"):
                 continue
-            for field, chan in pattern.findall(line):
-                read_channels.setdefault((field, chan), f"{rel}:{n}")
+            for field, chan, power in pattern.findall(line):
+                key = ("Power", "") if power else (field, chan)
+                read_channels.setdefault(key, f"{rel}:{n}")
+            # A reference bound to the whole D3DCOLORVALUE reads every channel of
+            # it: `const D3DCOLORVALUE& e = mat.getLegacyMaterial().Emissive;` and
+            # then `e.r`. Without this the reverse direction reports Emissive.rgb
+            # and Diffuse.rgb as unread, which they are not.
+            for field in re.findall(
+                r"(?:getLegacyMaterial\(\)|d3dMaterial)\s*\.\s*"
+                r"(Ambient|Diffuse|Specular|Emissive)\b(?!\s*\.)",
+                line,
+            ):
+                for c in "rgba":
+                    read_channels.setdefault((field, c), f"{rel}:{n}")
+
+    def channel_name(key: tuple[str, str]) -> str:
+        return f"{key[0]}.{key[1]}" if key[1] else key[0]
 
     for key, where in sorted(read_channels.items()):
         if key not in documented:
             fail(
                 "side-channels",
-                f"{where} reads D3DMATERIAL9::{key[0]}.{key[1]} but it has no row in "
+                f"{where} reads D3DMATERIAL9::{channel_name(key)} but it has no row in "
                 f"documentation/DusklightSideChannels.md - add one, or the map will keep "
                 f"advertising that channel as spare",
             )
+
+    # The reverse direction. A row with nothing reading it is what a merge produces
+    # when a branch that forked before a channel existed wins the conflict: the code
+    # that claimed the channel is gone and the table still describes it. Checking
+    # only reads-imply-rows passes that tree green, which is how HD texture packs
+    # nearly went missing on 2026-08-11.
+    for key in sorted(documented - set(read_channels)):
+        # Emissive.a is documented as "reported, not used" - nothing reads it by
+        # design, and that is stated in its row rather than being an omission.
+        row = next(
+            (l for l in registry.splitlines()
+             if l.lstrip().startswith("|") and f"`{channel_name(key)}`" in l.split("|")[1]),
+            "",
+        )
+        if "not used" in row or "reported, not used" in row:
+            continue
+        fail(
+            "side-channels",
+            f"documentation/DusklightSideChannels.md has a row for D3DMATERIAL9::"
+            f"{channel_name(key)} but nothing in src/ reads it - either a merge dropped the "
+            f"feature that claimed it, or the row is stale",
+        )
+
+
+def check_side_channels_hashed() -> None:
+    """Every allocated side channel must be in LegacyMaterialData::computeIdentityHash.
+
+    Two draws differing only in a side channel otherwise produce the same identity
+    hash, and SceneManager's preserve path goes on handing an instance the material
+    it built from the other one - a stale material, with nothing logged anywhere.
+
+    Power was left out of that hash on the stated grounds that nothing read it, and
+    the water feature then read it, on a branch that never touched rtx_materials.cpp.
+    The comment saying Power was unread stayed true-looking for a week. This makes
+    the claim and the hash one thing rather than two.
+    """
+    global checks_run
+    checks_run += 1
+
+    src = read("src/dxvk/rtx_render/rtx_materials.cpp")
+    registry = read("documentation/DusklightSideChannels.md")
+    if src is None or registry is None:
+        fail("hash-coverage", "rtx_materials.cpp or DusklightSideChannels.md is missing")
+        return
+
+    hashed: set[tuple[str, str]] = set()
+    for field, chan in re.findall(
+        r"d3dMaterial\.(Ambient|Diffuse|Specular|Emissive)\.([rgba])\b", src
+    ):
+        hashed.add((field, chan))
+    if re.search(r"d3dMaterial\.Power\b", src):
+        hashed.add(("Power", ""))
+
+    for line in registry.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        first_cell = line.split("|")[1] if line.count("|") >= 2 else ""
+        keys: list[tuple[str, str]] = []
+        for field, chans in re.findall(
+            r"`(Ambient|Diffuse|Specular|Emissive)\.([rgba]+)`", first_cell
+        ):
+            keys.extend((field, c) for c in chans)
+        if "`Power`" in first_cell:
+            keys.append(("Power", ""))
+
+        for key in keys:
+            if key in hashed:
+                continue
+            name = f"{key[0]}.{key[1]}" if key[1] else key[0]
+            fail(
+                "hash-coverage",
+                f"D3DMATERIAL9::{name} is allocated in DusklightSideChannels.md but "
+                f"computeIdentityHash (rtx_materials.cpp) does not read it - two draws "
+                f"differing only in that channel will collide and the preserve path will "
+                f"serve a stale material",
+            )
+
+
+def check_water_packing_contract() -> None:
+    """The water packing is one contract written in two repositories.
+
+    Aurora's GX_AURORA_DUSKLIGHT_WATER_PACK encodes role/tag/layer into
+    D3DMATERIAL9::Power; rtx_dusklight_water.h here decodes it. Nothing links the
+    two, and if they drift the failure is silent - every draw decodes role=none and
+    water renders exactly as it did before the feature existed, which reads as "the
+    feature does not work" rather than "the wire changed".
+
+    Aurora's own check_invariants.py checks its half against the sentence in
+    remix-material-interface.md §2. This checks that this fork's scale constants
+    produce the same sentence, so both halves are pinned to one written formula.
+    """
+    global checks_run
+    checks_run += 1
+
+    src = read("src/dxvk/rtx_render/rtx_dusklight_water.h")
+    if src is None:
+        return  # water is simply not present on this branch
+
+    tag = re.search(r"kWaterTagScale\s*=\s*(\d+)", src)
+    layer = re.search(r"kWaterLayerScale\s*=\s*(\d+)", src)
+    if not tag or not layer:
+        fail(
+            "water-packing",
+            "rtx_dusklight_water.h no longer defines kWaterTagScale / kWaterLayerScale - "
+            "the decode has no stated relationship to aurora's encode",
+        )
+        return
+
+    formula = f"tag * {tag.group(1)} + layer * {layer.group(1)} + role"
+    for rel in ("documentation/DusklightSideChannels.md",):
+        doc = read(rel)
+        if doc is None or formula in doc:
+            continue
+        fail(
+            "water-packing",
+            f"rtx_dusklight_water.h decodes water as `{formula}` but {rel} does not state "
+            f"that formula - aurora encodes from the documented one",
+        )
 
 
 def check_rtx_options_doc() -> None:
@@ -257,6 +401,8 @@ def main() -> int:
     check_conflict_markers()
     check_protocol()
     check_side_channel_map()
+    check_side_channels_hashed()
+    check_water_packing_contract()
     check_rtx_options_doc()
 
     for w in warnings:

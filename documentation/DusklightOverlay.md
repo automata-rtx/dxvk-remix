@@ -222,6 +222,26 @@ draw call is issued rather than one being hidden downstream. Its *projected*
 shadows — Link and the major actors, `dDlst_shadowReal_c` — are a separate
 system and are untouched.
 
+**Water** (`rtx.dusklight.water.*`, added 2026-08-11) is its own collapsing
+header in this tab rather than a fourth top-level tab — it is a rendering
+control like the atmosphere's, not a control plane of its own.
+
+| Group | Controls | Note |
+| :-- | :-- | :-- |
+| the switch | Translucent Water | everything below is `BeginDisabled` behind it |
+| the material | Index of Refraction, Transmittance Color, Transmittance Distance, Thin Walled, Thin Wall Thickness | **Distance is the one to tune first** — it sets how far light travels before reaching the transmittance colour, so it decides how quickly water reads as deep. The default is a starting value in the game's units, not a measurement |
+| the surface | Animate Texcoords, UV Tiling, Scroll Speed, Normal Intensity | replaces the transform the draw arrived with. Tiling is what fixes a ripple texture stretched once across Lake Hylia |
+| the layers | Shimmer (mera), Waves (nami), Shoreline (mizugiwa), Murk (nigori), Additive (kasan) | **all off by default.** A lake is several stacked draws and only one should be the refracting surface; which one is a look decision. The names are the game's own — `aurora-ao/docs/dx9/remix-material-interface.md` §11 |
+| the exceptions | Shoreline Keeps Its Blend, Apply To Replacements, Hide Projected Layer | each exists for a specific reason recorded in its tooltip and in §11 |
+
+**No protocol bump.** Water is read entirely from the D3D9 stream — the game
+marks its own draws and the mark rides `D3DMATERIAL9::Power` — so nothing here
+crosses the `rtx.dusklight.env.*` wire and `kRequiredProtocol` is unchanged.
+The two readouts the water work did add, `env.dash` and `env.camInWater`, are
+diagnostic only: they annotate the material report's `dusklight.mark` line and
+no control depends on them, so an older game build that does not push them is
+not out of date — it simply produces no markers.
+
 **Greying.** Sections whose Remix dependency is off are wrapped in
 `ImGui::BeginDisabled` *and* carry a line naming the option and where to find
 it. Greyed without an explanation is barely better than broken.

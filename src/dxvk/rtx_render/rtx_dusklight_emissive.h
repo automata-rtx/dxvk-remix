@@ -144,11 +144,13 @@ namespace dxvk {
     // ramp, Ambient.r says which endpoint tFactor holds.
     //
     // The struct is no longer "the otherwise unused half" it was described as
-    // here: Ambient.g/.b were claimed by HD texture packs on 2026-08-05
-    // (rtx_dusklight_texrep.h). Only Ambient.a and Power are spare now. The
-    // full field map lives in one place -
-    // aurora-ao/docs/dx9/remix-material-interface.md §2 - and any new claim on
-    // this struct should be added there rather than only in a comment.
+    // here: Ambient.g/.b went to HD texture packs on 2026-08-05
+    // (rtx_dusklight_texrep.h) and Power to water on 2026-08-11
+    // (rtx_dusklight_water.h, all three of its facts packed into the one field).
+    // Ambient.a is the only spare left. The full field map lives in one place -
+    // aurora-ao/docs/dx9/remix-material-interface.md §2, mirrored in
+    // documentation/DusklightSideChannels.md - and any new claim on this struct
+    // must be added there in the same commit rather than only in a comment.
     inline bool isRamp(const LegacyMaterialData& mat) {
       return DusklightRamp::rampMaterials() && mat.getLegacyMaterial().Diffuse.a >= 0.5f;
     }

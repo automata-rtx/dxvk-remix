@@ -37,39 +37,58 @@ form a script can read.
 | `Ambient.r` | which ramp endpoint TFACTOR holds | `rtx_dusklight_emissive.h` | 2026-08-04 |
 | `Ambient.g` | 1-based HD texture replacement index, 0 for none | `rtx_dusklight_texrep.cpp` | 2026-08-05 |
 | `Ambient.b` | the D3D9 stage `Ambient.g` refers to | `rtx_dusklight_texrep.cpp` | 2026-08-05 |
+| `Power` | all three water facts packed: `tag * 100 + layer * 10 + role` | `rtx_dusklight_water.h` | 2026-08-11 |
 
 ## Spare
 
-`Ambient.a`, and `Power` — **and both are already claimed by branches that have
-not merged. Audited 2026-08-11: there is nothing genuinely free.**
+**`Ambient.a`, and that is the whole of what is left.**
 
-| Nominally spare | Claimed by | Also claimed by |
-| :-- | :-- | :-- |
-| `Ambient.a` | `claude/water-rendering-investigation-7baezw` (MAxx water tag) | `claude/dusklight-remix-transparency-e7l766` (draw class) |
-| `Power` | `claude/water-rendering-investigation-7baezw` (water layer) | — |
+`Power` was the other one until 2026-08-11, when water took it — all three of its
+facts packed into that single field, precisely so `Ambient.a` would survive for
+something else. The encoding is in the row above; the reasoning is
+`aurora-ao/docs/dx9/remix-material-interface.md` §11.
 
-`Ambient.a` is claimed **twice over**, by two branches neither of which can see
-the other. A feature that wants a side channel now has to pack into an existing
-one or find another transport — and should say which before it is written.
+**Before claiming `Ambient.a`, check the live `claude/*` branches.**
+`claude/dusklight-remix-transparency-e7l766` has an unmerged claim on it (a
+per-draw transparency class). Nothing automated can see an unmerged branch.
 
-**`Ambient.g` and `Ambient.b` are also contested.** The water branch forked
-before 2026-08-05, so its `set_remix_material` has no `texRepIndex`/`texRepStage`
-parameters and writes water flags into both channels; on this side of the fork
-that branch does not merely reclaim them, it is **missing
-`rtx_dusklight_texrep.{h,cpp}` from its tree entirely.** Its merge conflicts in
-aurora's `dx9_internal.hpp`, and the obvious resolution — take the newer,
-self-consistent, well-commented side — deletes HD texture packs from both repos
-without either the conflict or the invariants scripts naming them.
+**And after `Ambient.a` there is nothing.** The feature after next has to pack
+into an existing field or move to a different transport — the versioned per-draw
+export that `remix-material-interface.md` §9 calls "still not built" is the
+obvious candidate, and this is the pressure that would justify building it.
 
-Full audit, including the GX FIFO subcommand space (where **four** live branches
-have each taken `0x0053`) and the recommended merge procedure for the water
-branch: `aurora-ao/docs/dx9/in-flight-allocation.md`.
+**Take a channel only by adding its row above in the same commit.** That is what
+puts the claim and the write in one diff, which is the only thing that reliably
+stops the next feature taking a channel already in use.
 
-**Take a channel only by adding its row above in the same commit** — the CI
-check enforces the reverse direction (a read with no row), but nothing can
-enforce that two branches do not take the same spare channel simultaneously. If
-you are adding a side channel while another branch is in flight, say so; this
-file is where that collision is visible.
+### What the check enforces
+
+`scripts/check_dusklight_invariants.py` runs **both** directions: a channel the
+fork reads with no row here fails, and a row here that nothing reads fails. The
+second is what a merge produces when a branch that forked before a channel
+existed wins a conflict — which is exactly what nearly happened to
+`Ambient.g`/`.b` on 2026-08-11, when the water branch (forked before HD texture
+packs, and missing `rtx_dusklight_texrep.{h,cpp}` from its tree entirely) would
+have reclaimed them. It also checks the water packing formula against the one
+aurora states, because that is one contract written in two repositories.
+
+**What it cannot catch:** a channel that keeps being written with a *different*
+meaning. Both directions pass and this table reads as true. The full account of
+that near-miss, and of the four branches that had each taken GX FIFO subcommand
+`0x0053`, is `aurora-ao/docs/dx9/in-flight-allocation.md`.
+
+### Identity hash
+
+**Every field listed above participates in
+`LegacyMaterialData::computeIdentityHash` (`rtx_materials.cpp`), and that is not
+optional.** Without it, two draws differing only in a side channel produce the
+same hash, and `SceneManager`'s preserve path keeps handing an instance the
+material it built from the other one — a stale material with no error anywhere.
+
+`Power` was excluded from that hash on the stated grounds that nothing read it,
+right up until water did — on a branch that never touched `rtx_materials.cpp`, so
+the comment saying so stayed true-looking for a week. **Add the field to the hash
+in the same commit that adds the row.**
 
 ## The rasterized path
 
