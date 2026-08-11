@@ -522,7 +522,7 @@ Expected fidelity by scenario, as a reference for judging results:
 | Night | ~100% | Stylised, unchanged |
 | Rain / storm | ~90% | Stylised-dominant — see C4 |
 | Twilight Realm | 100% | Physics bypassed entirely |
-| Interiors | n/a | No sky; fog from palette; local lights own the rest |
+| Interiors | n/a | No sky; fog from palette; **effect lights own the rest** - and they are the only NEE-sampled source there, since the sun/moon is gated off indoors and Remix has no dome light type |
 
 ---
 
@@ -635,7 +635,19 @@ row says otherwise.
 | `composite.comp.slang` `applyFog` | range split | `cb.dusklightArgs.enable` |
 | `composite_args.h` | one args struct added (`DusklightCompositeArgs`) | additive only |
 | `froxel.slangh` + `VolumeArgs` | `previousFroxelMaxDistance` | additive; also a genuine upstream fix |
-| `rtx_light_manager.cpp` | none — B1 supplies a real texture | — |
+| `rtx_light_manager.cpp` | **two** related corrections, both unguarded, both about the RTXDI buffer index on API lights — a rebase that re-applies one and not the other gets the worse half of each. See the row below and *Effect lights* | none — straight corrections, and they apply to every API light |
+
+*Effect lights (2026-08-06) — design in `dusklight-ao/docs/effect-lights.md`.
+Almost all of this system is game-side; the fork's share is small and listed
+here in full:*
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_light_manager.cpp` `addExternalLight` | preserves the light's buffer index across an overwrite, matching the game-light path a few lines above. Three lines, no reformatting | none |
+| `rtx_light_manager.cpp` `prepareSceneData` | range-checks `previousBufferIdx` before using it. An index is only meaningful if it was assigned **last** frame, and a light that leaves `m_linearizedLights` entirely — which an API light does on any frame `DrawLightInstance` is not called for it — is never reset by the loop's else branch. Trusting it wrote past the end of `m_lightMappingData` or mapped one light's temporal history onto another | none |
+| `rtx_dusklight_game.h` | the 18 `effectLight*` options | additive |
+| `rtx_dusklight_env.h` | the 10 `effLights*` readouts | additive |
+| `dxvk_imgui.cpp` | the **Effect Lights** section of the Game tab, and the warning shown when both light systems are on | own block |
 
 *Materials — the 2026-08-04 work (see `aurora-ao/docs/dx9/remix-material-interface.md` §9–§10):*
 
@@ -757,10 +769,14 @@ The two API rows are the exception — they change upstream behaviour rather tha
 adding a branch, so a rebase has to re-apply intent there, and they are the two
 worth checking first.
 
-**Game side** (`dusklight-ao`): everything in `src/dusk/remix_*.{cpp,hpp}`.
-Churn in `d_kankyo.cpp` is limited to one capture call, matching the existing
-`dKy_celestial_orbit_z_ratio` pattern. Aurora's half of the material transport
-is in `extern/aurora/lib/dx9/` and rebases against aurora, not against Remix.
+**Game side** (`dusklight-ao`): everything in `src/dusk/remix_*.{cpp,hpp}` and
+`src/dusk/effect_lights.{cpp,hpp}`. Churn in `d_kankyo.cpp` is limited to one
+capture call, matching the existing `dKy_celestial_orbit_z_ratio` pattern;
+`d_particle.cpp` carries one guarded call at the tail of
+`dPa_simpleEcallBack::set`, which is the only point at which each instance of a
+shared "simple" effect is still distinguishable from the others. Aurora's half
+of the material transport is in `extern/aurora/lib/dx9/` and rebases against
+aurora, not against Remix.
 
 ---
 
@@ -786,6 +802,16 @@ time-of-day slider and Freeze Time all work; local point lights work (they need
 `dusklight-ao/docs/remix-open-issues.md` open issue 3); and `hideSkyBillboards`
 **fixed the night shadow wandering**, confirming the moon-quad cause rather than
 merely masking it.
+
+**Local point lights were superseded on 2026-08-06** and now default off — not
+because they stopped working but because working exposed what was wrong with
+them: they place the light where the *game* put it, and a GameCube point light
+casts no shadow, so those positions were never meant to survive a path tracer.
+**Effect lights** replace them, anchored at the origin of the effect that draws
+the fire, and inherit both numbers above as `effectLightDerivedIntensity` and
+`effectLightDerivedRadius`. Run in game 2026-08-07. Design:
+`dusklight-ao/docs/effect-lights.md`; overlay surface and status:
+`DusklightOverlay.md` §6.
 
 **HD texture packs: tested good 2026-08-06**, first try. The pack reaches Remix
 without its bytes entering D3D9, so texture tagging is unchanged. One known

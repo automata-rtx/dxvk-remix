@@ -25,6 +25,7 @@
 #include "rtx_asset_replacer.h"
 #include "rtx_options.h"
 #include "rtx_terrain_baker.h"
+#include "rtx_dusklight_catrep.h"
 #include "rtx_instance_manager.h"
 #include "rtx_light_manager.h"
 #include "graph/rtx_graph_instance.h"
@@ -409,6 +410,13 @@ namespace dxvk {
     setCategory(InstanceCategories::Sky, lookupHash(RtxOptions::skyBoxTextures(), textureHash));
 
     setCategory(InstanceCategories::ParticleEmitter, lookupHash(RtxOptions::particleEmitterTextures(), textureHash));
+
+    // Dusklight: record what this texture actually ended up categorized as.
+    // Nothing else anywhere does - the category is keyed on a hash Remix
+    // computes from the D3D9 texture, so aurora and the game are both blind to
+    // it, and reading rtx.conf tells you which hashes are LISTED, not which are
+    // drawn. On 2026-08-09 that gap produced a confident wrong diagnosis.
+    catrep::note(textureHash, categories.raw());
   }
 
   void DrawCallState::setupCategoriesForGeometry() {

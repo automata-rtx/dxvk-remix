@@ -215,10 +215,39 @@ implying it was tested.
 **The game and this DLL are a single protocol.** The game pushes
 `rtx.dusklight.env.protocol`; this fork compares it against `kRequiredProtocol`
 in `showDusklightRemixTab` (`src/dxvk/imgui/dxvk_imgui.cpp`).
-**Protocol is at 7.** Build both sides from the same commit point, and bump
+**Protocol is at 11.** Build both sides from the same commit point, and bump
 both in the same commit. Skew in either direction has cost an evening twice.
 The Dusklight tab reports which side is old — read it before debugging
 anything else.
+
+## Effect lights — almost none of it is in this repo
+
+Since 2026-08-06 the game's fires, lava and glows get real sphere lights, placed
+at the **origin of the JPA effect that draws them** rather than at the position
+of whatever point light the game registered. That distinction is the whole
+system: a GameCube point light casts no shadow, so its position was free to be
+wrong, and a path tracer casts a real shadow from exactly where the light is.
+The old mirror (`rtx.dusklight.game.localLights`) still exists, now defaulting
+**off**, purely so the two can be A/B'd.
+
+**The decision layer is in the game** — `dusklight-ao/src/dusk/effect_lights.cpp`
+reads the emitter table and the game's light registries, and the bridge submits
+the result through the Remix API. Nothing in this repo classifies anything. What
+*is* here is three things, and they are easy to change without realising they
+belong to this system:
+
+- the 20 `rtx.dusklight.game.effectLight*` options and the 11
+  `rtx.dusklight.env.effLights*` readouts;
+- the **Effect Lights** section of the Game tab in `dxvk_imgui.cpp`, including
+  the warning shown when both light systems are on;
+- both `rtx_light_manager.cpp` fork changes below — they exist *for* this system
+  and upstream has no reason to want them.
+
+Design, citations and what is and is not verified: **`dusklight-ao/docs/effect-lights.md`**.
+
+Beware a name collision: upstream Remix has its own unrelated `rtx.effectLight*`
+/ `rtx.lightConverter` feature, and its "Effect Light" section in the Lighting
+tab. Grepping this repo for `effectLight` hits both.
 
 ## The Dusklight surface in this repo
 
@@ -229,6 +258,7 @@ anything else.
 | `src/dxvk/rtx_render/rtx_dusklight_atmosphere.{h,cpp}` | one medium driving fog, sky and sky-light; Hillaire physical sky |
 | `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` | the ambient grade stage |
 | `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. **A rule, not a score**: self-lit (no TEV colour stage reads the rasterized channel) AND a colour of its own (authored in GX constants, not the vertex stream and not a bare texture pass-through) AND that colour reading as a glow (saturated **or** near-white-hot). Aurora ships the three facts in `D3DMATERIAL9::Specular.{a,b}` and `Emissive.rgb`; `Emissive.a` still carries the old evidence score but **nothing decides on it** — three revisions cut on it and all three missed the lava, which scores 0.00. Applied at one site in `rtx_instance_manager.cpp`. **Note the trap around the emissive colour: by default the shader re-applies the albedo's texture op to it** — `RtSurface::emissiveSource` (`textureFlags` bits 19–20) is what selects out of that. Also holds `rtx.dusklight.rampMaterials`, the two-colour ramp, which shares the same `D3DMATERIAL9` transport: the fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints rather than squeezing it into one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork can |
+| `src/dxvk/rtx_render/rtx_light_manager.cpp` | mostly upstream, but `addExternalLight` carries one fork change: it preserves the light's buffer index across an overwrite, the way the game-light path a few lines above already did. Without it every update to an API light drops its RTXDI temporal history for a frame, which upstream barely notices (its API lights are static scene lights) and this fork very much does (a flame's radiance animates, so its light updates constantly and would never accumulate any reuse at all). `prepareSceneData` carries a second, related correction: a buffer index is only meaningful if it was assigned during the previous frame, and a light that left `m_linearizedLights` entirely - which an API light does whenever `DrawLightInstance` is not called for it - is never reset by the loop's else branch. Trusting that stale index wrote past the end of the mapping buffer or mapped one light's temporal history onto another; it is now range-checked |
 | `src/dxvk/rtx_render/rtx_dusklight_texrep.{h,cpp}` | `rtx.dusklight.texrep.*` — HD texture packs. The game loads its pack through `remixapi_CreateMaterial` (used purely as a file loader) and tags each draw with a 1-based index in `D3DMATERIAL9::Ambient.g`, with the stage it refers to in `Ambient.b`; this substitutes the loaded albedo at the **two** places a draw can consume a texture — `determineMaterialData` for ray-traced draws, `D3D9DeviceEx::BindTexture` for rasterized ones. Both are needed: UI draws never reach material resolution. **The pack never travels through D3D9**, so the game's own textures stay what Remix hashes — tagging, `rtx.conf` categories and USD bindings are unaffected by installing or changing a pack. **Tested good 2026-08-06.** Note `d3d9_device.cpp` `BindTexture` is the *only* place this fork touches that file: a rebase that drops it loses the HUD half silently while the world half keeps working |
 | `src/dxvk/rtx_render/rtx_dusklight_water.h` | `rtx.dusklight.water.*` — water. The game recognises its own water by J3D material name (`dKy_bg_MAxx_proc`), which GX never carries, and marks each draw; aurora packs **all three facts into `D3DMATERIAL9::Power`** as `tag * 100 + layer * 10 + role`, and this decodes them. A `SURFACE` draw becomes a `TranslucentMaterialData` instead of falling through to `as<OpaqueMaterialData>()` — that fall-through is what made every water layer an opaque white sheet. A `PROJECTED` draw (MA02/MA10, a camera-projected fake reflection) is hidden. **One field for three facts on purpose**: the side band had two left and taking both would have left nothing. **The transport was rebased on 2026-08-11** — it was in `Ambient.g`/`.b`/`.a`, which HD texture packs already owned, and merging that as written would have deleted texture packs silently. Decimal packing, not bit fields, because `power=921` is legible in a log as MA09 / waves / surface. **Untested in game on this transport** |
 | `src/dxvk/rtx_render/rtx_agx.{h,cpp}` | AgX look presets, the shared `TonemapOperator` enum, and the `finalizeWithACES` → operator migration. **Not Dusklight-specific** |
@@ -254,6 +284,31 @@ about incorrectly on this project; read it before changing anything in
 `d3d9_rtx.cpp`, `d3d9_rtx_utils.cpp`, or the emissive patch in
 `rtx_instance_manager.cpp`. §9 covers self-illumination, including why the
 thresholds are options rather than constants; §10 covers the two-colour ramp.
+
+**`RtxOptions.md` is stale for `rtx.dusklight.*` — read the headers instead.**
+It is generated by *running* the DLL with
+`DXVK_DOCUMENTATION_WRITE_RTX_OPTIONS_MD=1`, so a Linux container cannot
+refresh it and every session that adds an option leaves it further behind.
+Recounted **2026-08-11**, after the effect-light branch and `Fixed-Function-dev`
+merged, across all eight `RTX_OPTION*` surfaces: **164** declared against
+**133** in the file, so it is **missing 33** — the 20 `game.effectLight*`, the
+11 `env.effLights*` readouts, plus `catrepCommit` and `game.lanternInfiniteOil`
+— and lists exactly **one** that no longer exists, `emissive.intensity`, renamed
+to `brightness`. The declarations in `rtx_dusklight_*.h` are the authority; a
+name absent from `RtxOptions.md` is not evidence it does not exist. Regenerate
+on the next Windows run.
+
+> **This paragraph was wrong for a day, and how it got that way is the point.**
+> Before that merge it said "missing 31" and "lists 10 that no longer exist (the
+> whole `texrep` family, **removed**…)". The `texrep` family was never removed —
+> it lived only on `Fixed-Function-dev`, which the branch could not see, and the
+> file had been regenerated from a build that *did* carry it. The merge brought
+> both together and made all four numbers false **without touching this line**,
+> so git reported nothing. Its line 15 still carries a caveat saying the
+> `texrep` rows describe an unmerged branch; that is now false too, and since
+> the file is generated rather than hand-edited it stays until the next
+> regeneration. This is the "merges that succeed and are still wrong" section,
+> happening to the file that documents it.
 
 **Transport rules that are easy to get wrong** (full versions in
 `documentation/DusklightOverlay.md` §1.1):

@@ -424,12 +424,28 @@ namespace dxvk {
         uint32_t newBufferIdx = range.offset + range.count;
         ++range.count;
 
+        // A buffer index is only meaningful if it was assigned during the PREVIOUS frame, because
+        // that is the range m_lightMappingData reserves for it (it is sized
+        // m_currentActiveLightCount + previousLightActiveCount). A light that was not written last
+        // frame still carries whatever index it last had.
+        //
+        // The else branch below resets any light that reached this loop and was skipped, but a
+        // light that leaves m_linearizedLights entirely is never reset at all - and an API light
+        // does exactly that whenever DrawLightInstance is not called for it, which for a light
+        // standing in for an effect is an ordinary frame, not an error. Trusting a stale index
+        // writes past the end of the mapping buffer, or maps this light's temporal history onto an
+        // unrelated one.
+        const uint32_t previousBufferIdx =
+          (light.getBufferIdx() != kNewLightIdx && light.getBufferIdx() < previousLightActiveCount)
+            ? light.getBufferIdx()
+            : kNewLightIdx;
+
         // RTXDI needs a mapping from previous light idx to current (to deal with light list reordering)
-        if (light.getBufferIdx() != kNewLightIdx)
-          m_lightMappingData[m_currentActiveLightCount + light.getBufferIdx()] = (uint16_t)newBufferIdx;
+        if (previousBufferIdx != kNewLightIdx)
+          m_lightMappingData[m_currentActiveLightCount + previousBufferIdx] = (uint16_t)newBufferIdx;
 
         // Also a mapping from current light idx to previous (for unbiased resampling)
-        m_lightMappingData[newBufferIdx] = light.getBufferIdx();
+        m_lightMappingData[newBufferIdx] = (uint16_t)previousBufferIdx;
 
         // Prepare data for GPU
         size_t dataOffset = newBufferIdx * kLightGPUSize;
@@ -725,7 +741,19 @@ namespace dxvk {
     if (found != m_externalLights.end()) {
       // TODO: warn the user about id collision,
       //       or just overwriting existing one is fine?
+
+      // Carry the buffer index across the overwrite, exactly as the game light path does above.
+      // RtLight::copyFrom assigns m_bufferIdx wholesale, and a freshly constructed light has
+      // kNewLightIdx - so without this, updating a light drops it out of the previous-to-current
+      // index map, RAB_TranslateLightIndex returns RTXDI_INVALID_LIGHT_INDEX, and every temporal
+      // reservoir referencing it is discarded. One frame of noise per update.
+      //
+      // Upstream that costs little, because upstream's API lights are authored scene lights that
+      // rarely change. It costs a great deal here: a flame's radiance animates, so an effect light
+      // updates constantly and would never accumulate any temporal reuse at all.
+      const uint32_t bufferIdx = found->second.getBufferIdx();
       found->second = rtlight;
+      found->second.setBufferIdx(bufferIdx);
     } else {
       m_externalLights.emplace(handle, rtlight);
     }
