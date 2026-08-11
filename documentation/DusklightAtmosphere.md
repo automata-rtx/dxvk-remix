@@ -1102,13 +1102,17 @@ gradient reads as lighting to a player. That is the trap §12.2 fell into from t
 other direction, and it is a question about palette content that nobody has checked.
 
 **A separate, measurable thing found next to this one.** `dKyw_drawVrkumo` draws
-the skybox cloud billboards and was **missed by the 2026-08-08 batching sweep**.
-These are the only clouds in the image today, since the fork consumes none of the
-cloud colours. Whether it is worth batching is a measurement, not a judgement:
-**one `dx9.draws` peak from an outdoor cloudy scene** answers it, and that line
-already exists. Requested in `dusklight-ao/docs/remix-open-issues.md` and the test
-playbook. **Do not add a `hideVrkumo` switch** — today, removing these billboards
-removes the clouds.
+the skybox cloud billboards and was **missed by the 2026-08-08 batching sweep** —
+each billboard is its own `GXBegin`/`GXEnd`, so each is its own D3D9 draw, and
+this runtime charges per draw. These are the only clouds in the image today,
+since the fork consumes none of the cloud colours.
+
+Whether it is worth batching is a measurement, and the game now takes it:
+`vrkumo.draws frames=600 mean=… peak=…`, counting the cloud billboards alone.
+`dx9.draws` is a total and could not separate them, so relying on it meant asking
+someone to estimate sky coverage and compare — instrumentation was the fix, not a
+better question. Recipe: `dusklight-ao/docs/remix-test-playbook.md` §0d. **Do not
+add a `hideVrkumo` switch** — today, removing these billboards removes the clouds.
 
 ### The live defect: the medium dims the generated sky
 
