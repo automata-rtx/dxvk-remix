@@ -209,6 +209,48 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsTracked, 0, RtxOptionFlags::NoSave,
                     "How many of the game's own point lights currently hold a live Remix light. Written by the game's kankyo bridge.");
 
+    // Effect lights. The chain reads emitters -> considered -> candidates -> sites -> drawn, so
+    // whichever step a light was lost at is visible without asking anyone to describe a scene.
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, effLightsRunning, false, RtxOptionFlags::NoSave,
+                    "True when the effect light system got past every gate and actually ran. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsEmitters, 0, RtxOptionFlags::NoSave,
+                    "How many particle emitters the game had alive this frame, before any filtering on our side.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsConsidered, 0, RtxOptionFlags::NoSave,
+                    "How many of those were being drawn in a world space pass, and so reached the rule at all.\n"
+                    "A large gap between this and effLightsEmitters is normal - most emitters are smoke, dust and screen effects.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsCandidates, 0, RtxOptionFlags::NoSave,
+                    "How many passed the rule: additive, and a colour that reads as a glow.\n"
+                    "This is the number to watch if fires are going unlit. Raise rtx.dusklight.game.effectLightReportCommit to get the per effect log that "
+                    "names which one was rejected and why.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsSites, 0, RtxOptionFlags::NoSave,
+                    "How many distinct places got a light, after the several emitters that make up one visible fire were merged.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsDrawn, 0, RtxOptionFlags::NoSave,
+                    "How many of those reached Remix this frame.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsDerived, 0, RtxOptionFlags::NoSave,
+                    "How many took their colour and reach from a light the game itself authored, rather than from the settings.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsOrphans, 0, RtxOptionFlags::NoSave,
+                    "How many of the game's own lights had no effect near them, and so were dropped entirely.\n"
+                    "This is the number that decides whether dropping them is the right default. Those lights are the ones whose placement the system exists "
+                    "to stop trusting - but some of them are real sources with no particle at all, dungeon fill lights and glowing crystals, and those go "
+                    "dark. A consistently high count in rooms that look under-lit is the signal that the policy needs an escape hatch.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsCulled, 0, RtxOptionFlags::NoSave,
+                    "How many sites were dropped by the distance cull or the per frame budget.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, effLightsExcluded, 0, RtxOptionFlags::NoSave,
+                    "How many effects passed the additive-and-glow rule and were then refused because the game names them as a substance that is never a "
+                    "light source.\n"
+                    "The list behind this is deliberately narrow - drool and body fluid, two words - and it exists because the Deku Baba was seen lighting "
+                    "rooms from its jaw joints on 2026-08-07. That is the case that showed additive blending alone does not mean 'emits light': a wet "
+                    "surface is authored additively too, so that it reads as glossy.\n"
+                    "Watch this rather than trust it. A non zero count in a room that looks under lit is the signal that the list is too wide, and the "
+                    "classification report names every effect it refused.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, effLightsVanilla, "", RtxOptionFlags::NoSave,
+                    "The game's own lights available to copy parameters from this frame, as point/spot.\n"
+                    "The game keeps two registries and many torches use the second one, so both have to be read. The spot half depends on a per frame flag "
+                    "still being set when the bridge runs, which in turn depends on where the game's environment process falls in the frame - a question we "
+                    "could not answer by reading. If the spot count is always zero while you are stood at a lit torch, the answer is 'too late', and those "
+                    "torches are falling back to the configured defaults instead of the game's own colour. That is a quality loss, not a misplacement.");
+
+    // HD texture replacement packs, game side.
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, texrepEnabled, false, RtxOptionFlags::NoSave,
                     "True when the game is handing its HD texture replacement pack to Remix. Written by the game's kankyo bridge.\n"
                     "False means the pack is off, empty, or the game build predates this - which are different from the pack being handed over and "

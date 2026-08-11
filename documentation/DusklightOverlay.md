@@ -47,8 +47,27 @@ string on every call, so the game only pushes values that actually changed
 readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
-compares it against a `kRequiredProtocol` constant and says so in the tab when
-the game is older. **Currently 7.**
+compares it against a `kRequiredProtocol` constant and names the older side in
+the tab. **Currently 11.**
+
+**Both directions are reported, as of 2026-08-11; until then only one was.** The
+check was `protocol() < kRequiredProtocol`, so a game *newer* than the DLL fell
+through to the "Connected" branch and the tab said the pairing was fine. That is
+the more common direction, not the rarer one: a session branch bumps the
+protocol several times while `Fixed-Function-dev` stays put, so a game built
+from the branch meeting a `d3d9.dll` built from the trunk is the everyday case —
+and this merge is exactly it, a protocol-11 game against a protocol-7 DLL.
+
+What that skew does, read rather than assumed: the game asks for each setting by
+name through the `getRtxOptionValue` export, which returns `0` for a name it does
+not declare (`rtx_option_manager.cpp:522`); the game's `readOption` treats `0` as
+failure and `readOptionBool`/`readOptionFloat` return the caller's fallback,
+which is its own `ConfigVar` (`remix_bridge.cpp:86`). So **nothing errors and
+nothing is logged.** The newer settings keep their `config.json` values forever,
+no control for them is drawn in this tab because this build has never heard of
+them, and the readouts they feed are absent. Silent in every channel except this
+notice — which is why the notice had to exist before anything else could be
+diagnosed.
 
 > **Standing rule, already paid for twice:** the game and the Remix DLL are one
 > protocol. Build both from the same point. Both directions of skew have cost
@@ -210,7 +229,16 @@ score is still logged; nothing decides on it.
 measurement, §10 for the two-colour ramp.
 
 Then the game's own settings, in collapsible sections: Bridge, Sun / Moon
-Light, Local Point Lights, Geometry, Game, Bloom, Ambient Grade, Atmosphere.
+Light, **Effect Lights**, Local Point Lights (comparison), Geometry, Game,
+Bloom, Ambient Grade, Atmosphere - Fog and Sky. The first three are open by
+default; the rest start collapsed.
+
+**A name collision worth knowing about before you go looking.** Remix's *own*
+Lighting tab has a section also called **Effect Light** — singular — which is
+upstream's `rtx.effectLight*` / `rtx.lightConverter` feature for attaching a
+light to a tagged texture. It has nothing to do with ours. Ours is
+`rtx.dusklight.game.effectLight*` and lives in the Dusklight window's Game tab.
+Searching either doc or the source for "effectLight" hits both.
 
 One of those is worth naming here because it is a rendering decision rather than
 a preference: **Geometry > Game's Blob Shadows** (`rtx.dusklight.game.blobShadows`,
@@ -436,6 +464,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Warp | landed 2026-07-28, **tested 2026-07-29: "exactly as intended, no issues"** |
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
+| Effect Lights section | landed 2026-08-06, protocol 7 — **CI-green, and run in game 2026-08-07: "it works", merged on that.** The diagnostics below were *not* read, so which effects the classifier accepts is still unknown; `dusklight-ao/docs/remix-open-issues.md` carries the four questions that leaves open. Replaces the local-light mirror as the default. Its readouts are the whole chain, so a light lost at any step is visible without asking anyone to describe a scene; two of them (`effLightsOrphans`, `effLightsVanilla`) exist to settle specific open questions rather than to be watched. `effectLightReportCommit` is the action counter that dumps the classifier's own inputs and verdicts. Design: `dusklight-ao/docs/effect-lights.md` |
 | HD Texture Pack section | landed 2026-08-05, protocol 7 — **tested good 2026-08-06, first try.** The counters split game-side from Remix-side exactly as intended. Known characteristic: a long first-launch warm-up, `DusklightAtmosphere.md` §12.1 |
 | Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the lava scores **0.00**, so no threshold could ever reach it. Rev 4 therefore drops the score from the decision entirely and cuts on three measured facts instead — the section now has no threshold in it, and only Emissive Brightness is expected to be touched. **Tested in game 2026-08-06:** the rule accepts the lava, and Emissive Brightness was dialled to 10.0 there, which is now its default. No protocol change: nothing in it is read by the game |
 
@@ -444,12 +473,21 @@ practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 7** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = the HD texture pack readouts). `kRequiredProtocol`
+**Protocol is at 11** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach`, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open
 
-- **Local point lights: RESOLVED 2026-07-29.** Forest Temple first room reads
+- **Local point lights: RESOLVED 2026-07-29, then SUPERSEDED 2026-08-06.** The
+  entry below is kept because the settings it derived carry straight over to
+  effect lights and the diagnostics lesson is the template — but the mirror
+  itself now defaults **off**. What replaced it and why is the Effect Lights row
+  above: the mirror worked, and working is what exposed the problem, which is
+  that a GameCube point light's *position* was never meant to survive a real
+  shadow. The loose end at the bottom of this entry — `found 5` but `drawn 4` —
+  is therefore no longer on anyone's path.
+
+  Forest Temple first room reads
   `Registered by the game: 5   drawn this frame: 4   tracked: 4`.
 
   The diagnostics did their job — the visit that used them took minutes and

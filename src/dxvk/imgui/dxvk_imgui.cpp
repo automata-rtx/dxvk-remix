@@ -51,6 +51,7 @@
 #include "rtx_render/rtx_dusklight_texrep.h"
 #include "rtx_render/rtx_dusklight_emissive.h"
 #include "../../d3d9/d3d9_rtx_matrep.h"
+#include "../rtx_render/rtx_dusklight_catrep.h"
 #include "rtx_render/rtx_global_volumetrics.h"
 #include "rtx_render/rtx_bloom.h"
 #include <functional>
@@ -3028,6 +3029,18 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Writes one matrep.rmx line per distinct reconstructed material. Pair it with the game's own "
         "matrep lines - see aurora-ao/docs/dx9/material-report.md.");
+      RemixGui::Separator();
+      if (ImGui::Button("Log Texture Category Report", ImVec2(-1, 0))) {
+        DusklightCatrep::catrepCommit.setDeferred(DusklightCatrep::catrepCommit() + 1);
+      }
+      ImGui::TextWrapped(
+        "Which textures actually received which categories - WorldUI, Particle, Decal, Ignore and the "
+        "rest - with a draw count each, busiest first.\n\n"
+        "This is the only place that information exists. A category is keyed on a hash this runtime "
+        "computes from the D3D9 texture, so the game and aurora are both blind to it, and rtx.conf "
+        "lists the hashes you TAGGED rather than the ones being drawn. Reading the config and inferring "
+        "which entry is responsible for a symptom produced a confidently wrong answer on 2026-08-09.\n\n"
+        "A category printed with a trailing ? was present on some draws of that texture and not others.");
       ImGui::Unindent();
     }
 
@@ -3043,16 +3056,48 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
-    constexpr int kRequiredProtocol = 7;
-    const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
+    //
+    // Skew has two directions and until 2026-08-11 only one of them was detected. The
+    // undetected one is the likelier of the two in practice: a session branch bumps the
+    // protocol several times while Fixed-Function-dev stays where it is, so a game built
+    // from the branch meets a d3d9.dll built from the trunk far more often than the
+    // reverse. It reported "Connected" with no caveat, which is the worst of the three
+    // possible answers - the tab is the first thing this project's own notes tell you to
+    // read before debugging anything else, and it was confidently saying the pairing was
+    // fine. Both directions are reported now, and both print the two numbers, because
+    // "your builds do not match" without saying which side is behind still costs the
+    // rebuild-and-see round it exists to prevent.
+    constexpr int kRequiredProtocol = 11;
+    const int gameProtocol = DusklightEnv::protocol();
+    const bool gameTooOld = feedLive && gameProtocol < kRequiredProtocol;
+    const bool remixTooOld = feedLive && gameProtocol > kRequiredProtocol;
 
-    if (feedLive && !gameTooOld) {
-      ImGui::TextUnformatted("Connected: the game is feeding its environment state to Remix.");
+    if (feedLive && !gameTooOld && !remixTooOld) {
+      ImGui::Text("Connected: the game is feeding its environment state to Remix. Protocol %d.",
+                  kRequiredProtocol);
     } else if (gameTooOld) {
       ImGui::TextWrapped(
-        "Connected, but the game build is older than this build of Remix: it does not read these "
-        "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 7 or newer.");
+        "Connected, but the game build is OLDER than this build of Remix (game reports protocol "
+        "%d, this d3d9.dll wants %d): it does not read these settings, so every control below "
+        "will appear to do nothing. The readouts are still accurate. Update the game to a build "
+        "that reports protocol %d or newer.",
+        gameProtocol, kRequiredProtocol, kRequiredProtocol);
+    } else if (remixTooOld) {
+      // What actually happens, rather than a guess: the game asks for each setting by
+      // string name through the getRtxOptionValue export, which returns 0 for a name it
+      // does not declare (rtx_option_manager.cpp), and the game's readOption* helpers
+      // turn that into "keep the local value" (remix_bridge.cpp). So nothing errors and
+      // nothing logs - the newer settings simply stay at whatever config.json says,
+      // forever, and no control for them is drawn here because this build has never
+      // heard of them.
+      ImGui::TextWrapped(
+        "Connected, but this build of Remix is OLDER than the game (game reports protocol %d, "
+        "this d3d9.dll only knows %d). The controls below still work, but every setting the "
+        "game has gained since protocol %d is MISSING from this tab entirely - the game keeps "
+        "its config.json value for those and nothing here can move it - and the readouts they "
+        "feed are absent for the same reason. Nothing errors and nothing is logged, so this "
+        "notice is the only symptom. Rebuild d3d9.dll from the same commit point as the game.",
+        gameProtocol, kRequiredProtocol, kRequiredProtocol);
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "
@@ -3110,8 +3155,150 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
-    if (RemixGui::CollapsingHeader("Local Point Lights", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (RemixGui::CollapsingHeader("Effect Lights", collapsingHeaderFlags | ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::Indent();
+      RemixGui::Checkbox("Effect Lights Enabled", &DusklightGame::effectLightsObject());
+      ImGui::TextWrapped(
+        "Puts a light at the origin of the game's own fire and glow effects rather than where the "
+        "game registered a light. The game's placements were free of consequence under its original "
+        "shading - a point light there cast no shadow - so many of them sit nowhere near the flame, "
+        "which a path tracer shows immediately.");
+
+      RemixGui::DragFloat("Master Intensity##dusklight", &DusklightGame::effectLightIntensityObject(), 0.02f, 0.f, 8.f, "%.2f");
+
+      RemixGui::Checkbox("Infinite Lantern Oil", &DusklightGame::lanternInfiniteOilObject());
+      ImGui::TextWrapped(
+        "Keeps Link's lantern at full fuel: refills it when empty and stops the burn while lit. A gameplay change, off by "
+        "default, and here because the game's own menus are never drawn in this mode.\n"
+        "Enclosed rooms have very little light of their own right now, and the lantern is the only light you can carry into "
+        "one - so without this, testing interior lighting means managing fuel instead of looking at the room.");
+
+      RemixGui::DragFloat("Mass Exponent##dusklight", &DusklightGame::effectLightMassExponentObject(), 0.01f, 0.f, 2.f, "%.2f");
+      ImGui::TextWrapped(
+        "Scales a light by how much fire is actually standing at it. A five-emitter bonfire measures mass 5, a candle 1, a fire fading "
+        "out less as it fades; reach is multiplied by mass to this power.\n"
+        "0 disables it exactly. 0.50 makes radiance proportional to mass. A single full-alpha emitter measures 1 and is unchanged at "
+        "any value, so torch and candle tuning survives - this only moves the big ones.");
+
+      ImGui::TextUnformatted("From the game (a light was authored beside the effect)");
+      RemixGui::DragFloat("Derived Intensity##dusklight", &DusklightGame::effectLightDerivedIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
+      RemixGui::DragFloat("Derived Reach##dusklight", &DusklightGame::effectLightDerivedReachObject(), 0.02f, 0.f, 16.f, "%.2fx");
+      RemixGui::DragFloat("Derived Radius##dusklight", &DusklightGame::effectLightDerivedRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
+
+      ImGui::TextUnformatted("Invented (nothing authored - fire arrows, unlit torches)");
+      RemixGui::DragFloat("Undetermined Intensity##dusklight", &DusklightGame::effectLightUndeterminedIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
+      RemixGui::DragFloat("Undetermined Reach##dusklight", &DusklightGame::effectLightUndeterminedReachObject(), 5.f, 0.f, 8000.f, "%.0f units");
+      RemixGui::DragFloat("Undetermined Radius##dusklight", &DusklightGame::effectLightUndeterminedRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
+      ImGui::TextWrapped(
+        "The two intensities are separate on purpose. The derived one maps the game's units onto "
+        "Remix's scale; the invented one picks a size out of nothing. They will not want the same "
+        "number, and tying them together means tuning one breaks the other.");
+
+      RemixGui::Separator();
+      RemixGui::DragFloat("Fire Height Offset##dusklight", &DusklightGame::effectLightFireOffsetObject(), 0.5f, -200.f, 200.f, "%.1f units");
+      RemixGui::DragFloat("Glow Height Offset##dusklight", &DusklightGame::effectLightGlowOffsetObject(), 0.5f, -200.f, 200.f, "%.1f units");
+      ImGui::TextWrapped(
+        "An effect's origin is where it is generated from, which for a torch is the fuel at the base "
+        "of the flame. The light belongs a little way up inside it.");
+
+      RemixGui::DragFloat("Merge Radius##dusklight", &DusklightGame::effectLightMergeRadiusObject(), 1.f, 0.f, 500.f, "%.0f units");
+      RemixGui::DragFloat("Adopt Radius##dusklight", &DusklightGame::effectLightAdoptRadiusObject(), 5.f, 0.f, 2000.f, "%.0f units");
+      ImGui::TextWrapped(
+        "Merge groups the several emitters that make up one visible fire into one light - a bonfire "
+        "is five. Adopt is how close one of the game's lights has to be for its colour and reach to "
+        "be taken.");
+
+      RemixGui::DragFloat("Volumetric Boost##dusklight", &DusklightGame::effectLightVolumetricObject(), 0.05f, 0.f, 16.f, "%.2f");
+      ImGui::TextWrapped(
+        "Above 1 a flame hazes the air around it without getting brighter on the walls. Reaches an "
+        "existing light on its next update, not immediately.");
+
+      RemixGui::DragInt("Max Lights (0 = no limit)##dusklight", &DusklightGame::effectLightMaxLightsObject(), 1.f, 0, 256);
+      RemixGui::DragFloat("Max Distance##dusklight", &DusklightGame::effectLightMaxDistanceObject(), 50.f, 0.f, 100000.f, "%.0f units");
+      RemixGui::Checkbox("Light Explosions and One-Shots", &DusklightGame::effectLightBurstsObject());
+
+      RemixGui::Separator();
+      RemixGui::DragFloat("Min Chroma##dusklight", &DusklightGame::effectLightMinChromaObject(), 0.01f, 0.f, 1.f, "%.2f");
+      RemixGui::DragFloat("Min Luminance##dusklight", &DusklightGame::effectLightMinLumaObject(), 0.01f, 0.f, 1.f, "%.2f");
+      ImGui::TextWrapped(
+        "An effect earns a light when it is being drawn, blends additively, and its colour reads as a "
+        "glow - saturated OR near white hot. These are the two halves of that last test.");
+
+      if (DusklightGame::effectLights() && DusklightGame::localLights()) {
+        // Both on is a legitimate comparison to make deliberately. Inheriting it is not: anyone
+        // who tuned the old mirror has localLights = True saved in their rtx.conf, and the first
+        // launch after this landed gives every fire two lights - one of them in the old, wrong
+        // place. That reads as the new placement being broken, which is the one conclusion the
+        // screenshot cannot distinguish.
+        ImGui::TextWrapped(
+          "Both light systems are on, so every fire has two lights and one of them is in the "
+          "position this system exists to stop using. If you did not mean to compare them, turn "
+          "off Local Point Lights below - it stays enabled from a saved config.");
+      }
+
+      if (feedLive) {
+        // The chain, in the order a light can be lost: alive -> drawn in a world pass -> passed the
+        // rule -> merged into a site -> reached Remix. Printing all of it means the step something
+        // was lost at is visible without anyone having to describe a scene.
+        ImGui::Text("emitters %d  ->  considered %d  ->  candidates %d  ->  sites %d  ->  drawn %d",
+                    DusklightEnv::effLightsEmitters(), DusklightEnv::effLightsConsidered(),
+                    DusklightEnv::effLightsCandidates(), DusklightEnv::effLightsSites(),
+                    DusklightEnv::effLightsDrawn());
+        ImGui::Text("from the game: %d    game lights with no effect: %d    culled: %d    refused by name: %d",
+                    DusklightEnv::effLightsDerived(), DusklightEnv::effLightsOrphans(),
+                    DusklightEnv::effLightsCulled(), DusklightEnv::effLightsExcluded());
+        ImGui::Text("game lights available to copy (point/spot): %s",
+                    DusklightEnv::effLightsVanilla().c_str());
+
+        if (!DusklightEnv::effLightsRunning()) {
+          ImGui::TextWrapped(
+            "The game is not running this at all, so nothing here reaches Remix. Either the switch is "
+            "not reaching the game, or its D3D9 device never registered - the Bridge section above "
+            "says which.");
+        } else if (DusklightEnv::effLightsCandidates() == 0 && DusklightEnv::effLightsConsidered() > 0) {
+          ImGui::TextWrapped(
+            "Effects are being drawn but none passed the rule. If you are stood at a fire, the "
+            "classifier is wrong - press the report button and send the log, which names every effect "
+            "it saw and why it was rejected.");
+        } else if (DusklightEnv::effLightsOrphans() > 4 && DusklightEnv::effLightsSites() == 0) {
+          ImGui::TextWrapped(
+            "This room's lights are all ones the game registered with no effect beside them, and those "
+            "are dropped by default because their placement is exactly what this system exists to stop "
+            "trusting. If the room looks under-lit, that is the trade showing - worth reporting.");
+        }
+      }
+
+      // An action, so NoSave and a counter rather than a flag: a persisted request would fire on the
+      // next launch, and the game latches the first count it sees without acting so that connecting
+      // to a Remix that outlived a game restart does not dump a report nobody asked for.
+      if (ImGui::Button("Log Full Effect Light Report", ImVec2(-1, 0))) {
+        DusklightGame::effectLightReportCommit.setDeferred(DusklightGame::effectLightReportCommit() + 1);
+      }
+      ImGui::TextWrapped(
+        "One press, five sections, every open question answered - send the log and nothing else is "
+        "needed.\n\n"
+        "COUNTERS: the whole chain plus the bridge's own create/destroy counts, which nothing has ever "
+        "printed before.\n"
+        "EFFECTS: one line per distinct effect seen since the last press - name, blend configuration, "
+        "colours, the MEASURED chroma and luma the rule cut on, which keyword picked its class, and a "
+        "verdict that names the clause that refused it rather than just saying no. Plus whether its "
+        "colour is even capable of animating, and how long it lives.\n"
+        "SITES: every light this frame - where it is, how many emitters merged into it, and how far it "
+        "was from the game light it adopted.\n"
+        "GAME LIGHTS: every light the game registered and which effect took it. Adoption is exclusive, "
+        "so this is what shows a short-lived effect stealing a torch's light.\n"
+        "TRACE: a rolling window of how each light changed over the last few seconds. It is "
+        "RETROSPECTIVE - do the thing you want to look at first, THEN press this.");
+      ImGui::Unindent();
+    }
+
+    if (RemixGui::CollapsingHeader("Local Point Lights (comparison)", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "The previous system: the game's registered lights, mirrored where the game put them. Kept as "
+        "the comparison path - turning this on and Effect Lights off reproduces the old behaviour, "
+        "which is the only way to judge whether a placement improved. Running both gives every fire "
+        "two lights, one of them in the wrong place.");
       RemixGui::Checkbox("Local Lights Enabled", &DusklightGame::localLightsObject());
       RemixGui::DragFloat("Local Intensity##dusklight", &DusklightGame::localLightIntensityObject(), 0.05f, 0.f, 32.f, "%.2f");
       RemixGui::DragFloat("Local Radius##dusklight", &DusklightGame::localLightRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");

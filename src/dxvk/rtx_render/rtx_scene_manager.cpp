@@ -25,6 +25,7 @@
 
 #include "rtx_asset_replacer.h"
 #include "rtx_scene_manager.h"
+#include "rtx_dusklight_catrep.h"
 #include "rtx_opacity_micromap_manager.h"
 #include "dxvk_device.h"
 #include "dxvk_context.h"
@@ -503,6 +504,11 @@ namespace dxvk {
 
   void SceneManager::onFrameEnd(Rc<DxvkContext> ctx, bool raytracedThisFrame) {
     ScopedCpuProfileZone();
+
+    // Dusklight: dump the texture-category report if the overlay asked for one.
+    // At frame end rather than frame begin, so a press reports the frame the
+    // owner was actually looking at rather than the one before it.
+    catrep::pollCommit();
 
     // Commit this frame's texture registrations for preserve next frame. Must run before
     // manageTextureVram(), which may clear the cache and bump the generation so the
