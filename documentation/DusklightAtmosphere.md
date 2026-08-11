@@ -229,7 +229,7 @@ choice. `g_env_light.fog_col` / `mFogNear` / `mFogFar` are the *final* values
 after every modifier the game applies: the four-way palette blend, the
 `addcol_fog` additive offset, the `now_fogcol_ratio` scale that lightning
 pulses (`d_kankyo_rain.cpp:362`), the `dKy_fog_startendz_set` override that the
-Lake Hylia tag drives, and the *second* "gather" colpat blend
+Lost Woods mist tag drives, and the *second* "gather" colpat blend
 (`mColPatBlendGather`). Reading the outputs means every one of those comes
 along for free and stays correct when the game changes. Re-deriving from the
 palette tables would mean reimplementing all six layers and keeping them in
@@ -286,9 +286,9 @@ Scale-free, no magic endpoints, and correct across every regime the game uses:
 | Faron Woods, morning | mid | mid | visible mood fog, thins as the palette advances |
 | Forest Temple | near-mid | mid-near | interior depth |
 | Goron Mines | near | near | dense, hot |
-| Lake Hylia, kytag01 at full | `-2000`, `200` | clamped to `zHalfMin` | near-whiteout |
+| Lost Woods mist tag, kytag01 at full | `-2000`, `200` | clamped to `zHalfMin` | near-whiteout |
 
-Note the Lake Hylia case: the tag — a **kytag**, i.e. a *kankyo tag*:
+Note the mist-tag case: the tag — a **kytag**, i.e. a *kankyo tag*:
 `d_a_kytag00`…`d_a_kytag17` are invisible actors that override environment state
 for the area they sit in — passes a **negative start** with
 `start < end` (`dusklight-ao/src/d/actor/d_a_kytag01.cpp:94`), which in the
@@ -297,6 +297,26 @@ very dense medium, which is the right answer. (An earlier revision of this
 section said `start > end`; that was a recon claim nobody verified, and §14.7
 records why it mattered.) `zHalfMin` is the one tuning knob and it
 exists to stop σ diverging.
+
+**Two corrections to this row, both landed 2026-08-11 and both from the same
+misreading.** They matter because this is the regime the ledger's C0 still calls
+uncalibrated, and the test plan was aiming at the wrong place.
+
+- **The area is the Lost Woods / Sacred Grove, not Lake Hylia.** The actor says
+  so twice — `d_a_kytag01.cpp:1-4` is commented *"Sacred Grove Mist Tag"*, and
+  `:202` is an authored `OS_REPORT` reading 「迷いの森　霧タグの…」, *Lost
+  Woods fog tag*. Both name one stage, `F_SP117`. Whether Lake Hylia *also*
+  carries a kytag01 is **not knowable from source** — actor placement is in
+  `.dzs` stage data. Full evidence and the probable origin of the mix-up:
+  `dusklight-ao/docs/kankyo-fog.md` §3.3.
+- **"At full" is away from the tag, not at it.** The third argument to
+  `dKy_fog_startendz_set` is a lerp weight toward the override
+  (`d_kankyo.cpp:747-748`: `value += ratio * (override − value)`), and it is `0`
+  inside `mNamiInnerRange`, `1` beyond `mNamiOuterRange`
+  (`d_a_kytag01.cpp:53-69`). The view term runs the same way — `0.2` facing the
+  tag, `1.0` looking away (`:81-92`). **The tag marks a clear centre.** And the
+  whole layer is gated by the switch-driven fade at `:71`/`:124-144`: with the
+  switches off this row does not occur at all.
 
 **This replaces `rtx.volumetrics.enableFogRemap` entirely for us.** We do not
 enable Remix's remap; we write the derived coefficients straight into
@@ -418,9 +438,9 @@ architecture.
 ### 8.1 Moya particles vs volumetric density
 
 `mMoyaMode`/`mMoyaCount` — **moya** is 靄, mist — drive *billboard* haze
-particles, separate from GX fog: mode 3 is the Lake Hylia fog
-(`d_a_kytag01.cpp`), 4 is kytag02, 10/11 are weather (`d_a_kytag06.cpp`), 1 is
-cutscene. Under a path tracer these become
+particles, separate from GX fog: mode 3 is the Lost Woods / Sacred Grove mist
+tag (`d_a_kytag01.cpp`), 4 is kytag02, 10/11 are weather (`d_a_kytag06.cpp`), 1
+is cutscene. Under a path tracer these become
 camera-facing quads. Keeping them *and* a dense medium double-counts the haze.
 
 **Resolution:** suppress the moya billboards (same mechanism as
@@ -449,7 +469,7 @@ flatten genuine per-object variation. Recorded in §9.
 
 ### 8.4 Auto-exposure vs dense fog
 
-Dense fog raises mean scene luminance; auto-exposure pulls down; the Lake Hylia
+Dense fog raises mean scene luminance; auto-exposure pulls down; the mist-tag
 whiteout would auto-correct itself into flat grey and lose the drama it exists
 to create.
 
@@ -537,8 +557,9 @@ Each phase is independently shippable and states its predicted look up front.
 - A4 Live `froxelMaxDistance` + `previousFroxelMaxDistance` (§6.2); force
   `enableAtmosphere` on outdoors.
 - *Predicted:* volumetric fog matching vanilla density at every distance,
-  **plus** godrays and shafts. Lake Hylia whiteout, Goron Mines heat, Faron
-  morning and Forest Temple all fall out of one mapping with no per-area code.
+  **plus** godrays and shafts. Lost Woods mist-tag whiteout, Goron Mines heat,
+  Faron morning and Forest Temple all fall out of one mapping with no per-area
+  code.
 
 **Phase B — sky as dome light.**
 - B1 Generate a lat-long sky texture from the kankyo colours; register it as a
@@ -1228,13 +1249,28 @@ nothing because it does.
 
 ### 14.7 Don't trust a recon report you did not verify
 
-A reconnaissance pass claimed Lake Hylia "passes `start > end` deliberately".
-It does not — it is `start < end` with a **negative start**. Acting on that
-claim would have made Lake Hylia silently report no fog, in exactly the area
-whose extreme morning fog is one of the two remaining validation targets.
+A reconnaissance pass claimed the kytag01 fog "passes `start > end`
+deliberately". It does not — it is `start < end` with a **negative start**.
+Acting on that claim would have made the tag silently report no fog, in exactly
+the regime that is one of the two remaining validation targets.
+
+**The same recon pass also put the tag in the wrong place**, and that half went
+uncaught for two more weeks. It said Lake Hylia; the actor is the Lost Woods /
+Sacred Grove mist tag, which `d_a_kytag01.cpp` states twice — once in English at
+`:1-4` and once in the original team's own Japanese at `:202`. Corrected
+2026-08-11 across **twelve** passages in two repos — §3, §5.1, §8.1, §8.4, §10,
+§13 (twice) and this section here; `kankyo-fog.md` §3.3, §5, §6 and §7 there.
+The audit that caught it listed five; the other seven turned up only by grepping
+`Hylia` across both repos rather than working from that list, which is the
+re-derive-from-the-diff rule applied to a correction instead of a merge. The area
+name had been carried forward from document to document without anyone opening
+the file — which is this section's lesson a second time, at lower stakes and
+longer duration.
 
 Verify structural claims against the source before building a special case
-around them.
+around them. **And verify the incidental nouns too** — a wrong mechanism gets
+caught by the code not working, whereas a wrong place name is invisible until
+someone is sent there.
 
 ---
 
@@ -1330,33 +1366,60 @@ sentence of the pass, because it confirms three things at once:
   one scale-free expression, no per-area code anywhere;
 - the froxel grid really is resizing per area (A4).
 
-**The dense end — half covered as of 2026-07-29.** Lake Hylia in the morning was
-visited and its fog is *"suitably intense"*, which is the first real evidence
-that the σ mapping holds at the dense end and not just in the thin and mid
-regimes.
+**The dense end — half covered as of 2026-07-29, and less than that after
+2026-08-11.** Lake Hylia in the morning was visited and its fog is *"suitably
+intense"*, which is the first real evidence that the σ mapping holds at the
+dense end and not just in the thin and mid regimes.
 
-Two cautions against reading it as more than that:
+Three cautions against reading it as more than that:
 
-- **It does not isolate `zHalfMin`.** That clamp only bites where the
-  half-density point falls behind the camera. Lake Hylia's kytag01 passes a
-  *negative* start with `start < end` (§14.7 — the opposite of what an earlier
-  recon claimed), so whether the clamp actually fired in that visit is not
-  established. "The dense case looks right" and "the clamp is correct" are
-  different claims and only the first has evidence.
+- **It was very likely not the scripted regime at all.** This bullet used to say
+  "Lake Hylia's kytag01"; the kytag01 mist tag is the **Lost Woods / Sacred
+  Grove** (§14.7), and nothing establishes that Lake Hylia carries one — actor
+  placement is `.dzs` stage data, so it cannot be settled from source either
+  way. What that visit measured was most likely Lake Hylia's **palette** fog,
+  which is a genuinely dense regime and genuinely good news for the mapping, but
+  it is not the `-2000`/`200` override.
+- **So it does not isolate `zHalfMin`.** That clamp only bites where the
+  half-density point `(start + end)/2` falls behind the camera. For the mist tag
+  that is `(-2000 + 200)/2 = -900`, and the clamp fires hard. **This is done by
+  the near `end`, not by the negative `start`** — negative starts are ordinary
+  (`start` was zero or negative in *every* area measured on 2026-08-06), so the
+  sign of `start` discriminates nothing.
+
+  Which is settled empirically rather than by argument: Lake Hylia's own ramp
+  was **measured** at `[-3000, 70000]` on 2026-08-06, a half-density point of
+  ~33500 — three orders of magnitude clear of `zHalfMin`, and nothing like
+  `-2000`/`200`. So the visit demonstrably did not exercise the clamp, and that
+  measurement is also the nearest thing to positive evidence that Lake Hylia
+  does not show the kytag01 whiteout — which `.dzs` placement cannot settle
+  either way. (That measurement table lands in §5.1 with the volumetric-shell
+  work, which was still unmerged when this was written; if §5.1 has no ramp
+  table, it has not arrived yet.) "The dense case looks right" and "the clamp is correct" were
+  already different claims with evidence for only the first; the gap between
+  them is now wider, not narrower.
 - **The Goron Mines are still unvisited**, and they are the other regime — near
   and dense rather than scripted and dense.
 
-`froxelRangeScale` (0.6) remains unchallenged rather than validated.
+`froxelRangeScale` (0.6) remains unchallenged rather than validated. Ledger row
+C0 is unchanged by this and stays open; what changed is *where to go* to close
+it — `kankyo-fog.md` §5 now carries the walk-out procedure, which is the
+opposite of the intuitive one because the tag sits in a clear centre.
 
 **And the Lake Hylia visit surfaced something bigger than fog density:** it is
 where the sky/fog defect in §12 shows worst, because it is the densest medium
-the game asks for. Any future dense-fog reading is partly measuring that defect
-until it is fixed.
+**yet observed** — the mist tag at full weight is denser still, and has not been
+seen. Any future dense-fog reading is partly measuring that defect until it is
+fixed.
 
 ### The measurement pass is still worth doing
 
 The Dusklight tab reports the game's live `fogStartZ` / `fogEndZ` / `fogColor`
 and sky colours. Those values live in stage data rather than in source, so this
 readout is the only way to see what a given area actually asks for. Recording
-them at Hyrule Field, Faron, Lake Hylia, the Goron Mines and the Forest Temple
-turns any future tuning from guesswork into arithmetic.
+them at Hyrule Field, Faron, the **Lost Woods / Sacred Grove** (`F_SP117`, for
+the kytag01 whiteout — the one regime that challenges `zHalfMin`), Lake Hylia,
+the Goron Mines and the Forest Temple turns any future tuning from guesswork
+into arithmetic. `dusklight-ao/docs/kankyo-fog.md` §5 has the per-area
+procedure; the mist tag needs a **walk-out from the clear centre**, not a walk
+into the fog.
