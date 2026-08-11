@@ -2806,19 +2806,46 @@ namespace dxvk {
     }
     s_sliderHeld = ImGui::IsItemActive();
 
-    // The quarter points, which are also the four the light actually differs at. Buttons rather
-    // than a combo because the whole value of these is landing on the same number twice.
+    // The game's own six time lights, at the game's own numbers. Its environment palette holds
+    // six time-of-day slots and its light schedule (l_time_attribute, d_kankyo_data.cpp:212)
+    // cross-fades between them; the values below are the ones the game's own debug time-fix
+    // menu pins (d_kankyo.cpp, dScnKy_env_light_c::setDaytime), each chosen so the schedule
+    // resolves to exactly one slot with no blend. So each button shows one authored palette
+    // entry rather than a point part-way between two.
+    //
+    // The names are the game's too, romanized: asa 0/1 (morning), hiru (midday - not afternoon,
+    // and not noon: it is pinned at 11:00), yuu 0/1 (evening), yoru (night).
+    //
+    // Three of the six are reachable ONLY at their exact value. The schedule holds midday over
+    // 135-240, evening 0 over 255-270 and night over 300-75, but morning 0, morning 1 and
+    // evening 1 sit on a single instant each (90, 105, 285) with a cross-fade either side. A
+    // slider cannot realistically be dragged onto them, which is most of why these buttons are
+    // worth having.
+    //
+    // This replaced four clock quarter points (0/90/180/270). Those were not wrong - each did
+    // resolve to one pure slot (night, morning 0, midday, evening 0) - but they reached only
+    // four of the six, and the two they missed are two of the three a slider cannot reach.
+    //
+    // Dropping 0 and 180 costs nothing measurable for the sun and moon, which are on their own
+    // orbit rather than on the palette schedule: setSunpos peaks at 59.0 deg of elevation at
+    // 0/180 and gives 57.4 deg at 345/165, so Night and Midday stand in for midnight and noon
+    // to within about 1.6 deg. Use the slider if an exact solar extreme is what is wanted.
+    //
+    // Buttons rather than a combo because the whole value of these is landing on the same number
+    // twice. Two rows so six fit without the window widening.
     struct TimePreset {
       const char* label;
       float degrees;
     };
     static constexpr TimePreset kPresets[] = {
-      { "Midnight", 0.0f }, { "Sunrise", 90.0f }, { "Noon", 180.0f }, { "Sunset", 270.0f },
+      { "Morning 0", 90.0f },  { "Morning 1", 105.0f }, { "Midday", 165.0f },
+      { "Evening 0", 255.0f }, { "Evening 1", 285.0f }, { "Night", 345.0f },
     };
     constexpr size_t kPresetCount = sizeof(kPresets) / sizeof(kPresets[0]);
+    constexpr size_t kPresetsPerRow = 3;
 
     for (size_t i = 0; i < kPresetCount; i++) {
-      if (i > 0) {
+      if (i % kPresetsPerRow != 0) {
         ImGui::SameLine();
       }
       if (ImGui::Button(kPresets[i].label)) {
@@ -2827,6 +2854,13 @@ namespace dxvk {
       }
     }
 
+    ImGui::TextWrapped(
+      "The six buttons are the game's own six time-of-day palette entries, at the six clock "
+      "values the game itself uses to show one of them cleanly. Between them the schedule is "
+      "cross-fading two entries, and Morning 0, Morning 1 and Evening 1 exist for one instant "
+      "each - the slider cannot land on them, and without Freeze Time the clock walks straight "
+      "back off them. So an A/B of anything palette driven belongs on a button, frozen.");
+
     RemixGui::Checkbox("Freeze Time", &DusklightGame::freezeTimeObject());
     ImGui::TextWrapped(
       "Freeze before shooting an A/B pair. Without it the sun has moved between the two shots and "
@@ -2834,8 +2868,9 @@ namespace dxvk {
     ImGui::TextWrapped(
       "The moon to sun handover sits around 67 to 75 degrees, which is the window to sit in for "
       "anything about the celestial light. The physical sky blend is driven by sun elevation "
-      "rather than by the clock, so noon is where it is at full strength and sunrise or sunset is "
-      "where the game's own palette keeps it.");
+      "rather than by the clock, so Midday is where it is at full strength. Morning 0 puts the "
+      "sun about 15 degrees up and Evening 1 is already a little past sunset, which is where "
+      "the game's own palette carries the look instead.");
 
     ImGui::Unindent();
   }
@@ -3380,6 +3415,15 @@ namespace dxvk {
       ImGui::Indent();
       RemixGui::Checkbox("Disable Frustum Culling", &DusklightGame::disableFrustumCullingObject());
       RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
+      ImGui::Indent();
+      RemixGui::Checkbox("...Including The Stars", &DusklightGame::hideStarBillboardsObject());
+      ImGui::TextWrapped(
+        "On by default: that is what Hide Sky Billboards has always done. Clear it, with Hide Sky "
+        "Billboards left on, to keep the star field while the sun and moon billboards stay hidden. "
+        "Only the sun packet draws the moon quad that was measured as the night shadow occluder, so "
+        "this separates the half that was tested from the half that never was - and the first 13 "
+        "stars are a constellation placed by hand. Does nothing while Hide Sky Billboards is off.");
+      ImGui::Unindent();
       RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
       RemixGui::Checkbox("Per-Blade Grass", &DusklightGame::perBladeGrassObject());
       RemixGui::Checkbox("Hide Epona Dash Effect", &DusklightGame::hideDashEffectObject());

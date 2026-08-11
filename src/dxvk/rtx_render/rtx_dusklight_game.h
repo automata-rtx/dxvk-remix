@@ -181,7 +181,19 @@ namespace dxvk {
                "become an occluder that follows you around. Tested 2026-07-29: that was the cause of shadowed areas appearing to wander at night, and this "
                "fixes it rather than masking it.\n"
                "It removes the visible stars and moon along with the occluder. rtx.dusklight.atmosphere.skyMoonEnable paints the moon back into the generated "
-               "sky; these billboards also carry textures, so categorising them as Sky instead would keep all of them visible.");
+               "sky. Categorising as Sky instead is an option for the sun and moon, which carry textures, and is not one for the stars, which are drawn with "
+               "no texture bound at all - there is no hash to categorise. rtx.dusklight.game.hideStarBillboards splits the star half back out.");
+    RTX_OPTION("rtx.dusklight.game", bool, hideStarBillboards, true,
+               "Whether Hide Sky Billboards also removes the star field. A sub-switch: with that option off, this one does nothing.\n"
+               "On by default, which is exactly what Hide Sky Billboards has always done - the two were a single switch until 2026-08-11, and this default "
+               "keeps every existing rtx.conf behaving identically.\n"
+               "Turn it OFF, with Hide Sky Billboards left ON, to get the stars back while the sun and moon billboards stay hidden. That is the A/B that "
+               "isolates which packet is actually the occluder, and it has never been run. Only the sun packet draws the moon: dKyr_drawSun hangs an "
+               "8000-unit quad 80000 units out along the direction the moon light arrives from, and that is the geometry the 2026-07-29 test measured. "
+               "dKyr_drawStar emits up to 1200 scattered triangles covering roughly 0.05% of the sky, fades out any that fall near the moon, and has never "
+               "been shown to occlude anything - but no test has separated the two, so that is arithmetic rather than a measurement.\n"
+               "The stars are not only decoration: the first 13 are a constellation the original team placed by hand. dusklight-ao/docs/remix-test-playbook.md "
+               "section 4b is the recipe.");
     RTX_OPTION("rtx.dusklight.game", bool, hideDashEffect, false,
                "Stops the game drawing the speed effect it spawns while Epona dashes.\n"
                "daHorse_c::setDashEffect places JPA particle 0x8657 at a computed offset in front of the *camera* rather "
