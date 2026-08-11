@@ -228,10 +228,13 @@ namespace dxvk {
                "Threshold, blur size, brightness, tint, blend mode, base weight and the mono overlay all track the game's per-area, per-time-of-day, per-weather palettes. "
                "Has no effect unless the game's bridge is active (rtx.dusklight.env.enable). The manual values still apply when the feed is absent.");
     RTX_OPTION_ARGS("rtx.bloom", float, dusklightThresholdScale, 1.0f,
-                    "Calibration factor between the game's 0..1 bloom threshold and the linear HDR range Remix blooms in. "
+                    "Calibration factor applied to the game's 0..1 bloom threshold before this pass consumes it. "
                     "Only used while rtx.bloom.dusklightFollowGame is consuming the game feed.\n"
-                    "The game's threshold was subtracted from 8 bit display values after lighting; pre-tonemap HDR sits in a different range, "
-                    "so this scale is the one knob that needs tuning per setup. With auto exposure disabled the scene range is fixed, which makes this easier to calibrate.",
+                    "With rtx.bloom.dusklightDisplaySpace on - which is the default - the pyramid runs after tone mapping on display referred 0..1 colour, "
+                    "the same range the game's threshold was authored against, so the game's value maps straight across and this should be left at 1.0.\n"
+                    "It exists for the pre-tonemap path (dusklightDisplaySpace off), where the scene sits in an open ended linear range and the threshold has no "
+                    "fixed meaning. There it is the one knob that needs tuning per setup, and disabling auto exposure makes it easier to calibrate by holding the "
+                    "scene range still.",
                     args.minValue = 0.0f);
   };
   
