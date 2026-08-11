@@ -88,6 +88,13 @@ namespace dxvk {
     // one aurora writes - a channel carrying something else must not be rounded into a class.
     static DusklightDrawClass drawClass(const D3DMATERIAL9& material);
 
+    // Which of the game's draw lists issued this draw, from the high byte of the same channel.
+    // Diagnostic only - nothing decides anything on it. It is the working replacement for the
+    // `grp=` label, which never worked: debug groups are pushed where a draw is *scheduled*
+    // rather than *issued*, and are compiled out in release besides.
+    static uint32_t drawPhase(const D3DMATERIAL9& material);
+    static const char* drawPhaseName(uint32_t phase);
+
     // Whether this draw should be resolved as a particle (unordered TLAS) rather than through
     // the stochastic alpha blend. False for every draw when the game is too old to send a
     // class, which is what makes this safe to default on: an unclassified draw reads 0 and
@@ -124,7 +131,7 @@ namespace dxvk {
     // `texHash` is `tex0hash` from `matrep.rmx`, so a row here joins to the fork's material
     // report, which joins to the game's `matrep.sum` through the texture pointer.
     static void recordUnclassifiedAlpha(uint64_t texHash, float worldSize, float distance,
-                                        float spanDegrees, bool cameraInside);
+                                        float spanDegrees, bool cameraInside, uint32_t phase);
 
     // Emits `dusklight.xparency` once every reportPeriodFrames frames when reportClasses is on,
     // followed by the unclassified survey when surveyUnclassified is on. Bounded by

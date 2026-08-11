@@ -1080,7 +1080,8 @@ namespace dxvk {
 
         DusklightTransparency::recordUnclassifiedAlpha(
           drawCall.getMaterialData().getColorTexture().getImageHash(),
-          halfSize * 2.0f, distance, spanDegrees, cameraInside);
+          halfSize * 2.0f, distance, spanDegrees, cameraInside,
+          DusklightTransparency::drawPhase(drawCall.getMaterialData().getLegacyMaterial()));
       }
     }
 

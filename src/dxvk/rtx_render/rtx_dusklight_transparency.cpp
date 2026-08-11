@@ -62,6 +62,7 @@ namespace dxvk {
       float worldSizeAtMax = 0.0f;
       float distanceAtMax = 0.0f;
       uint32_t draws = 0;
+      uint32_t phase = 0;
       // Sticky: seen enclosing the camera even once is enough to call it a screen-space or
       // enclosing draw, which is what this is for.
       bool cameraInside = false;
@@ -80,27 +81,77 @@ namespace dxvk {
     constexpr size_t kSurveyCapacity = 256;
   }
 
+  namespace {
+    // Ambient.a carries `drawClass + drawPhase * 256`, both small integers, so the float is
+    // exact. Returns false when the channel is not carrying that contract at all - a NaN, a
+    // negative, or a non-integral value means something else is in there and the honest answer
+    // is "nothing", not a truncation into a plausible class.
+    bool decodePackedChannel(float raw, uint32_t& outPacked) {
+      if (!(raw >= 0.0f) || raw > 65535.0f) {
+        return false;
+      }
+
+      const float rounded = std::floor(raw + 0.5f);
+
+      if (std::fabs(raw - rounded) > 0.001f) {
+        return false;
+      }
+
+      outPacked = static_cast<uint32_t>(rounded);
+      return true;
+    }
+  }
+
   DusklightDrawClass DusklightTransparency::drawClass(const D3DMATERIAL9& material) {
     if (!enable()) {
       return DusklightDrawClass::None;
     }
 
-    // Aurora writes a small non-negative integer. Anything else - a NaN, a negative, a value
-    // past the enum - means the channel is carrying something other than this contract, and the
-    // correct answer is "unclassified" rather than a truncation into a plausible class.
-    const float raw = material.Ambient.a;
+    uint32_t packed = 0;
 
-    if (!(raw >= 1.0f) || raw > 2.0f) {
+    if (!decodePackedChannel(material.Ambient.a, packed)) {
       return DusklightDrawClass::None;
     }
 
-    const float rounded = std::floor(raw + 0.5f);
+    const uint32_t cls = packed & 0xFFu;
 
-    if (std::fabs(raw - rounded) > 0.001f) {
+    // Reject a value past the enum rather than rounding it into a plausible class.
+    if (cls != 1u && cls != 2u) {
       return DusklightDrawClass::None;
     }
 
-    return static_cast<DusklightDrawClass>(static_cast<uint32_t>(rounded));
+    return static_cast<DusklightDrawClass>(cls);
+  }
+
+  uint32_t DusklightTransparency::drawPhase(const D3DMATERIAL9& material) {
+    uint32_t packed = 0;
+
+    if (!decodePackedChannel(material.Ambient.a, packed)) {
+      return 0;
+    }
+
+    return (packed >> 8) & 0xFFu;
+  }
+
+  const char* DusklightTransparency::drawPhaseName(uint32_t phase) {
+    // Mirrors GX_AURORA_DRAW_PHASE_* and draw_phase_name() in aurora's dx9_tev.cpp. Spelled out
+    // so a log line is readable without either header.
+    switch (phase) {
+    case 1:  return "skyOpa";
+    case 2:  return "skyXlu";
+    case 3:  return "bgOpa";
+    case 4:  return "bgXlu";
+    case 5:  return "middle";
+    case 6:  return "actorOpa";
+    case 7:  return "actorXlu";
+    case 8:  return "zxlu";
+    case 9:  return "filter";
+    case 10: return "invisible";
+    case 11: return "screen";
+    case 12: return "last3D";
+    case 13: return "ui2D";
+    default: return "none";
+    }
   }
 
   bool DusklightTransparency::treatAsParticle(const D3DMATERIAL9& material) {
@@ -147,7 +198,7 @@ namespace dxvk {
 
   void DusklightTransparency::recordUnclassifiedAlpha(uint64_t texHash, float worldSize,
                                                       float distance, float spanDegrees,
-                                                      bool cameraInside) {
+                                                      bool cameraInside, uint32_t phase) {
     if (!surveyUnclassified() || !reportClasses()) {
       return;
     }
@@ -177,6 +228,7 @@ namespace dxvk {
       it->second.maxSpanDegrees = spanDegrees;
       it->second.worldSizeAtMax = worldSize;
       it->second.distanceAtMax = distance;
+      it->second.phase = phase;
     }
   }
 
@@ -266,7 +318,8 @@ namespace dxvk {
       dropped != 0 ? str::format(" droppedAtCapacity=", dropped) : std::string(),
       " - unclassified alpha-blended draws, widest first."
       " Read spanDeg WITH distance: a distant wall is wide AND far (tens of degrees at hundreds+ units)."
-      " camInside=1 means the camera is inside the draw - a screen blit or an enclosing volume, sorted last."));
+      " camInside=1 means the camera is inside the draw - a screen blit or an enclosing volume, sorted last."
+      " phase names the game draw list that issued it."));
 
     for (size_t i = 0; i < shown; ++i) {
       const SurveyEntry& e = rows[i].second;
@@ -276,6 +329,7 @@ namespace dxvk {
         " spanDeg=", e.maxSpanDegrees,
         " worldSize=", e.worldSizeAtMax,
         " distance=", e.distanceAtMax,
+        " phase=", drawPhaseName(e.phase),
         " camInside=", e.cameraInside ? 1 : 0,
         " draws=", e.draws));
     }
