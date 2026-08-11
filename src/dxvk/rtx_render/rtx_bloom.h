@@ -149,25 +149,28 @@ namespace dxvk {
     //
     // A port of the pyramid Dusklight uses for its 'improved' bloom, for games whose original
     // bloom looked like this and whose art was built around it. The differences that matter are
-    // all in this group: a threshold that is subtracted per channel instead of weighted by
-    // luminance, an explicit ring blur at every level of the pyramid, a per-level gain that is
-    // allowed to saturate, and levels that are weighted geometrically on the way back up rather
-    // than summed at full strength.
+    // all in this group: a threshold applied as a blue weighted luminance key that scales the
+    // whole colour, rather than subtracted from each channel, an explicit ring blur at every
+    // level of the pyramid, a per-level gain that is allowed to saturate, and levels that are
+    // weighted geometrically on the way back up rather than summed at full strength.
     //
     // The defaults reproduce Dusklight's own defaults. blurSize/blurRatio deliberately keep the
     // game's 0..255 parameter range so values can be carried straight over from it.
 
     RTX_OPTION("rtx.bloom", bool, dusklight, false,
                "Replaces the bloom pyramid with a port of Dusklight's 'improved' bloom.\n"
-               "Blurs an eight tap ring at every level of the pyramid, thresholds by subtracting from each channel rather than by weighting with luminance, "
-               "and weights the levels geometrically as they are combined back together. Produces a softer and wider halo with saturated, washed out cores, "
+               "Blurs an eight tap ring at every level of the pyramid, thresholds with a blue weighted luminance key that scales the whole colour rather than by "
+               "subtracting from each channel, and weights the levels geometrically as they are combined back together. Produces a softer and wider halo with saturated, washed out cores, "
                "which is what bloom looked like on the hardware these games were built for.\n"
                "Uses its own threshold (rtx.bloom.dusklightThreshold) rather than rtx.bloom.luminanceThreshold. rtx.bloom.steps and rtx.bloom.burnIntensity still apply.");
     RTX_OPTION_ARGS("rtx.bloom", float, dusklightThreshold, 0.5f,
-                    "Value subtracted from every colour channel before Dusklight bloom is gathered. Only used when rtx.bloom.dusklight is enabled.\n"
-                    "Pixels below the threshold do not bloom at all and pixels above it bloom in proportion to how far above they are, giving a harder cut than the "
-                    "smooth luminance rolloff of the default bloom. Subtracting per channel also pushes coloured highlights further towards their dominant hue.\n"
-                    "Note this is in the linear HDR range the image is in before tonemapping, not a 0..1 display value.",
+                    "Threshold the Dusklight bloom is keyed against. Subtracted from a weighted luminance, not from each colour channel. Only used when rtx.bloom.dusklight is enabled.\n"
+                    "The key is 0.25*R + 0.25*G + 0.5*B and the whole colour is then scaled by saturate(key - threshold), so the bloom keeps the source's own hue instead of drifting "
+                    "towards whichever channel was brightest. A colour blooms on that keyed brightness rather than on any single channel clearing the threshold, so a saturated but "
+                    "dim colour may not bloom at all - pure red at full intensity keys to 0.25 and never clears the default 0.5. The weights are not a standard luma either: blue "
+                    "counts double red or green, which is why blue highlights bloom far more readily than their brightness alone suggests.\n"
+                    "With rtx.bloom.dusklightDisplaySpace on (the default) this is a fraction of display white on the tonemapped 0..1 image, and maps straight across from the game's "
+                    "own 0..255 threshold. It is a linear pre-tonemap value only when that option is turned off.",
                     args.minValue = 0.0f);
     RTX_OPTION_ARGS("rtx.bloom", float, dusklightBlurSize, 64.0f,
                     "Radius of the ring blur applied at each pyramid level, in the same 0..255 range the game uses. Only used when rtx.bloom.dusklight is enabled.\n"
@@ -205,7 +208,7 @@ namespace dxvk {
     RTX_OPTION("rtx.bloom", Vector3, dusklightMonoColor, Vector3(1.0f, 1.0f, 1.0f),
                "Tint of the full-screen mono overlay applied before the Dusklight bloom is gathered. Only used when rtx.bloom.dusklight is enabled.\n"
                "The image is converted to greyscale, multiplied by this colour, and blended back in by rtx.bloom.dusklightMonoAmount. "
-               "The game's environment system drives this for twilight and wolf senses.");
+               "The game's environment system drives this for twilight (bloom tables 1/2); its wolf senses entry leaves the overlay off.");
     RTX_OPTION_ARGS("rtx.bloom", float, dusklightMonoAmount, 0.0f,
                     "Strength of the full-screen mono (desaturate and tint) overlay, 0..1. Only used when rtx.bloom.dusklight is enabled.\n"
                     "Applied before the bloom is gathered, so the bloom sees the overlaid image, exactly as on the original hardware. "

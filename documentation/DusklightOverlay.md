@@ -530,10 +530,22 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
   Loose end: `found 5` but `drawn 4`. One light is being rejected on the way
   through, and "harmless" is currently an assumption.
 - **The wolf-senses overlay covers the screen.** Black heavy surround, pure
-  white centre where the see-through region belongs. Not investigated. It blocks
-  the wolf-senses route to testing the mono overlay and base weight — but not
-  the **twilight** route, which reaches the same code through bloom tables 1/2
-  and is how that test should now be done.
+  white centre where the see-through region belongs. Not investigated. **Fixing
+  it is not on the critical path for testing the mono overlay or the base
+  weight**, because wolf senses never exercised either one. Senses forces all
+  four bloom table slots to entry 3 (`d_kankyo.cpp:2545-2546`, gated on
+  `checkNowWolfPowerUp`), and entry 3 has `mSaturateSubtractA` `0x00` and
+  `mOrigDensity` `0xFF` (`d_kankyo_data.cpp:17`) — mono amount 0 and base
+  weight 1.0, both neutral, so both values under test sit at their defaults
+  while senses is active. What senses actually changes is the threshold
+  (`mThreshold` `0x00`) and the bloom colour (`0x60`, `0xBA`, `0xEC` — blue
+  cyan). The **twilight** route is the one that reaches the mono and base
+  weight code, through bloom tables 1/2 (`mSaturateSubtractA` `0x60`,
+  `mOrigDensity` `0xD2`), and is how that test should be done.
+
+  Caveat, unverified: a live `field_0x12fc` bloom override re-points the two
+  *end* slots after the senses override (`d_kankyo.cpp:2549-2554`), so a kytag
+  driving that could blend some mono back in. Nothing was traced doing so.
 - **World-space UI billboards appear only intermittently — the RTX injection
   boundary.** Investigated 2026-07-29. The targeting arrow and torch fire
   billboards appear together, inconsistently, and only while the letterbox bars
