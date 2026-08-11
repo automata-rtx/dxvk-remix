@@ -135,6 +135,13 @@ namespace dxvk {
     Derived resolve() const;
     float resolvePhysicalWeight() const;
 
+    // The near haze band's share of the fixed composite, after choosing between the game's own
+    // alpha and the manual slider. Shared by the dispatch and the panel so the number the panel
+    // reports is the number the shader used, rather than a second derivation that can drift.
+    float resolvedKasumiFrontWeight() const;
+    // True when that share came from the game rather than from the slider.
+    bool kasumiFrontWeightIsFromGame() const;
+
     // The two lookup tables depend on the medium and on nothing else - not the sun, not the view -
     // so they are rebuilt only when the medium actually changes. That is what makes a physically
     // based sky affordable per frame at all.
@@ -255,20 +262,28 @@ namespace dxvk {
     // corrected version cannot simply be assumed better. documentation/DusklightAtmosphere.md 12.2.
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", int, kasumiBlendMode, 0,
                     "How the game's two horizon haze bands are combined into the sky's horizon colour.\n"
-                    "0 - Sun-relative. Places one band at the sun and the other opposite it, so the horizon palette turns with the sun's compass bearing. "
-                    "This was written from a description of the two bands as 'on the sun's side' and 'away from the sun'; the game has no such split, and "
-                    "no code path in it relates either band to sun position. It is still the default so that changing the look stays a deliberate act.\n"
+                    "0 - Sun-relative. Places one band at the sun's bearing and the other opposite it, so the horizon palette turns as the sun moves round. "
+                    "The game has no such split: its two bands are front and back, and no code path in it relates either to sun position. This is still the "
+                    "default so that changing the look stays a deliberate act, not a side effect of updating.\n"
                     "1 - Fixed composite. Azimuth independent, which is what the game does: it paints one band onto each of two sky dome shells and draws "
                     "both at every bearing. The share of each is rtx.dusklight.atmosphere.kasumiFrontWeight.\n"
                     "This matters past the sky itself. The generated sky is also the dome light and the colour distant geometry fades towards, so under "
                     "mode 0 the light in the scene and the fog tint turn with the sun's bearing too, on a palette that is not moving.",
                     args.minValue = 0,
                     args.maxValue = 1);
+    RTX_OPTION("rtx.dusklight.atmosphere", bool, kasumiFrontWeightUseGameAlpha, true,
+               "Takes the near haze band's share in the fixed composite from the game instead of from the slider below.\n"
+               "The game authors an alpha on that band and blends it every frame exactly like its colour, and since protocol 12 the bridge sends it as "
+               "rtx.dusklight.env.kasumiOuterAlpha. Using it is what turns the fixed composite from an approximation into a translation - the share stops "
+               "being a number someone picked and becomes the number the artists picked.\n"
+               "Falls back to the slider whenever the game has not reported the alpha, which is a game build older than protocol 12 or the bridge not "
+               "running. A reported 0 is honoured as a real value; only 'never reported' falls back.\n"
+               "Reads nothing unless rtx.dusklight.atmosphere.kasumiBlendMode is 1, which is not the default.");
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, kasumiFrontWeight, 0.5f,
-                    "Share of the near haze band in the fixed composite, 0..1. Only used when kasumiBlendMode is 1.\n"
-                    "0 is the far band alone, 1 the near band alone. There is no derived value for this: in the game the near band is a separate dome shell "
-                    "drawn in front of the far one, so what decides the mix is that shell's alpha - and the bridge pushes only the two RGB triples. Until "
-                    "the alphas are carried, this is a knob rather than a translation.\n"
+                    "Share of the near haze band in the fixed composite, 0..1. Used when kasumiBlendMode is 1 and the game's own alpha is unavailable or "
+                    "switched off above.\n"
+                    "0 is the far band alone, 1 the near band alone. The 0.5 default is a placeholder, not a measurement - it dates from before the "
+                    "bridge carried the alpha, when there was nothing to derive it from. Prefer kasumiFrontWeightUseGameAlpha; keep this for A/B against it.\n"
                     "Note the two bands are named the other way round from how they read: 'outer' is the near one.",
                     args.minValue = 0.0f,
                     args.maxValue = 1.0f);

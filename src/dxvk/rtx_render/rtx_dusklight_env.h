@@ -128,12 +128,45 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kasumiOuter, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
                     "The game's near horizon haze band, normalized to 0..1. Written by the game's kankyo bridge.\n"
                     "Despite the name this is the front band, the one nearer the viewer; the game labels it so.");
+    // The two kasumi bands' alphas, and the cloud layer's. Added at protocol 12. Authored per
+    // palette entry and blended every frame exactly like the RGBs (d_kankyo.cpp:2827, 2847, 2775),
+    // with a slider each in the original team's own panel. -1 means the game has not reported it -
+    // a build older than protocol 12, or the bridge not running. Distinguishing that from a
+    // genuine 0 matters: 0 is a real authored value, and treating "silent" as 0 is how a readout
+    // that is not arriving turns into a look change nobody can trace.
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, kasumiInnerAlpha, -1.0f, RtxOptionFlags::NoSave,
+                    "Alpha of the game's far horizon haze band, 0..1, or -1 when the game has not reported it. Written by the game's kankyo bridge.\n"
+                    "Pushed and displayed only. What a TEV colour register's alpha does depends on the alpha stages inside vrbox_sora.bmd, and no "
+                    ".bmd exists in any of the three checkouts, so calling this 'the haze's opacity' would be inference rather than something read.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, kasumiOuterAlpha, -1.0f, RtxOptionFlags::NoSave,
+                    "Alpha of the game's near horizon haze band, 0..1, or -1 when the game has not reported it. Written by the game's kankyo bridge.\n"
+                    "This is the one alpha the fork consumes, and only in one place: it supplies rtx.dusklight.atmosphere.kasumiFrontWeight, the "
+                    "near band's share in the fixed-composite haze blend. That blend is off by default, so nothing reads this unless "
+                    "kasumiBlendMode is set to 1. See documentation/DusklightAtmosphere.md section 12.2.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, kumoAlpha, -1.0f, RtxOptionFlags::NoSave,
+                    "Alpha of the game's cloud layer, 0..1, or -1 when the game has not reported it. Written by the game's kankyo bridge.\n"
+                    "Named for the layer rather than for a band on purpose. The game keeps it in vrbox_kumo_top_col.a, but its palette source is "
+                    "kumo_shadow_col.a, its CSV column is the lower-cloud alpha, its slider sits under the lower-cloud-shadow heading, and the "
+                    "debug view prints it as 'Cloud A' rather than 'CloudU A'. It is the layer's alpha, not the upper band's. Not consumed.");
+
+    // Corrected 2026-08-11: these were described as the "lit" cloud colour, the "shaded cloud
+    // underside", and a generic "cloud shadow". The game's labels say upper, lower, and the LOWER
+    // cloud's shadow - d_kankyo.cpp:6302, 6324, 6346 - and the one site that consumes the pair
+    // lerps them by horizontal distance from the camera (d_kankyo_rain.cpp:5026-5039), which is a
+    // zenith-to-horizon gradient across the cloud field rather than a lighting term. The old
+    // wording is the spec a clouds phase would have built from, and it would have led to a
+    // physically-lit cloud model where the game means a distance gradient it already ships a
+    // recipe for. Same shape of error as the kasumi pair, in the adjacent fields.
+    // dusklight-ao/docs/japanese-naming.md section 6; the recipe is DusklightAtmosphere.md C3.
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kumoTop, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
-                    "The game's lit cloud colour, normalized to 0..1. Written by the game's kankyo bridge. Not consumed yet - clouds are a later phase.");
+                    "The game's upper cloud band colour, normalized to 0..1. Written by the game's kankyo bridge. Not consumed yet - clouds are a later phase.\n"
+                    "'Upper' is positional, not a lighting term: this is the end of a gradient the game runs across its cloud field by distance, not the lit side of a cloud.");
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kumoBottom, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
-                    "The game's shaded cloud underside colour, normalized to 0..1. Written by the game's kankyo bridge. Not consumed yet.");
+                    "The game's lower cloud band colour, normalized to 0..1. Written by the game's kankyo bridge. Not consumed yet.\n"
+                    "The far end of that same gradient - what the cloud field fades towards near the horizon - rather than a shaded underside.");
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kumoShadow, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
-                    "The game's cloud shadow colour, normalized to 0..1. Written by the game's kankyo bridge. Not consumed yet.");
+                    "The game's LOWER cloud's shadow colour, normalized to 0..1. Written by the game's kankyo bridge. Not consumed yet.\n"
+                    "The game labels it for the lower band specifically, not as a generic cloud shadow.");
 
     // Scene classification, used to decide how stylised the atmosphere should be.
     RTX_OPTION_FLAG("rtx.dusklight.env", int, colpat, 0, RtxOptionFlags::NoSave,

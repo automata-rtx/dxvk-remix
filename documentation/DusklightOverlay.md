@@ -48,7 +48,7 @@ readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
 compares it against a `kRequiredProtocol` constant and names the older side in
-the tab. **Currently 11.**
+the tab. **Currently 12.**
 
 **Both directions are reported, as of 2026-08-11; until then only one was.** The
 check was `protocol() < kRequiredProtocol`, so a game *newer* than the DLL fell
@@ -77,6 +77,19 @@ diagnosed.
 ### 1.1 Traps in this transport
 
 These are not obvious from the API and each one cost time:
+
+- **A readout whose real range includes zero needs a sentinel default, not 0.**
+  Every `rtx.dusklight.env.*` option is written only by the game, so against a
+  game older than the protocol that added it the option simply keeps its
+  **default** — silently, indistinguishably from the game having pushed that
+  value. If the default is a legal value, "the game has not said" and "the game
+  said zero" become the same reading. The three palette alphas added at protocol
+  12 default to **-1** for exactly this reason: `0` is an authored value an
+  artist can pick, and treating an old game's silence as `0` would have dropped
+  the near haze band and looked like a deliberate palette. Consumers test
+  `< 0` and fall back; the tab prints "not reported" rather than a number.
+  This applies to any future numeric readout whose valid range includes its
+  natural default.
 
 - **Pushing an empty string is a no-op, not a clear.**
   `Config::parseOptionValue(const std::string& value, std::string& result)`
@@ -493,7 +506,7 @@ practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 11** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach`, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`). `kRequiredProtocol`
+**Protocol is at 12** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach`, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 12 = the three vrbox palette alphas - `kasumiInnerAlpha`, `kasumiOuterAlpha`, `kumoAlpha`). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 ### Open

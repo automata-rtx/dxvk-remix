@@ -243,6 +243,19 @@ namespace dxvk {
     return out;
   }
 
+  // A negative alpha is the bridge saying nothing rather than saying zero. Only the game writes
+  // these options, and only from protocol 12 on, so the default survives untouched against an
+  // older game - which is exactly the case that must not be mistaken for "the artists chose 0".
+  bool DxvkDusklightAtmosphere::kasumiFrontWeightIsFromGame() const {
+    return kasumiFrontWeightUseGameAlpha() && DusklightEnv::kasumiOuterAlpha() >= 0.0f;
+  }
+
+  float DxvkDusklightAtmosphere::resolvedKasumiFrontWeight() const {
+    const float weight = kasumiFrontWeightIsFromGame() ? DusklightEnv::kasumiOuterAlpha()
+                                                       : kasumiFrontWeight();
+    return std::clamp(weight, 0.0f, 1.0f);
+  }
+
   float DxvkDusklightAtmosphere::resolvePhysicalWeight() const {
     if (!physicalSky() || !enable() || !DusklightEnv::enable()) {
       return 0.0f;
@@ -437,7 +450,12 @@ namespace dxvk {
     pushArgs.kasumiOuter = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiOuter()));
     pushArgs.kasumiBlendMode = static_cast<uint32_t>(
       std::clamp(kasumiBlendMode(), 0, static_cast<int>(DUSKLIGHT_KASUMI_BLEND_FIXED)));
-    pushArgs.kasumiFrontWeight = std::clamp(kasumiFrontWeight(), 0.0f, 1.0f);
+    // The near band's share of the fixed composite. Prefer the game's own alpha, which is what
+    // makes that blend a translation rather than a guess; fall back to the slider when the game
+    // has not reported one. The sentinel is the whole point of the negative default: a game older
+    // than protocol 12 never writes this option, and reading its silence as 0 would quietly drop
+    // the near band entirely. A reported 0 is a real authored value and is honoured.
+    pushArgs.kasumiFrontWeight = resolvedKasumiFrontWeight();
     pushArgs.paletteInfluence = clampedPaletteInfluence;
     pushArgs.horizonSharpness = std::max(skyHorizonSharpness(), 1e-3f);
     pushArgs.groundFraction = std::clamp(skyGroundFraction(), 0.0f, 1.0f);
@@ -586,11 +604,27 @@ namespace dxvk {
         kasumiBlendMode.setDeferred(kasumiMode);
       }
       if (kasumiMode == 1) {
+        RemixGui::Checkbox("Near Band Share From Game##dusklightAtmo", &kasumiFrontWeightUseGameAlphaObject());
+        ImGui::BeginDisabled(kasumiFrontWeightIsFromGame());
         RemixGui::DragFloat("Near Band Share##dusklightAtmo", &kasumiFrontWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
+        ImGui::EndDisabled();
+
+        // The resolved number and where it came from, in one line. Without the source, a share of
+        // 0.50 is ambiguous between "the game says so" and "the fallback, because nothing arrived".
+        if (kasumiFrontWeightIsFromGame()) {
+          ImGui::Text("share: %.3f  (the game's near band alpha)", resolvedKasumiFrontWeight());
+        } else if (kasumiFrontWeightUseGameAlpha()) {
+          ImGui::Text("share: %.3f  (slider - the game has not reported an alpha; needs protocol 12)",
+                      resolvedKasumiFrontWeight());
+        } else {
+          ImGui::Text("share: %.3f  (slider, by choice)", resolvedKasumiFrontWeight());
+        }
+
         ImGui::TextWrapped("What the game does: it paints one band onto each of two dome shells and draws both at every "
                            "bearing, so the horizon does not turn with the sun. How much of the far band the near one "
-                           "hides is that shell's alpha, which the bridge does not send - hence a share you set rather "
-                           "than a number we read. Watch a sunrise or sunset first; that is where the two disagree most.");
+                           "hides is that shell's alpha, which the game authors per palette entry and the bridge now "
+                           "sends - so with the box above ticked this is a translation rather than a setting. Watch a "
+                           "sunrise or sunset first; that is where the two blends disagree most.");
       } else {
         ImGui::TextWrapped("Puts one band at the sun and the other opposite it, turning the horizon palette with the "
                            "sun's compass bearing. The game has no such split - its two bands are front and back, and "

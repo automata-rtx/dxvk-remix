@@ -3068,7 +3068,7 @@ namespace dxvk {
     // fine. Both directions are reported now, and both print the two numbers, because
     // "your builds do not match" without saying which side is behind still costs the
     // rebuild-and-see round it exists to prevent.
-    constexpr int kRequiredProtocol = 11;
+    constexpr int kRequiredProtocol = 12;
     const int gameProtocol = DusklightEnv::protocol();
     const bool gameTooOld = feedLive && gameProtocol < kRequiredProtocol;
     const bool remixTooOld = feedLive && gameProtocol > kRequiredProtocol;
@@ -3566,6 +3566,19 @@ namespace dxvk {
         // and a reader comparing these two while tuning the haze blend needs to know which is which.
         ImGui::Text("Haze far (inner):  %.3f, %.3f, %.3f", kasumiInner.x, kasumiInner.y, kasumiInner.z);
         ImGui::Text("Haze near (outer): %.3f, %.3f, %.3f", kasumiOuter.x, kasumiOuter.y, kasumiOuter.z);
+
+        // The three palette alphas, carried since protocol 12. All three come from one push, so one
+        // test covers them. A negative value is the game not reporting - deliberately distinguished
+        // from a reported 0, which is an authored value the artists chose.
+        const float kasumiInnerA = DusklightEnv::kasumiInnerAlpha();
+        const float kasumiOuterA = DusklightEnv::kasumiOuterAlpha();
+        const float kumoA = DusklightEnv::kumoAlpha();
+        if (kasumiOuterA < 0.0f) {
+          ImGui::TextUnformatted("Palette alphas:    not reported - this game build predates protocol 12");
+        } else {
+          ImGui::Text("Palette alphas:    haze far %.3f   haze near %.3f   cloud layer %.3f",
+                      kasumiInnerA, kasumiOuterA, kumoA);
+        }
       } else {
         ImGui::TextUnformatted("Nothing reported yet.");
       }

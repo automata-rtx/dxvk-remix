@@ -212,8 +212,8 @@ and the consistency guarantee structural.
 ┌─ LAYER 1 ── game (dusklight-ao) ────────────────────────────────┐
 │  dusk::remix::captureEnv()  — one snapshot per frame            │
 │  Reads the *outputs* of kankyo's blend, never re-derives them.  │
-│    sky:    vrbox_sky_col, kasumi_inner/outer, kumo_*,           │
-│            hide_vrbox                                           │
+│    sky:    vrbox_sky_col, kasumi_inner/outer (+ both alphas),   │
+│            kumo_* (+ the layer alpha), hide_vrbox               │
 │    fog:    fog_col, mFogNear, mFogFar                           │
 │    sun:    azimuth, elevation, fade, isDay                      │
 │    scene:  colpat pattern, indoor/outdoor, moya mode/count      │
@@ -540,7 +540,7 @@ shows, and the first knob to reach for.
 | C10 | **Fog is composited in linear HDR, not the game's display space.** The original blended fog over a finished, display-referred image; here both halves of the range split happen pre-tonemap. | Fog reads with a different contrast curve than vanilla - typically holding its colour longer in the bright end. | `rtx.dusklight.atmosphere.fogRadianceScale`. The structural fix is moving the far ramp post-tonemap, the same correction the bloom needed. |
 | C1 | **Dusk saturation.** Physical twilight is more graduated and less saturated than TP's authored dusk. | Sunsets read calmer / less punchy than vanilla. | Lower `physicalWeight`'s `elevationTerm` at low sun; or add a saturation push applied to the *medium's* Rayleigh/Mie tint, not to output pixels. |
 | C2 | **Exponential never fully closes.** | Distant terrain slightly more visible than vanilla at `fog_end_z`. | The §5.2 range split is the fix; if still short, lower the split distance so the vanilla ramp owns more. |
-| C3 | **Clouds have no physical analogue.** `kumo_top/bottom/shadow` (**kumo** = 雲, cloud) describe painted cloud bands. | Skies read emptier than vanilla if the vrbox — the game's skybox dome — is replaced wholesale. | Keep TP's cloud layer as geometry over our sky (Phase D). |
+| C3 | **Clouds have no physical analogue.** `kumo_top/bottom/shadow` (**kumo** = 雲, cloud) are the **upper band**, the **lower band**, and the **lower band's shadow** — positions in a gradient, not lighting terms. Corrected 2026-08-11, §12.3. | Skies read emptier than vanilla if the vrbox — the game's skybox dome — is replaced wholesale. | Keep TP's cloud layer as geometry over our sky (Phase D), driven by the game's own recipe in §12.3 rather than by a lighting model. |
 | C4 | **Weather has no physical analogue.** Clear-sky scattering cannot do "rain grey". | Storms look insufficiently oppressive. | `styleTerm` drops `physicalWeight` on weather colpats; overcast can also be faked with high Mie + suppressed sun. |
 | C5 | ~~Moya swirl replaced by noise.~~ **Withdrawn - the problem does not exist on this backend.** `mMoyaCount` feeds `mpCloudPacket->mCount` (`d_kankyo_rain.cpp:1616`, inside `cloud_shadow_move`), and `dKankyo_cloud_Packet::draw` already returns early on D3D9 (`d_kankyo_wether.cpp:119-126`). The haze billboards were never drawn here, so there is nothing to double count and no switch was needed. `moyaMode`/`moyaCount` are still pushed, as a signal of how much haze an area wants folded into the medium. | — | — |
 | C6 | **Fog-avoid tag ignored.** (§8.2) | No clear bubble around the player in heavy fog. | Deferred feature, not a tuning knob. |
@@ -961,14 +961,40 @@ that is not itself moving. *(That the three share one image is read off that
 header comment and the blend site; it has not been traced through the
 sky-light and fog consumers as a separate exercise.)*
 
-**What the corrected mode does, and what it does not.** Mode 1 is azimuth
-independent: `lerp(kasumiInner, kasumiOuter, kasumiFrontWeight)`. That is the
-front-over-back composite the game draws — **except for the coverage.** In the
-game, how much of the far shell the near one hides is the near band's **alpha**,
-and the bridge pushes only two RGB triples (`DusklightEnv::kasumi*` are
-`Vector3`). So `kasumiFrontWeight` is a knob, not a translation, and it defaults
-to `0.5` because there is nothing to derive it from — **not** because 0.5 was
-measured. Carrying the alphas is phase 5.
+**What the corrected mode does.** Mode 1 is azimuth independent:
+`lerp(kasumiInner, kasumiOuter, kasumiFrontWeight)` — the front-over-back
+composite the game draws.
+
+> **The coverage was the missing half, and it landed the same day (protocol 12).**
+> As first written, `kasumiFrontWeight` was a slider defaulting to `0.5` because
+> there was nothing to derive it from. There was: the game authors an alpha on
+> that band and blends it every frame exactly like the colour
+> (`d_kankyo.cpp:2827-2830`), and the bridge was dropping it —
+> `formatColorS10` sends `r,g,b` only. The bridge now sends it as
+> `rtx.dusklight.env.kasumiOuterAlpha`, and
+> `rtx.dusklight.atmosphere.kasumiFrontWeightUseGameAlpha` (**default true**)
+> feeds it straight into the blend. **Mode 1 is now a translation rather than an
+> approximation**; the slider survives only to A/B against it.
+>
+> Two properties of that wiring worth keeping:
+>
+> - **It consumes nothing that is live.** The weight is read only in mode 1, and
+>   mode 0 is still the default. So carrying the alpha changed no pixel by itself.
+> - **`-1` means "the game has not said", and that is not pedantry.** Only the
+>   game writes these options, and only from protocol 12 on, so against an older
+>   build the default survives untouched. Reading that silence as `0` would drop
+>   the near band entirely and look exactly like a deliberate palette. A reported
+>   `0` is honoured as the authored value it is; only "never reported" falls back
+>   to the slider, and the panel says which of the two it used.
+>
+> The other two alphas — `kasumiInnerAlpha` and `kumoAlpha` — are **pushed and
+> displayed only.** What a TEV colour register's alpha does is decided by the
+> alpha stages inside `vrbox_sora.bmd` / `vrbox_kasumiM.bmd` / `vrbox_kumo.bmd`,
+> and **no `.bmd` exists in any of the three checkouts**, so calling either
+> "opacity" would be inference. Watch them across palettes and weather for a
+> session before wiring anything else — in particular before touching
+> `hazeLevel`, which still derives haze thickness from the two bands' luminance
+> (`dusklight_sky.comp.slang:79-80`) while the game states a number.
 
 Two things deliberately **not** claimed here:
 
@@ -1004,6 +1030,77 @@ The push constant struct is unchanged at 112 bytes — the two new fields took
 > ASCII**; romanize and cite `japanese-naming.md` for the kanji. The reason it
 > looks permitted is that these files are full of `§`, which is `0xA7` and
 > therefore a *valid* cp1252 byte. `CLAUDE.md` carries the full note.
+
+### 12.3 The cloud colours are a distance gradient, not a lighting model
+
+**Corrected 2026-08-11, before anything was built on it — which is the only
+reason this one was cheap.** Same shape of error as §12.2's, in the adjacent
+fields, found by the same lens. Nothing renders differently: none of the three
+is consumed yet. What was wrong was **the spec Phase D would have started from.**
+
+`rtx_dusklight_env.h` described `kumoTop` as "the game's lit cloud colour",
+`kumoBottom` as "the game's shaded cloud underside colour", and `kumoShadow` as
+"the game's cloud shadow colour". The game says otherwise in four places:
+
+| Where | Says |
+| :-- | :-- |
+| `d_kankyo.cpp:6302` | `genLabel("● 上雲カラー")` — **upper** cloud colour, over the `kumo_top` sliders |
+| `d_kankyo.cpp:6324` | `genLabel("● 下雲カラー")` — **lower** cloud colour, over the `kumo_bottom` sliders |
+| `d_kankyo.cpp:6346` | `genLabel("● 下雲影カラー")` — the **lower** cloud's shadow, over `kumo_shadow` |
+| `d_kankyo_debug.cpp:288,293` | `CloudU` / `CloudD` — Up and Down, the same positional scheme as `kasumiF`/`kasumiB` |
+
+None of them says anything about light. And the **one** site that consumes the
+pair settles it (`d_kankyo_rain.cpp:5026-5039`, inside `dKyw_drawVrkumo`):
+
+```c
+f32 sp4C = 1.0f - vrkumo_packet->mVrkumoEff[k].mDistFalloff;
+color.r = kumo_top.r + sp4C * (kumo_bottom.r - kumo_top.r);   // and g, b
+if (j == 1)      { color.rgb *= 0.8f;  }
+else if (j == 2) { color.rgb *= 0.92f; }
+```
+
+That is `lerp(top, bottom, 1 - mDistFalloff)` — a **zenith-to-horizon gradient
+across the cloud field, keyed on horizontal distance from the camera**. "Lit vs
+shaded underside" would have led Phase D to a physically-lit cloud model; the
+game means a two-colour ramp it already ships the closed form for.
+
+**The recipe Phase D should start from**, read out of that site rather than
+designed:
+
+1. Per cloud billboard, `t = 1 - mDistFalloff` — 0 overhead, 1 towards the horizon.
+2. `colour = lerp(kumoTop, kumoBottom, t)`.
+3. Per-layer darkening on the second and third cloud textures: `×0.8` for `j == 1`,
+   `×0.92` for `j == 2`. Untouched for `j == 0`.
+4. Per-billboard opacity is `mVrkumoEff[k].mAlpha`, **not** any palette alpha, and
+   the billboard is skipped entirely below `1e-6`.
+5. `kumoShadow` is not read here at all. It reaches the image only through the
+   cloud layer's alpha — see below.
+
+**And the alpha that is not where its name says.** `kumoAlpha`
+(`rtx.dusklight.env.kumoAlpha`, protocol 12) lives in `vrbox_kumo_top_col.a`, so
+it looks like the upper band's. It is the **layer's**:
+
+- its palette source is `kumo_shadow_col.a`, not `kumo_top_col.a` (`d_kankyo.cpp:2775-2778`);
+- its slider sits under `● 下雲影カラー`, the lower-cloud-**shadow** heading (`d_kankyo.cpp:6353`);
+- the CSV column is `下雲α`, the *lower* cloud's alpha (`d_kankyo.cpp:6582`);
+- the debug view prints it as `Cloud  A`, not `CloudU A` (`d_kankyo_debug.cpp:291`);
+- and `d_a_vrbox2.cpp:324,330,342,348` applies it to the cloud model as a whole.
+
+Five independent sites, all saying layer rather than band. The option is named
+`kumoAlpha` for that reason; `kumoTopAlpha` would have shipped the confusion.
+
+**Deliberately not claimed:** what the cloud bands *look* like, or whether the
+gradient reads as lighting to a player. That is the trap §12.2 fell into from the
+other direction, and it is a question about palette content that nobody has checked.
+
+**A separate, measurable thing found next to this one.** `dKyw_drawVrkumo` draws
+the skybox cloud billboards and was **missed by the 2026-08-08 batching sweep**.
+These are the only clouds in the image today, since the fork consumes none of the
+cloud colours. Whether it is worth batching is a measurement, not a judgement:
+**one `dx9.draws` peak from an outdoor cloudy scene** answers it, and that line
+already exists. Requested in `dusklight-ao/docs/remix-open-issues.md` and the test
+playbook. **Do not add a `hideVrkumo` switch** — today, removing these billboards
+removes the clouds.
 
 ### The live defect: the medium dims the generated sky
 
