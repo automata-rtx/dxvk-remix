@@ -98,11 +98,46 @@ namespace dxvk {
     // decision site so the log describes the decision actually taken, not a re-derivation.
     static void recordClassified(DusklightDrawClass drawClass, bool promoted);
 
-    // Emits `dusklight.xparency` once every reportPeriodFrames frames when reportClasses is on.
-    // Bounded by construction: one line, fixed fields, whatever the scene does.
+    // Records one alpha-blended draw the game did NOT classify, so the ones that matter can be
+    // told apart from the ones that do not.
+    //
+    // This exists because a material report alone could not answer "which of these is the fog
+    // wall in front of Death Mountain". The 2026-08-11 session logged 30 `blend=alpha
+    // class=none` draws, and texture size, format and tfactor do not distinguish a distant
+    // haze curtain from a small decal - the two things that would are how *big* it is and how
+    // *far away*. So they are measured here.
+    //
+    // `spanDegrees` is the angular size of the draw's world-space bounding box from the camera,
+    // the scale-free version of "how much of the view does this cover".
+    //
+    // Span alone does NOT identify the wall, and it is worth saying why rather than letting the
+    // next reader rediscover it. Checked against realistic numbers: a fog wall 4000 units across
+    // at 6000 units reads 37 degrees - but a mid-distance water surface reads 56, and a
+    // full-screen blit reads 180. What separates them is span *together with* distance, so both
+    // are reported and the report is explicit about reading them as a pair.
+    //
+    // `cameraInside` is true when the camera is within the draw's bounding box, which is where
+    // an angular measure stops meaning anything. It is also exactly what a screen-space blit
+    // looks like, so those rows sort last instead of monopolising the top of the report. That is
+    // a property of the geometry rather than a distance threshold picked to get a nice answer.
+    //
+    // `texHash` is `tex0hash` from `matrep.rmx`, so a row here joins to the fork's material
+    // report, which joins to the game's `matrep.sum` through the texture pointer.
+    static void recordUnclassifiedAlpha(uint64_t texHash, float worldSize, float distance,
+                                        float spanDegrees, bool cameraInside);
+
+    // Emits `dusklight.xparency` once every reportPeriodFrames frames when reportClasses is on,
+    // followed by the unclassified survey when surveyUnclassified is on. Bounded by
+    // construction: one summary line plus at most kSurveyRows rows, whatever the scene does.
     static void reportFrame();
 
     static const char* drawClassName(DusklightDrawClass drawClass);
+
+  private:
+    // Emits the survey table. Split out only so reportFrame stays readable.
+    static void reportUnclassifiedSurvey();
+
+  public:
 
     RTX_OPTION("rtx.dusklight.transparency", bool, enable, true,
                "Read the game's per-draw transparency class from D3DMATERIAL9::Ambient.a and let it decide how a blended draw is resolved. "
@@ -124,6 +159,17 @@ namespace dxvk {
 
     RTX_OPTION("rtx.dusklight.transparency", int, reportPeriodFrames, 600,
                "How many frames between dusklight.xparency report lines. Matches the dx9.draws period so the two can be read side by side.");
+
+    RTX_OPTION("rtx.dusklight.transparency", bool, surveyUnclassified, false,
+               "Survey the alpha-blended draws the game did NOT classify, and report them largest-on-screen first. "
+               "This is how a distant fog wall identifies itself: it is the transparency covering tens of degrees of view from hundreds of metres away, "
+               "which no amount of texture size or format in the material report can distinguish. Each row carries the tex0hash that joins it to matrep.rmx and from there to the game's matrep.sum. "
+               "Requires rtx.dusklight.transparency.reportClasses to be on, since it shares its reporting period.");
+
+    // Deliberately small. The point is to name the handful of transparencies big enough to
+    // matter, not to enumerate every blended draw in the scene - a report nobody reads to the
+    // end is the same as no report.
+    static constexpr size_t kSurveyRows = 12;
   };
 
 }  // namespace dxvk

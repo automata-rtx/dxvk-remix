@@ -28,6 +28,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace dxvk {
 
@@ -47,6 +52,32 @@ namespace dxvk {
     // period totals, so "did anything happen this frame" is the total having *moved*, not the
     // total being non-zero - which would read as every frame after the first one.
     std::atomic<uint32_t> s_lastTotal { 0 };
+
+    // The unclassified-alpha survey. Keyed by albedo texture hash, holding the *largest* view
+    // this material was ever seen at over the period, because a fog wall glimpsed edge-on for
+    // one frame and filling the screen the next is the same material and only the second
+    // measurement identifies it.
+    struct SurveyEntry {
+      float maxSpanDegrees = 0.0f;
+      float worldSizeAtMax = 0.0f;
+      float distanceAtMax = 0.0f;
+      uint32_t draws = 0;
+      // Sticky: seen enclosing the camera even once is enough to call it a screen-space or
+      // enclosing draw, which is what this is for.
+      bool cameraInside = false;
+    };
+
+    // A plain mutex rather than atomics: entries are multi-field and only touched by blended
+    // draws, which are a small minority of a frame. Correctness over cleverness here.
+    std::mutex s_surveyMutex;
+    std::unordered_map<uint64_t, SurveyEntry> s_survey;
+    // Distinct materials dropped because the table was full, so a truncated report says so
+    // rather than quietly looking complete.
+    uint32_t s_surveyDropped = 0;
+    // Hard cap on distinct keys held, well above kSurveyRows so the sort still has something
+    // to choose between, but bounded so a scene full of unique blended materials cannot grow
+    // this without limit.
+    constexpr size_t kSurveyCapacity = 256;
   }
 
   DusklightDrawClass DusklightTransparency::drawClass(const D3DMATERIAL9& material) {
@@ -114,6 +145,41 @@ namespace dxvk {
     }
   }
 
+  void DusklightTransparency::recordUnclassifiedAlpha(uint64_t texHash, float worldSize,
+                                                      float distance, float spanDegrees,
+                                                      bool cameraInside) {
+    if (!surveyUnclassified() || !reportClasses()) {
+      return;
+    }
+
+    // Reject anything that is not a real measurement rather than letting a NaN win the sort and
+    // sit at the top of the report claiming to be the answer.
+    if (!(spanDegrees >= 0.0f) || !(worldSize >= 0.0f) || !(distance >= 0.0f)) {
+      return;
+    }
+
+    std::lock_guard lock { s_surveyMutex };
+
+    auto it = s_survey.find(texHash);
+
+    if (it == s_survey.end()) {
+      if (s_survey.size() >= kSurveyCapacity) {
+        ++s_surveyDropped;
+        return;
+      }
+      it = s_survey.emplace(texHash, SurveyEntry {}).first;
+    }
+
+    ++it->second.draws;
+    it->second.cameraInside = it->second.cameraInside || cameraInside;
+
+    if (spanDegrees > it->second.maxSpanDegrees) {
+      it->second.maxSpanDegrees = spanDegrees;
+      it->second.worldSizeAtMax = worldSize;
+      it->second.distanceAtMax = distance;
+    }
+  }
+
   void DusklightTransparency::reportFrame() {
     if (!reportClasses()) {
       return;
@@ -151,10 +217,74 @@ namespace dxvk {
       " particleAsParticle=", particleAsParticle() ? 1 : 0,
       " hazeAsParticle=", hazeAsParticle() ? 1 : 0));
 
+    reportUnclassifiedSurvey();
+
     s_seenParticle.store(0, std::memory_order_relaxed);
     s_seenHaze.store(0, std::memory_order_relaxed);
     s_frames.store(0, std::memory_order_relaxed);
     s_lastTotal.store(0, std::memory_order_relaxed);
+  }
+
+  void DusklightTransparency::reportUnclassifiedSurvey() {
+    if (!surveyUnclassified()) {
+      return;
+    }
+
+    std::vector<std::pair<uint64_t, SurveyEntry>> rows;
+    uint32_t dropped = 0;
+
+    {
+      std::lock_guard lock { s_surveyMutex };
+      rows.assign(s_survey.begin(), s_survey.end());
+      dropped = s_surveyDropped;
+      s_survey.clear();
+      s_surveyDropped = 0;
+    }
+
+    if (rows.empty()) {
+      // Said explicitly rather than left silent: "no unclassified transparencies this period"
+      // and "the survey is not running" look identical otherwise, and they mean opposite things.
+      Logger::info("dusklight.xparency.survey rows=0 - no unclassified alpha-blended draws this period");
+      return;
+    }
+
+    // Widest first, but anything enclosing the camera sorts last regardless. Those are the
+    // screen-space blits and any medium the camera stands inside; their angular size is 180 by
+    // construction and would otherwise fill the top of the report with the one category that
+    // cannot be a distant wall.
+    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+      if (a.second.cameraInside != b.second.cameraInside) {
+        return !a.second.cameraInside;
+      }
+      return a.second.maxSpanDegrees > b.second.maxSpanDegrees;
+    });
+
+    const size_t shown = std::min(rows.size(), kSurveyRows);
+
+    Logger::info(str::format(
+      "dusklight.xparency.survey rows=", shown, " of=", rows.size(),
+      dropped != 0 ? str::format(" droppedAtCapacity=", dropped) : std::string(),
+      " - unclassified alpha-blended draws, widest first."
+      " Read spanDeg WITH distance: a distant wall is wide AND far (tens of degrees at hundreds+ units)."
+      " camInside=1 means the camera is inside the draw - a screen blit or an enclosing volume, sorted last."));
+
+    for (size_t i = 0; i < shown; ++i) {
+      const SurveyEntry& e = rows[i].second;
+      Logger::info(str::format(
+        "dusklight.xparency.row ", i,
+        " tex0hash=", std::hex, rows[i].first, std::dec,
+        " spanDeg=", e.maxSpanDegrees,
+        " worldSize=", e.worldSizeAtMax,
+        " distance=", e.distanceAtMax,
+        " camInside=", e.cameraInside ? 1 : 0,
+        " draws=", e.draws));
+    }
+
+    if (rows.size() > shown) {
+      Logger::info(str::format(
+        "dusklight.xparency.trunc cap=", kSurveyRows, " omitted=", rows.size() - shown,
+        " - smaller than the rows above, raise rtx.dusklight.transparency reporting if needed"));
+    }
   }
 
   const char* DusklightTransparency::drawClassName(DusklightDrawClass drawClass) {

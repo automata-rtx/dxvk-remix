@@ -20,7 +20,12 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include <assert.h>
+// Note: <algorithm> and <cmath> are for the unclassified-transparency survey below (std::max,
+// std::atan) and are named explicitly rather than left to a transitive include - this project
+// has been bitten by assuming one across three compilers. CLAUDE.md.
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -1031,6 +1036,54 @@ namespace dxvk {
        !currentInstance.isCameraRegistered(CameraType::Main));
 
     const RtSurface::AlphaState alphaState = calculateAlphaState(drawCall, *materialData);
+
+    // Survey the blended draws the game did not classify, so a distant fog wall can be told
+    // apart from a decal. Texture size and format cannot do that - size on screen and distance
+    // can, and neither is in any existing report. rtx_dusklight_transparency.h.
+    if (DusklightTransparency::surveyUnclassified() &&
+        !alphaState.isFullyOpaque && !alphaState.isBlendingDisabled &&
+        DusklightTransparency::drawClass(drawCall.getMaterialData().getLegacyMaterial()) ==
+          DusklightDrawClass::None) {
+      const AxisAlignedBoundingBox& bbox = drawCall.getGeometryData().boundingBox;
+
+      if (bbox.isValid()) {
+        const Matrix4& objectToWorld = drawCall.getTransformData().objectToWorld;
+
+        // Object space to world, via the box centre and its three transformed half-extents.
+        // Transforming the extents rather than all eight corners is enough here: this feeds a
+        // "which of these is enormous" sort, not a culling test.
+        const Vector3 localCenter = (bbox.minPos + bbox.maxPos) * 0.5f;
+        const Vector3 localExtent = (bbox.maxPos - bbox.minPos) * 0.5f;
+
+        // Note: Vector4's constructor is explicit and takes four scalars - there is no
+        // (Vector3, w) form in util_vector.h.
+        const Vector3 worldCenter =
+          (objectToWorld * Vector4(localCenter.x, localCenter.y, localCenter.z, 1.0f)).xyz();
+        const Vector3 ex = (objectToWorld * Vector4(localExtent.x, 0.0f, 0.0f, 0.0f)).xyz();
+        const Vector3 ey = (objectToWorld * Vector4(0.0f, localExtent.y, 0.0f, 0.0f)).xyz();
+        const Vector3 ez = (objectToWorld * Vector4(0.0f, 0.0f, localExtent.z, 0.0f)).xyz();
+
+        // The largest dimension, because a fog wall is wide and thin - averaging the three would
+        // hide exactly the shape being looked for.
+        const float halfSize = std::max(length(ex), std::max(length(ey), length(ez)));
+        const float distance = length(worldCenter - cameraManager.getMainCamera().getPosition());
+
+        // Angular size, which is the scale-free "how much of the view does this fill". Guarded
+        // against a camera inside the box, where the angle is meaningless rather than infinite.
+        // The constant is spelled out rather than using M_PI, which needs _USE_MATH_DEFINES
+        // before <cmath> on MSVC and is not worth depending on for one conversion.
+        constexpr float kRadiansToDegrees = 57.2957795131f;
+        const bool cameraInside = distance <= halfSize;
+        const float spanDegrees = cameraInside
+          ? 180.0f
+          : 2.0f * std::atan(halfSize / distance) * kRadiansToDegrees;
+
+        DusklightTransparency::recordUnclassifiedAlpha(
+          drawCall.getMaterialData().getColorTexture().getImageHash(),
+          halfSize * 2.0f, distance, spanDegrees, cameraInside);
+      }
+    }
+
     bool hasTransformChanged = false;
     bool hasPreviousPositions = false;
 
