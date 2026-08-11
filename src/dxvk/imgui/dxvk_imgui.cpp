@@ -3103,7 +3103,7 @@ namespace dxvk {
     // fine. Both directions are reported now, and both print the two numbers, because
     // "your builds do not match" without saying which side is behind still costs the
     // rebuild-and-see round it exists to prevent.
-    constexpr int kRequiredProtocol = 11;
+    constexpr int kRequiredProtocol = 13;
     const int gameProtocol = DusklightEnv::protocol();
     const bool gameTooOld = feedLive && gameProtocol < kRequiredProtocol;
     const bool remixTooOld = feedLive && gameProtocol > kRequiredProtocol;
@@ -3426,6 +3426,14 @@ namespace dxvk {
       ImGui::Unindent();
       RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
       RemixGui::Checkbox("Per-Blade Grass", &DusklightGame::perBladeGrassObject());
+      RemixGui::Checkbox("Per-Flower Blossoms", &DusklightGame::perBladeFlowersObject());
+      ImGui::TextWrapped(
+        "One actor plants both, and until now only the grass half had a switch. Grass and flowers are "
+        "separate packets in the game and each batches a whole room into one dynamic vertex stream, "
+        "which is what makes Remix lose track of them between frames. These two controls are the same "
+        "fix applied to the two packets, and they are separate because a flower costs more per draw "
+        "than a blade and because NEITHER has been run in game yet - turning them on one at a time is "
+        "how one session answers both questions. Both cost draw calls, which is why both default off.");
       RemixGui::Checkbox("Hide Epona Dash Effect", &DusklightGame::hideDashEffectObject());
       ImGui::TextWrapped(
         "The dash speed effect is placed in front of the camera rather than in the world, so Remix "
@@ -3641,9 +3649,14 @@ namespace dxvk {
         const Vector3 skyColor = DusklightEnv::skyColor();
         const Vector3 kasumiInner = DusklightEnv::kasumiInner();
         const Vector3 kasumiOuter = DusklightEnv::kasumiOuter();
-        ImGui::Text("Sky: %s   colpat %d   moya %d @ %.0f",
+        // colpat is a crossfade, not a state: the game holds an outgoing pattern, an incoming one
+        // and a 0..1 ratio, and every colour above is that lerp. Shown as "prev -> curr @ ratio".
+        // Outside a transition the two are equal and the ratio is 1.00, so anything else on screen
+        // means a weather, room or event change is in progress right now.
+        ImGui::Text("Sky: %s   colpat %d -> %d @ %.2f   moya %d @ %.0f",
                     DusklightEnv::skyHidden() ? "none (interior)" : "present",
-                    DusklightEnv::colpat(), DusklightEnv::moyaMode(), DusklightEnv::moyaCount());
+                    DusklightEnv::colpatPrev(), DusklightEnv::colpat(), DusklightEnv::colpatBlend(),
+                    DusklightEnv::moyaMode(), DusklightEnv::moyaCount());
         ImGui::Text("Sky colour:    %.3f, %.3f, %.3f", skyColor.x, skyColor.y, skyColor.z);
         ImGui::Text("Haze in / out: %.3f, %.3f, %.3f  /  %.3f, %.3f, %.3f",
                     kasumiInner.x, kasumiInner.y, kasumiInner.z,

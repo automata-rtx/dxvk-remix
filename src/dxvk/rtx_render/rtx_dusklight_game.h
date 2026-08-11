@@ -229,8 +229,19 @@ namespace dxvk {
                "dusklight-ao/docs/remix-open-issues.md is where its state is tracked.\n"
                "GRASS ONLY, which the name hides. The actor that plants grass plants flowers too - one kind spawns kusa (grass) into dGrass_packet_c, two "
                "more spawn hana (flower) into dFlower_packet_c - and this switch reaches the grass packet alone. The flower packet batches in exactly the "
-               "same way, into the same kind of dynamic world-space stream with the same churning hash, and has no switch of its own. So if a grass-like "
-               "symptom is showing on flowers, this control will not move it, and that is a gap in the coverage rather than the diagnosis being wrong.");
+               "same way, into the same kind of dynamic world-space stream with the same churning hash. Its switch is Per-Flower Blossoms below, added at "
+               "protocol 13; before that it had none. So if a grass-like symptom is showing on flowers, this control will not move it and that one will.");
+    RTX_OPTION("rtx.dusklight.game", bool, perBladeFlowers, false,
+               "Draws each flower as its own instance instead of batching a whole room into one.\n"
+               "The flower half of Per-Blade Grass above, over the other packet the same actor feeds. Identical mechanism: the batch is a dynamic vertex "
+               "stream under an identity position matrix, so its asset hash churns whenever any flower sways or is cut and Remix cannot identify the patch "
+               "from frame to frame - no tagging, no replacement, no denoiser or ReSTIR history. Per flower it is static display list geometry plus a "
+               "transform, so the hash holds still.\n"
+               "Off by default, for the same reason: it costs one draw call per flower where the batch cost a few per room. A separate switch rather than a "
+               "widening of Per-Blade Grass on purpose - a flower is a bigger template than a blade so the cost differs, and NEITHER half has been run in "
+               "game even once, so keeping them apart lets one session answer both questions instead of confounding them.\n"
+               "Built 2026-08-11, protocol 13, untested in game. The game reads this every frame; dusklight-ao/docs/remix-open-issues.md issue 7 tracks its "
+               "state. If the flowers vanish or draw untextured with this on, the vertex descriptor or the ambient reuse is wrong, not the idea.");
     RTX_OPTION("rtx.dusklight.game", bool, hideVrbox, false,
                "Stops the game drawing its own sky dome.\n"
                "Turn this on together with rtx.dusklight.atmosphere.skyEnable, which generates a sky from the same colours the dome is painted "

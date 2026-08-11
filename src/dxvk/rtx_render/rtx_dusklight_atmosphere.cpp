@@ -349,10 +349,48 @@ namespace dxvk {
       elevationTerm = elevation >= high ? 1.0f : 0.0f;
     }
 
-    const float weatherTerm = DusklightEnv::colpat() == 0
-      ? 1.0f
-      : std::clamp(physicalWeatherWeight(), 0.0f, 1.0f);
+    // The game does not hold one colour pattern - it holds a crossfade between two, and every
+    // palette colour this weight is blended against is a lerp on the same ratio
+    // (dusklight-ao/src/d/d_kankyo.cpp:2406-2409, and the blend itself at :2435 onward). Cutting
+    // on the incoming index alone made this term step on the first frame of a transition and stay
+    // stepped for its duration, while every colour beside it moved continuously. Worse at the
+    // change frame specifically: dKy_change_colpat resets the ratio to 0 without touching the
+    // outgoing pattern (:9528-9533), so the frame the index flips on the wire is the frame the
+    // palette is still 100% the old pattern.
+    //
+    // Following the same ratio is the whole fix. It is not a smoothing filter - there is nothing
+    // to tune and no state kept here; it is the game's own number, applied to the same lerp the
+    // game applies it to.
+    //
+    // No capture: physicalWeatherWeight is an inline static RtxOption member of this class, not
+    // per-instance state, so there is nothing to capture and nothing to keep alive.
+    const auto patternWeight = [](int pattern) {
+      return pattern == 0 ? 1.0f : std::clamp(physicalWeatherWeight(), 0.0f, 1.0f);
+    };
 
+    // DEFAULT-SAFE, and this is the point rather than a nicety. rtx.dusklight.env.colpatBlend
+    // defaults to 1.0f and the game pins it at 1.0f whenever no transition is running, so the
+    // ordinary reading - and the reading from a game build too old to push it at all - is exactly
+    // 1.0f. At blend == 1.0f:
+    //
+    //     weatherTerm = patternWeight(colpatPrev) * (1.0f - 1.0f) + patternWeight(colpat) * 1.0f
+    //                 = patternWeight(colpatPrev) * 0.0f + patternWeight(colpat)
+    //                 = patternWeight(colpat)
+    //
+    // which is the expression that shipped before this change, bit for bit: patternWeight returns
+    // either 1.0f or a value already clamped to [0,1], so it is always finite and x * 0.0f is
+    // exactly +0.0f rather than NaN, and 0.0f + y is exactly y in IEEE-754 for every finite y.
+    // Nothing here can perturb the old result by a single ulp.
+    const float blend = std::clamp(DusklightEnv::colpatBlend(), 0.0f, 1.0f);
+    const float weatherTerm = patternWeight(DusklightEnv::colpatPrev()) * (1.0f - blend) +
+                              patternWeight(colpat) * blend;
+
+    // Deliberately NOT extended to the colpat 9 bypass above. That guard is an unresolved question
+    // (section 8.6) currently under instrumentation, it returns before this line so nothing here
+    // can bypass it, and giving it a second index to fire on would change what the pending log is
+    // measuring. Consequence, stated rather than discovered: a transition *out of* pattern 9 lerps
+    // from that pattern's ordinary weather weight, not from the guard's zero. That is a fade at
+    // the same moment the guard stops firing, not a new step.
     return std::clamp(physicalMaxWeight(), 0.0f, 1.0f) * elevationTerm * weatherTerm;
   }
 
@@ -712,8 +750,14 @@ namespace dxvk {
       ImGui::Text("froxel grid reaches %.0f units (%.1f m)",
                   d.froxelMaxDistance, d.froxelMaxDistance / RtxOptions::getMeterToWorldUnitScale());
     }
-    ImGui::Text("area: %s   colpat %d   sun %.1f deg %s",
-                d.outdoor ? "outdoor" : "no sky", DusklightEnv::colpat(),
+    // The colour pattern printed as the crossfade it actually is. Reading these three beside the
+    // physical weight below is what tells a gradual handover from a broken one: during a weather
+    // change the blend should sweep 0 -> 1 once and stop, and the weight should move with it. A
+    // blend that jitters, or that sits away from 1.0 with the two patterns equal, means the value
+    // is being read at the wrong point in the frame rather than that the fade looks wrong.
+    ImGui::Text("area: %s   colpat %d -> %d @ %.2f   sun %.1f deg %s",
+                d.outdoor ? "outdoor" : "no sky",
+                DusklightEnv::colpatPrev(), DusklightEnv::colpat(), DusklightEnv::colpatBlend(),
                 DusklightEnv::sunElevation(), DusklightEnv::sunIsDay() ? "(day)" : "(night)");
     ImGui::Text("physical weight: %.3f%s", d.physicalWeight,
                 d.physicalWeight <= 0.0f ? "  (the game's own sky)" : "");

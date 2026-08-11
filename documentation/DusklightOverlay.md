@@ -48,7 +48,7 @@ readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
 compares it against a `kRequiredProtocol` constant and names the older side in
-the tab. **Currently 11.**
+the tab. **Currently 13.**
 
 **Both directions are reported, as of 2026-08-11; until then only one was.** The
 check was `protocol() < kRequiredProtocol`, so a game *newer* than the DLL fell
@@ -493,8 +493,50 @@ practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 11** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach`, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`). `kRequiredProtocol`
+**Protocol is at 13** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach`, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers` **and** `colpatPrev`/`colpatBlend`). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
+
+> **13 covers everything on its session branch, and was taken once.**
+> `perBladeFlowers` and the `colpatPrev` / `colpatBlend` pair both landed on
+> `claude/japanese-naming-worklist-nea1rk` and ship as one build, so they share
+> one number rather than taking 13 and 14. A protocol number answers "does the
+> build on the other side have this"; two numbers for one build answers it
+> twice. **A further addition on this branch joins 13 too — it does not take
+> 14.**
+>
+> **13 does not include 12's vrbox sky-dome alphas**, which are on the separate
+> unmerged `claude/kasumi-naming-correction-w3e204`. See the note below for the
+> merge-order rule, and one refinement of it this branch's second feature makes
+> concrete.
+
+> **12 is missing from that list on purpose, and a build reporting 13 does not
+> carry it.** Protocol **12** belongs to `claude/kasumi-naming-correction-w3e204`,
+> which adds the vrbox alpha readouts and had **not merged** when 13 was taken on
+> 2026-08-11. Taking 12 as well would have been the double-bump this registry
+> exists to make visible, so this branch skipped it and took the next free number
+> instead — a gap in the ladder is the cheap outcome, two features sharing a
+> version is the expensive one.
+>
+> Whichever of the two merges second, the *merge resolution* is **13**: 13 is
+> already the higher number and both features are then present, so keeping 13 is
+> correct and neither branch has to be rewritten to merge. The case that needs
+> action is a **third** branch: it must take **14**, not 12, even though 12 looks
+> free from a checkout that cannot see the kasumi branch. Reusing 12 would ship
+> two features claiming one version and `check_dusklight_invariants.py` cannot
+> see it, because nothing can see an unmerged branch.
+>
+> **One refinement, noted 2026-08-11 while adding the second feature to 13.**
+> "The union is 13" is a statement about resolving the merge, not a guarantee
+> about a build. If **13 merges first**, `Fixed-Function-dev` sits at 13 *without*
+> the vrbox alphas until the kasumi branch lands, and after it lands the same
+> number means something larger — so a game and a DLL built from either side of
+> that merge both report 13 while disagreeing about what exists, and the mismatch
+> notice cannot fire. Bumping the kasumi branch to **14** as part of that merge
+> would close it. That is the tidier resolution and costs nothing; it is not
+> *required*, because the standing rule is to build both sides from the same
+> commit point and skew never arises when it is followed. **Recorded as a
+> judgement call, not settled** — whoever performs the merge decides, and should
+> write down which they chose.
 
 ### Open
 

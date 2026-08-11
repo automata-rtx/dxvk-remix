@@ -141,6 +141,28 @@ namespace dxvk {
                     "0 is clear weather; others are weather, story and area variants. Pattern 9 is the Palace of Twilight, whose sky has no "
                     "physical description at all - there is no sun and the look is authored - so it is the clearest signal to stop trying to "
                     "model the sky and reproduce the palette instead.");
+    // The other two thirds of the same thing. The game never holds a single colour pattern: it
+    // holds a crossfade between an outgoing and an incoming one, and every palette value it
+    // produces - sky, fog, ambient - is that lerp. colpat above is only the incoming end of it.
+    //
+    // Outside a transition the game pins colpatBlend at 1.0 and makes colpatPrev equal colpat, so
+    // these say nothing new most of the time. During a transition they are the difference between
+    // a consumer that steps and a consumer that follows: the game's own kankyo tags drive the
+    // blend continuously (the Lost Woods mist tag ramps it over roughly a second, and that ramp is
+    // the mist's strength), while the pattern index flips on the first frame.
+    //
+    // The default of 1.0 is what makes this safe against a game build that does not push it, and
+    // against the frames before the first push arrives: at blend 1.0 any lerp between the two
+    // patterns collapses to colpat exactly, which is the behaviour that shipped before these
+    // existed. See documentation/DusklightAtmosphere.md section 4.
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, colpatPrev, 0, RtxOptionFlags::NoSave,
+                    "The colour pattern the game is fading OUT of. Written by the game's kankyo bridge.\n"
+                    "Equal to the current pattern except while a weather, room or event transition is running. Pair it with colpatBlend: "
+                    "at blend 0 the game's colours are entirely this pattern, at 1 entirely the current one.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, colpatBlend, 1.0f, RtxOptionFlags::NoSave,
+                    "How far the game is through the fade from the previous colour pattern to the current one, 0..1. Written by the game's kankyo bridge.\n"
+                    "Sits at 1.0 whenever no transition is running, so 1.0 is also the correct reading when nothing has been pushed yet. "
+                    "A value outside 0..1 means the reading is wrong rather than extreme - the game clamps its own ratio to 0..1 - and consumers clamp defensively.");
     RTX_OPTION_FLAG("rtx.dusklight.env", int, moyaMode, 0, RtxOptionFlags::NoSave,
                     "Which of the game's haze particle modes is running, 0 for none. Written by the game's kankyo bridge.\n"
                     "These are billboard particles rather than fog, but they are already never drawn on the D3D9 backend "

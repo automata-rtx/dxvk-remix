@@ -215,10 +215,16 @@ implying it was tested.
 **The game and this DLL are a single protocol.** The game pushes
 `rtx.dusklight.env.protocol`; this fork compares it against `kRequiredProtocol`
 in `showDusklightRemixTab` (`src/dxvk/imgui/dxvk_imgui.cpp`).
-**Protocol is at 11.** Build both sides from the same commit point, and bump
+**Protocol is at 13.** Build both sides from the same commit point, and bump
 both in the same commit. Skew in either direction has cost an evening twice.
 The Dusklight tab reports which side is old — read it before debugging
 anything else.
+
+**12 is skipped here and is not free.** It belongs to the unmerged
+`claude/kasumi-naming-correction-w3e204`; 13 was taken beside it rather than on
+top of it. The next branch to need a number takes **14** — the ladder in
+`documentation/DusklightOverlay.md` says why, and no script can catch reusing 12
+because no script can see an unmerged branch.
 
 ## Effect lights — almost none of it is in this repo
 
