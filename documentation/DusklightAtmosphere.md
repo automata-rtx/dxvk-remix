@@ -986,12 +986,24 @@ Two things deliberately **not** claimed here:
 sunrise and sunset and reads flat, the same colour all the way round. Sunsets
 show it first. Mode 0 is bit-identical to what shipped.
 
-**Status.** Written on Linux, so nothing here has been compiled — CI on the
-session branch is the first build, and the shader half of it is not checkable
-any other way from this checkout. **Never run in game**, and neither mode has
-been compared against the other by anyone. What *is* checked: the push constant
-struct is unchanged at 112 bytes (the two new fields took `pad0`/`pad1`), so the
-128-byte budget is untouched.
+**Status: CI-green, never run in game.** All three Windows configs — release,
+debugoptimized and debug — compiled and uploaded artifacts on 2026-08-11
+(`64893ab`), so the shader compiles and both branches of it are valid Slang.
+That is the whole of what is verified. **Neither mode has been looked at by
+anyone**, and mode 1's `kasumiFrontWeight` is an invented `0.5` until the alphas
+arrive, so a first A/B is indicative rather than decisive.
+
+The push constant struct is unchanged at 112 bytes — the two new fields took
+`pad0`/`pad1` — so the 128-byte budget is untouched.
+
+> **One CI round was lost getting here, to something with nothing to do with the
+> blend.** The first attempt quoted the game's labels in the `.slang` comment as
+> kanji, and `scripts-common/compile_shaders.py` reads shader source with a bare
+> `open(f, "r")` — cp1252 on Windows. All three configs died in 60 seconds,
+> before any C++ compiled. **Shader source under `src/dxvk/shaders/` must be
+> ASCII**; romanize and cite `japanese-naming.md` for the kanji. The reason it
+> looks permitted is that these files are full of `§`, which is `0xA7` and
+> therefore a *valid* cp1252 byte. `CLAUDE.md` carries the full note.
 
 ### The live defect: the medium dims the generated sky
 
