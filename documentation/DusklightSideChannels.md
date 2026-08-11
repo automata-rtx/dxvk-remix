@@ -40,13 +40,36 @@ form a script can read.
 
 ## Spare
 
-`Ambient.a`, and `Power`.
+`Ambient.a`, and `Power` — **and both are already claimed by branches that have
+not merged. Audited 2026-08-11: there is nothing genuinely free.**
 
-That is the whole of what is left. **Take one only by adding its row above in
-the same commit** — the CI check enforces the reverse direction (a read with no
-row), but nothing can enforce that two branches do not take the same spare
-channel simultaneously. If you are adding a side channel while another branch is
-in flight, say so; this file is where that collision is visible.
+| Nominally spare | Claimed by | Also claimed by |
+| :-- | :-- | :-- |
+| `Ambient.a` | `claude/water-rendering-investigation-7baezw` (MAxx water tag) | `claude/dusklight-remix-transparency-e7l766` (draw class) |
+| `Power` | `claude/water-rendering-investigation-7baezw` (water layer) | — |
+
+`Ambient.a` is claimed **twice over**, by two branches neither of which can see
+the other. A feature that wants a side channel now has to pack into an existing
+one or find another transport — and should say which before it is written.
+
+**`Ambient.g` and `Ambient.b` are also contested.** The water branch forked
+before 2026-08-05, so its `set_remix_material` has no `texRepIndex`/`texRepStage`
+parameters and writes water flags into both channels; on this side of the fork
+that branch does not merely reclaim them, it is **missing
+`rtx_dusklight_texrep.{h,cpp}` from its tree entirely.** Its merge conflicts in
+aurora's `dx9_internal.hpp`, and the obvious resolution — take the newer,
+self-consistent, well-commented side — deletes HD texture packs from both repos
+without either the conflict or the invariants scripts naming them.
+
+Full audit, including the GX FIFO subcommand space (where **four** live branches
+have each taken `0x0053`) and the recommended merge procedure for the water
+branch: `aurora-ao/docs/dx9/in-flight-allocation.md`.
+
+**Take a channel only by adding its row above in the same commit** — the CI
+check enforces the reverse direction (a read with no row), but nothing can
+enforce that two branches do not take the same spare channel simultaneously. If
+you are adding a side channel while another branch is in flight, say so; this
+file is where that collision is visible.
 
 ## The rasterized path
 

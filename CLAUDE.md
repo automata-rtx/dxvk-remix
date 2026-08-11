@@ -324,6 +324,18 @@ it is inconvenient.
   or protocol number — nothing can see an unmerged branch, so **check the other
   live `claude/*` branches before taking either**
 
+**As of 2026-08-11 there is no spare side channel left.** `Ambient.a` and `Power`
+are both claimed by unmerged branches — `Ambient.a` twice over — and
+`claude/water-rendering-investigation-7baezw` **reclaims `Ambient.g`/`.b`**, the
+HD texture pack channels tested good in game on 2026-08-06; on this side of the
+fork that branch is missing `rtx_dusklight_texrep.{h,cpp}` altogether. Its merge
+conflicts in aurora and the obvious resolution loses the feature silently — it
+needs a rebase, not a hand resolution. Separately, **four live branches have each
+taken GX FIFO subcommand `0x0053`**, where the dispatch chain merges without
+conflict and the losing arm desyncs the FIFO. Full audit and the recommended
+procedure: `aurora-ao/docs/dx9/in-flight-allocation.md`, mirrored in
+`documentation/DusklightSideChannels.md`.
+
 **When auditing documentation after a merge, re-derive the file list from the
 diff, not from memory.** On the merge that prompted all of this, every gap found
 on the thorough pass was in a document nobody had edited — precisely the set
