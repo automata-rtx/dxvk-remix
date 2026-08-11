@@ -29,6 +29,7 @@
 #include "../spirv/spirv_code_buffer.h"
 #include "../util/util_matrix.h"
 #include "rtx_options.h"
+#include "rtx_agx.h"
 
 namespace dxvk {
 
@@ -82,6 +83,7 @@ namespace dxvk {
 
     bool m_resetState = true;
     bool m_isCurveChanged = true;
+    bool m_migratedOperator = false;
 
     enum class ExposureAverageMode : uint32_t {
       Mean = 0,
@@ -102,7 +104,18 @@ namespace dxvk {
     RTX_OPTION("rtx.tonemap", float, toneCurveMinStops, -24.0f, "Low endpoint of the tone curve (in log2(linear)).");
     RTX_OPTION("rtx.tonemap", float, toneCurveMaxStops, 8.0f, "High endpoint of the tone curve (in log2(linear))."); 
     RTX_OPTION("rtx.tonemap", bool,  tuningMode, false, "A flag to enable a debug visualization to tune the tonemapping exposure curve with, as well as exposing parameters for tuning the tonemapping in the UI.");
-    RTX_OPTION("rtx.tonemap", bool,  finalizeWithACES, false, "A flag to enable applying a final pass of ACES tonemapping to the tonemapped result.");
+    // Which operator finishes the global tone mapping result.
+    //
+    // Migration from the old boolean, chosen to be the least surprising: an explicit
+    // 'finalizeWithACES = false' meant "no final operator", so it maps to None rather than
+    // silently switching an existing config to a curve it never asked for; 'true' maps to ACES.
+    // A config that never mentioned it takes the new default. The boolean stays registered and
+    // functional as an input to that migration.
+    RTX_OPTION("rtx.tonemap", TonemapOperator, tonemapOperator, TonemapOperator::None,
+               "The operator applied as a final pass over the global tonemapper's result.\n"
+               "Supported enum values are 0 = None, 1 = ACES, 2 = AgX, 3 = GT7.\n"
+               "Superseded rtx.tonemap.finalizeWithACES, whose value is migrated on load: false becomes None and true becomes ACES.");
+    RTX_OPTION("rtx.tonemap", bool,  finalizeWithACES, false, "Deprecated, superseded by rtx.tonemap.tonemapOperator. Still read on load and migrated: false becomes None, true becomes ACES.");
     RTX_OPTION("rtx.tonemap", float, dynamicRange, 15.f, "Range [0, inf). Without further adjustments, the tone curve will try to fit the entire luminance of the scene into the range [-dynamicRange, 0] in linear photographic stops. Higher values adjust for ambient monitor lighting; perfect conditions -> 17.587 stops.");
     RTX_OPTION("rtx.tonemap", float, shadowMinSlope, 0.f, "Range [0, inf). Forces the tone curve below a linear value of 0.18 to have at least this slope, making the tone darker.");
     RTX_OPTION("rtx.tonemap", float, shadowContrast, 0.f, "Range [0, inf). Additional gamma power to apply to the tone of the tone curve below shadowContrastEnd.");

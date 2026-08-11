@@ -36,15 +36,17 @@ uint inputToHistogramBucket(const float3 inputColor)
 {
   const float inputLuminance = calcBt709Luminance(inputColor);
 
-  // Count nearly black pixels in the 0th bucket
+  // Count nearly black pixels in the 0th bucket. Written as a negated '>' so that a NaN
+  // luminance - which compares false against everything - also lands here rather than
+  // propagating into the reduction.
   const float kEpsilon = 0.00001f;
-  if (inputLuminance < kEpsilon)
+  if (!(inputLuminance > kEpsilon))
   {
     return 0;
   }
 
   const float ev100 = calcLuminanceEV100(inputLuminance);
-  
+
   const float normalizedEV = saturate((ev100 - cb.evMinValue) / cb.evRange);
 
   // Remap exposure to bucket (1, size-1)
@@ -77,11 +79,22 @@ void main(uint2 threadId : SV_DispatchThreadID, uint linearIndex : SV_GroupIndex
   {
     const float3 inputColor = InColorBuffer[threadId].xyz;
 
-    const float3 weightedColor = inputColor * centerMeteringWeight(float2(threadId)/dimensions, (float)dimensions.x/dimensions.y);
+    // The metering weight scales how much this pixel COUNTS, not how bright it is.
+    //
+    // This pass used to multiply the weight into the colour and then bin the result, which
+    // does something quite different: an off-centre pixel was darkened and therefore binned
+    // as a darker pixel rather than as a less important one, and pixels at the very edge -
+    // where the weight reaches zero - fell under the black epsilon and were binned as black.
+    // A bright window at the edge of frame was recorded as a dark object.
+    const uint bucketIdx = inputToHistogramBucket(inputColor);
 
-    const uint bucketIdx = inputToHistogramBucket(weightedColor);
-    
-    InterlockedAdd(g_localData[bucketIdx], 1);
+    const float weight = centerMeteringWeight(float2(threadId) / dimensions, (float) dimensions.x / dimensions.y);
+    const uint fixedPointWeight = uint(weight * float(EXPOSURE_HISTOGRAM_WEIGHT_SCALE) + 0.5f);
+
+    if (fixedPointWeight != 0)
+    {
+      InterlockedAdd(g_localData[bucketIdx], fixedPointWeight);
+    }
   }
 
   GroupMemoryBarrierWithGroupSync();

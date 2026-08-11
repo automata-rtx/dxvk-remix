@@ -20,6 +20,8 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx/pass/tonemap/tonemapping.slangh"
+#include "rtx/pass/tonemap/agx.slangh"
+#include "rtx/pass/tonemap/gt7.slangh"
 #include "rtx/utility/math.slangh"
 #include "rtx/utility/color.slangh"
 
@@ -122,16 +124,34 @@ float3 applyToneMapping(float3 color, uint2 pixelPosition)
 
   if (cb.toneMappingEnabled != 0) 
   {
-    if (cb.debugMode == 0) 
+    if (cb.debugMode == 0)
     {
-      // Normal tone mapping
-      color = dynamicToneMapper(color);
-      
-      if (cb.finalizeWithACES)
+      // GT7 is a complete scene-referred to display-referred operator, not a finishing pass, and
+      // its calibration is in absolute units - where its shoulder sits, and where the chroma fade
+      // engages, are both defined against the display peak. Running the dynamic tone curve first
+      // would hand it an already-compressed image and make all of that meaningless, so GT7
+      // replaces the curve rather than stacking on it.
+      //
+      // ACES and AgX deliberately still stack, because that is upstream's 'finalize with' design
+      // and changing it would silently retune every existing config.
+      if (cb.tonemapOperator != tonemapOperatorGT7)
+      {
+        color = dynamicToneMapper(color);
+      }
+
+      if (cb.tonemapOperator == tonemapOperatorACES)
       {
         color = ACESFilm(color, cb.useLegacyACES);
       }
-    } 
+      else if (cb.tonemapOperator == tonemapOperatorAgX)
+      {
+        color = agxToneMapping(color, cb.agx);
+      }
+      else if (cb.tonemapOperator == tonemapOperatorGT7)
+      {
+        color = gt7ToneMapping(color, cb.gt7);
+      }
+    }
     else
     {
       // Debug mode

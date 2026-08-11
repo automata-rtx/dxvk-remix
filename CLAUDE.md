@@ -28,11 +28,42 @@ unless it says so.
 carry the design, the measurements, and a §14 "Facts that were expensive to
 learn" that exists because several of them were wrong in an earlier draft.
 
+`documentation/ToneMappingExposureNotes.md` covers the tone mapping and auto
+exposure work, which is **not** Dusklight-specific — five of the six defects it
+records are upstream dxvk-remix bugs and are written up so they can be carried
+back on their own.
+
 | Repo | Role | Its docs |
 | :-- | :-- | :-- |
 | `automata-rtx/dxvk-remix` | **this repo** — the Remix fork | `documentation/Dusklight*.md` |
-| `automata-rtx/dusklight-ao` | the game | `docs/kankyo-remix.md` ← the overall entry point |
+| `automata-rtx/dusklight-ao` | the game | `docs/kankyo-remix.md` ← the overall entry point; `docs/japanese-naming.md` for reading its symbol names |
 | `automata-rtx/aurora-ao` | GX→D3D9 backend, `extern/aurora` in dusklight | `docs/dx9/` |
+
+## The game's symbols are named in Japanese; this fork's are not
+
+**This fork's code is `camelCase` English** (`AGENTS.md`, Naming Conventions),
+and that does not change. But every *game-side* symbol these documents quote is
+romanized Japanese, preserved by the decompilation from the original Japanese
+team — and reading one as English gets you the wrong file:
+
+- `kankyo` = 環境, **environment** — the system this whole fork's atmosphere
+  work is driven by. `dKy_`, `dKyw_`, `dKyr_` are all it.
+- `kumo` = 雲 cloud, `kasumi` = 霞 horizon haze, `moya` = 靄 mist — the sky and
+  haze fields the atmosphere reads.
+- `kytag01`…`kytag17` = *kankyo tag*, invisible per-area override actors.
+- `vrbox` is the game's word for the skybox dome; `wether` is its own spelling
+  of **weather**, not a typo, and neither is `dKyd_lightSchejule`.
+
+**When you go reading game code, search in both romanizations.** The game tree
+mixes kunrei-shiki (`si`, `tu`, `ti`, `sya`) with Hepburn (`shi`, `tsu`, `chi`,
+`sha`) *for the same word*, so one spelling finds half a feature and an empty
+grep is not evidence of absence. Full reference and glossary:
+`dusklight-ao/docs/japanese-naming.md`.
+
+**And `export LC_ALL=C.UTF-8` before grepping it for Japanese.** Nearly 500 game
+files carry literal kana/kanji — the original team's debug-panel labels, which
+are what settled the `kasumi` near/far question above. Under the default `POSIX`
+locale, `grep -P` on a kana/kanji class silently matches nothing.
 
 ## Branches — ALL THREE repos use the same structure
 
@@ -194,6 +225,9 @@ tab. Grepping this repo for `effectLight` hits both.
 | `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` | the ambient grade stage |
 | `src/dxvk/rtx_render/rtx_dusklight_emissive.h` | `rtx.dusklight.emissive.*` — self-illumination. **A rule, not a score**: self-lit (no TEV colour stage reads the rasterized channel) AND a colour of its own (authored in GX constants, not the vertex stream and not a bare texture pass-through) AND that colour reading as a glow (saturated **or** near-white-hot). Aurora ships the three facts in `D3DMATERIAL9::Specular.{a,b}` and `Emissive.rgb`; `Emissive.a` still carries the old evidence score but **nothing decides on it** — three revisions cut on it and all three missed the lava, which scores 0.00. Applied at one site in `rtx_instance_manager.cpp`. **Note the trap around the emissive colour: by default the shader re-applies the albedo's texture op to it** — `RtSurface::emissiveSource` (`textureFlags` bits 19–20) is what selects out of that. Also holds `rtx.dusklight.rampMaterials`, the two-colour ramp, which shares the same `D3DMATERIAL9` transport: the fork evaluates the GX combiner `a*(1-c) + b*c` from both endpoints rather than squeezing it into one D3D9 texture op. *Stock* Remix cannot express that lerp; this fork can |
 | `src/dxvk/rtx_render/rtx_light_manager.cpp` | mostly upstream, but `addExternalLight` carries one fork change: it preserves the light's buffer index across an overwrite, the way the game-light path a few lines above already did. Without it every update to an API light drops its RTXDI temporal history for a frame, which upstream barely notices (its API lights are static scene lights) and this fork very much does (a flame's radiance animates, so its light updates constantly and would never accumulate any reuse at all). `prepareSceneData` carries a second, related correction: a buffer index is only meaningful if it was assigned during the previous frame, and a light that left `m_linearizedLights` entirely - which an API light does whenever `DrawLightInstance` is not called for it - is never reset by the loop's else branch. Trusting that stale index wrote past the end of the mapping buffer or mapped one light's temporal history onto another; it is now range-checked |
+| `src/dxvk/rtx_render/rtx_dusklight_texrep.{h,cpp}` | `rtx.dusklight.texrep.*` — HD texture packs. The game loads its pack through `remixapi_CreateMaterial` (used purely as a file loader) and tags each draw with a 1-based index in `D3DMATERIAL9::Ambient.g`, with the stage it refers to in `Ambient.b`; this substitutes the loaded albedo at the **two** places a draw can consume a texture — `determineMaterialData` for ray-traced draws, `D3D9DeviceEx::BindTexture` for rasterized ones. Both are needed: UI draws never reach material resolution. **The pack never travels through D3D9**, so the game's own textures stay what Remix hashes — tagging, `rtx.conf` categories and USD bindings are unaffected by installing or changing a pack. **Tested good 2026-08-06.** Note `d3d9_device.cpp` `BindTexture` is the *only* place this fork touches that file: a rebase that drops it loses the HUD half silently while the world half keeps working |
+| `src/dxvk/rtx_render/rtx_agx.{h,cpp}` | AgX look presets, the shared `TonemapOperator` enum, and the `finalizeWithACES` → operator migration. **Not Dusklight-specific** |
+| `src/dxvk/rtx_render/rtx_gt7.{h,cpp}` | GT7 setup, a transcription of Polyphony's `initializeAsSDR()`. The reference `.cpp` is kept verbatim at `shaders/rtx/pass/tonemap/reference/` — fix the port, never the reference. **Not Dusklight-specific** |
 | `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
 | `src/d3d9/d3d9_rtx_matrep.h` | the material translation report (`rtx.dusklight.matrep`), one guarded call at the tail of `D3D9Rtx::processTextures` |
 
@@ -245,6 +279,99 @@ not evidence it does not exist. Regenerate on the next Windows run.
 - `dxvk_imgui.cpp` does **not** include `<cmath>`. Do not rely on a transitive
   one across three compilers.
 
+## This runtime charges per draw, not per pixel
+
+Established 2026-08-07 while chasing unusable frame rates in Dusklight's rain
+and snow, and worth knowing before anyone reaches for a shading explanation
+again.
+
+A draw call too small to deserve its own BLAS is merged into a shared bucket —
+but it **still contributes its own `VkAccelerationStructureGeometryKHR` and its
+own surface**, and the bucket's BLAS is rebuilt whenever any of its geometry
+moves (`rtx_accel_manager.cpp`: `buildInfo.geometryCount =
+bucket->geometries.size()`, and the bucket's `originalInstances`). So a
+thousand single-quad draws cost roughly a thousand times what the same
+thousand quads cost inside one draw, and no amount of shading work changes it.
+The game was emitting one `GXBegin`/`GXEnd` per particle quad; batching them
+game-side fixed it (tested 2026-08-08).
+
+**Two corollaries that were each mistaken for something else:**
+
+- **`rtx.particleTextures` is not a performance control.** It sets
+  `m_isUnordered` and `VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR`
+  (`rtx_instance_manager.cpp`) — which TLAS a draw lands in and how the resolve
+  loop treats it. It does nothing about per-draw scene-management cost. **If a
+  dense effect does not respond to it, the cost is draw count.**
+- **Opacity micromaps working is not evidence they are helping.** They reduce
+  per-pixel any-hit work, which is not the bottleneck when the bottleneck is
+  BLAS rebuild and surface upload.
+
+The measurement lives game-side: aurora logs `dx9.draws frames=600 mean=… peak=…`
+once every 600 frames. A `peak` in the thousands is the signature.
+`aurora-ao/docs/dx9/progress.md` §3.32,
+`dusklight-ao/docs/remix-open-issues.md` issue 13.
+
+**Not yet exercised:** `createBillboards` only runs for instances already in the
+unordered TLAS, and `rtx.useIntersectionBillboardsOnPrimaryRays` is **false** by
+default, so the intersection-billboard path does nothing on primary rays today.
+Batched particle draws are the first geometry that path has had anything useful
+to chew on — an optimisation to try, not a fix that is owed.
+
+## Merges that succeed and are still wrong
+
+**A clean `git merge` is not a correct merge.** Several Dusklight features are
+developed on parallel branches that edit the same documents, and git only
+compares *lines* — it cannot see that two branches have made the same sentence
+false, or that a conflict's obvious resolution is the wrong one.
+
+Two instances, both real:
+
+- **The protocol double-bump.** Two branches independently took protocol 6 → 7,
+  each editing `kRequiredProtocol` and the registry line. Git *did* conflict —
+  which made it worse: both sides said `7`, so keeping either looks correct and
+  ships two features claiming one version. The conflict was flagged; the
+  **resolution** was the trap.
+- **The side-channel map.** A feature claimed `D3DMATERIAL9::Ambient.g` and
+  `.b`, updating three of the four places that describe the struct. The
+  canonical table merged cleanly and kept advertising both as spare, so the next
+  feature to want a channel would have taken one already in use — surfacing as a
+  material bug nowhere near either change.
+
+**So, after any merge — and before pushing one:**
+
+```
+python3 scripts/check_dusklight_invariants.py
+```
+
+It checks `kRequiredProtocol` against the prose and the version registry
+(including **duplicate protocol numbers**, which is the double-bump), every
+`D3DMATERIAL9` channel the fork reads against
+`documentation/DusklightSideChannels.md`, `RtxOptions.md` coverage of every
+declared `rtx.dusklight.*` option, and leftover conflict markers. The
+`Invariants` workflow runs it on **every** push and PR, unfiltered by path or
+branch — doc-only commits and `Fixed-Function-dev` merges are exactly when these
+drift, and `build.yml` covers neither.
+
+`RtxOptions.md` drift is reported as a **warning, not a failure**: it is
+generated by running the runtime on Windows, and a check that blocks a merge on
+something the author cannot do from their checkout gets disabled the first time
+it is inconvenient.
+
+**What it cannot check, and therefore what a human still has to:**
+
+- whether a "tested in game" claim survived the change underneath it
+- whether a document's *prose* still describes reality, as opposed to its
+  numbers agreeing with the code
+- whether two in-flight branches are about to take the same spare side channel
+  or protocol number — nothing can see an unmerged branch, so **check the other
+  live `claude/*` branches before taking either**
+
+**When auditing documentation after a merge, re-derive the file list from the
+diff, not from memory.** On the merge that prompted all of this, every gap found
+on the thorough pass was in a document nobody had edited — precisely the set
+recall does not surface. `documentation/DusklightAtmosphere.md` §11, the rebase
+surface, is the highest-consequence one to keep current.
+
 ## Two tripwires that only fire in CI
 
 Both are deliberate guards, not bugs, and both have cost a CI round. Neither
@@ -261,11 +388,25 @@ second needs the exact MSVC layout.
   the trailing `padding[N]` adjusted. **This one is checkable locally** — copy
   the struct into a standalone file and compile it with a matching
   `static_assert` before pushing.
+- **Push constant budget** (`rtx_tone_mapping.cpp`, `rtx_local_tone_mapping.cpp`).
+  `MaxPushConstantSize` is 128 and `ToneMappingApplyToneMappingArgs` is now
+  **exactly 128**. Three `static_assert`s guard it. If one fires, move the
+  operator argument blocks into a uniform buffer — only one operator runs per
+  dispatch, so they are currently paying for each other's space. Do not shrink
+  an operator's parameters to squeeze past it. **Checkable locally** the same way
+  as `hashStructByMemory`.
 
 ## CI
 
 `.github/workflows/build.yml`, three Windows configs. `claude/**` is in the
-push triggers, so a branch gets built without opening a PR. The x86 bridge
+push triggers, so a branch gets built without opening a PR.
+
+**A red build is not automatically your code.** On 2026-08-06 two of the three
+configs failed with `Failed to resolve action download info: Service Unavailable`
+— GitHub infrastructure, dying before checkout, while the third config passed on
+the identical commit. Read the log before debugging. Re-running failed jobs needs
+the MCP `actions_run_trigger` tool; a plain REST POST 403s on a read-scoped
+token. The x86 bridge
 steps were removed on 2026-07-28 — Dusklight is 64-bit and loads `d3d9.dll`
 directly, so it never used the bridge.
 

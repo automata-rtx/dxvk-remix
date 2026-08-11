@@ -21,6 +21,23 @@ Companion docs:
   renderer is the product, D3D9 is the feed — which is the frame every decision
   below is made in.
 
+- `dusklight-ao/docs/japanese-naming.md` — **how to read the game symbols this
+  document quotes.** They are romanized Japanese, kept from the original team:
+  `kankyo` (環境) is *environment*, `kumo` (雲) is *cloud*, `kasumi` (霞) is the
+  horizon haze band, `moya` (靄) is mist, and `kytag` is a *kankyo tag* actor.
+  This document glosses each on first use; that file explains the system,
+  including why a grep for one of these can come back empty for a symbol that
+  exists.
+
+  **One correction that came out of reading them properly (2026-08-10):**
+  `kasumi_outer` is the **near** haze band and `kasumi_inner` the **far** one —
+  the reverse of what the English suggests, and the game says so in three
+  independent places. `rtx_dusklight_env.h` previously described the pair as
+  "on the sun's side" / "away from the sun"; **nothing in the game relates
+  either to sun position.** The header is corrected; `RtxOptions.md` is
+  generated and still carries the old wording. Derivation:
+  `dusklight-ao/docs/japanese-naming.md` §6.
+
 Everything below is grounded in code as of 2026-07-28. File references are
 repo-relative; `dusklight-ao/` and `aurora-ao/` prefixes point at the other two
 repos.
@@ -271,7 +288,9 @@ Scale-free, no magic endpoints, and correct across every regime the game uses:
 | Goron Mines | near | near | dense, hot |
 | Lake Hylia, kytag01 at full | `-2000`, `200` | clamped to `zHalfMin` | near-whiteout |
 
-Note the Lake Hylia case: the tag passes a **negative start** with
+Note the Lake Hylia case: the tag — a **kytag**, i.e. a *kankyo tag*:
+`d_a_kytag00`…`d_a_kytag17` are invisible actors that override environment state
+for the area they sit in — passes a **negative start** with
 `start < end` (`dusklight-ao/src/d/actor/d_a_kytag01.cpp:94`), which in the
 vanilla ramp means "already ~90% fogged at z=0". The clamp turns that into a
 very dense medium, which is the right answer. (An earlier revision of this
@@ -398,9 +417,10 @@ architecture.
 
 ### 8.1 Moya particles vs volumetric density
 
-`mMoyaMode`/`mMoyaCount` drive *billboard* haze particles, separate from GX
-fog: mode 3 is the Lake Hylia fog (`d_a_kytag01.cpp`), 4 is kytag02, 10/11 are
-weather (`d_a_kytag06.cpp`), 1 is cutscene. Under a path tracer these become
+`mMoyaMode`/`mMoyaCount` — **moya** is 靄, mist — drive *billboard* haze
+particles, separate from GX fog: mode 3 is the Lake Hylia fog
+(`d_a_kytag01.cpp`), 4 is kytag02, 10/11 are weather (`d_a_kytag06.cpp`), 1 is
+cutscene. Under a path tracer these become
 camera-facing quads. Keeping them *and* a dense medium double-counts the haze.
 
 **Resolution:** suppress the moya billboards (same mechanism as
@@ -484,7 +504,7 @@ shows, and the first knob to reach for.
 | C10 | **Fog is composited in linear HDR, not the game's display space.** The original blended fog over a finished, display-referred image; here both halves of the range split happen pre-tonemap. | Fog reads with a different contrast curve than vanilla - typically holding its colour longer in the bright end. | `rtx.dusklight.atmosphere.fogRadianceScale`. The structural fix is moving the far ramp post-tonemap, the same correction the bloom needed. |
 | C1 | **Dusk saturation.** Physical twilight is more graduated and less saturated than TP's authored dusk. | Sunsets read calmer / less punchy than vanilla. | Lower `physicalWeight`'s `elevationTerm` at low sun; or add a saturation push applied to the *medium's* Rayleigh/Mie tint, not to output pixels. |
 | C2 | **Exponential never fully closes.** | Distant terrain slightly more visible than vanilla at `fog_end_z`. | The §5.2 range split is the fix; if still short, lower the split distance so the vanilla ramp owns more. |
-| C3 | **Clouds have no physical analogue.** `kumo_top/bottom/shadow` describe painted cloud bands. | Skies read emptier than vanilla if the vrbox is replaced wholesale. | Keep TP's cloud layer as geometry over our sky (Phase D). |
+| C3 | **Clouds have no physical analogue.** `kumo_top/bottom/shadow` (**kumo** = 雲, cloud) describe painted cloud bands. | Skies read emptier than vanilla if the vrbox — the game's skybox dome — is replaced wholesale. | Keep TP's cloud layer as geometry over our sky (Phase D). |
 | C4 | **Weather has no physical analogue.** Clear-sky scattering cannot do "rain grey". | Storms look insufficiently oppressive. | `styleTerm` drops `physicalWeight` on weather colpats; overcast can also be faked with high Mie + suppressed sun. |
 | C5 | ~~Moya swirl replaced by noise.~~ **Withdrawn - the problem does not exist on this backend.** `mMoyaCount` feeds `mpCloudPacket->mCount` (`d_kankyo_rain.cpp:1616`, inside `cloud_shadow_move`), and `dKankyo_cloud_Packet::draw` already returns early on D3D9 (`d_kankyo_wether.cpp:119-126`). The haze billboards were never drawn here, so there is nothing to double count and no switch was needed. `moyaMode`/`moyaCount` are still pushed, as a signal of how much haze an area wants folded into the medium. | — | — |
 | C6 | **Fog-avoid tag ignored.** (§8.2) | No clear bubble around the player in heavy fog. | Deferred feature, not a tuning knob. |
@@ -571,6 +591,10 @@ design keeps the upstream diff to a checklist.
 > the API capture change, the grade pass and the Dusklight bloom were all absent
 > from the one list a rebase reads.
 >
+> **Extended 2026-08-07** with the tone mapping and auto exposure work, which is the first block
+> here that is *not* Dusklight-named. That block was assembled from the change itself rather than
+> by name matching, because name matching would have found none of it.
+>
 > **How this list was produced, and what that is worth:** every file below either
 > names `Dusklight`/`dusklight` in the working tree or was identified from the
 > change that owns it. It was *not* produced by diffing against an upstream tag,
@@ -584,6 +608,8 @@ design keeps the upstream diff to a checklist.
 - `src/dxvk/rtx_render/rtx_dusklight_grade.{h,cpp}` — the ambient grade stage.
 - `src/dxvk/rtx_render/rtx_dusklight_emissive.h` — self-illumination cut and the
   two-colour ramp, which shares the same `D3DMATERIAL9` transport.
+- `src/dxvk/rtx_render/rtx_dusklight_texrep.{h,cpp}` — HD texture packs: handle
+  decode, residency tracking, both substitution sites' logic, counters.
 - `src/dxvk/rtx_render/rtx_dusklight_{env,game}.h` — the two option surfaces.
 - `src/d3d9/d3d9_rtx_matrep.h` — the material translation report.
 - `src/dxvk/shaders/rtx/pass/dusklight/*` and
@@ -640,6 +666,22 @@ here in full:*
 | `rtx_remix_api.cpp` | API mesh hashes derived from the submitted vertex/index data; upstream's `hack_getNextGeomHash` removed | unconditional — a behaviour change against upstream, not a guarded hook |
 | `rtx_scene_manager.cpp` `submitExternalDraw` | consults `getReplacementMaterial` before using the supplied material | unconditional, same |
 
+*HD texture packs — 2026-08-05 (`aurora-ao/docs/dx9/texture-replacements.md`):*
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_scene_manager.cpp` `determineMaterialData` | one call at the tail, after `as<OpaqueMaterialData>()`, overwriting only the albedo texture. **Order matters:** the conversion is what sets the sampler override and the ignore-alpha flag, and it must not become a merge | `rtx.dusklight.texrep.enable` |
+| `rtx_scene_manager.cpp` `usePreservePath` | one extra `&&` term, same shape as the existing `terrainCascadesJustChanged` | same |
+| `rtx_scene_manager.cpp` `onFrameEnd` | two counter calls | same |
+| `d3d9_device.cpp` `BindTexture` | the rasterized/HUD site: the emitted CS lambda gains a captured handle and may swap the bound view. **This is the only place the fork touches `d3d9_device.cpp`** — a rebase that drops it loses the HUD half silently, with the world half still working | `rtx.dusklight.texrep.applyToRaster` |
+
+Note that `d3d9_device.cpp` was not an upstream file this fork touched before
+this change; a rebase reading an older copy of this list will not expect a
+conflict there. **Verified rather than assumed** —
+`git diff origin/main...HEAD -- src/d3d9/d3d9_device.cpp` against the upstream
+tracker returns exactly two hunks, the include and `BindTexture`. That command
+is also how to re-check it after any future change.
+
 *Overlay, bloom and plumbing:*
 
 | File | Change | Guard |
@@ -648,6 +690,53 @@ here in full:*
 | `rtx_bloom.{h,cpp}` + `bloom.h` | the Dusklight bloom mode and its settings | `rtx.bloom.dusklight` |
 | `rtx_context.{h,cpp}` | `dispatchDusklightGrade`, and the bloom stage ordering | `DusklightGrade` enable |
 | `dxvk_objects.h`, `dxvk_device.cpp` | the two modules constructed and exposed as `metaDusklight*` | additive members |
+
+*Tone mapping and auto exposure (2026-08-06/07) — see `ToneMappingExposureNotes.md`:*
+
+> **This block is a different shape from the rows above and a rebase should expect that.** The
+> Dusklight work is concentrated in `dusklight_*` files with single guarded hooks into upstream.
+> This work is not: it **rewrites** two upstream passes outright and edits eight upstream shaders.
+> There is no `Dusklight` in most of these filenames, so the "names dusklight in the tree" heuristic
+> that produced the rest of this list would have missed all of it.
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_auto_exposure.{h,cpp}` | **rewritten.** Trimmed log-average metering, tanh soft limiter, asymmetric tau, deadband, cut snap, debug readback. Removed options stay registered as deprecated no-ops | none — replaces the upstream design wholesale |
+| `auto_exposure.comp.slang` | **rewritten** reduction; the mean/median modes are gone | same |
+| `auto_exposure_histogram.comp.slang` | metering weight applied to the count rather than the colour; fixed-point accumulation | same |
+| `rtx_tone_mapping.{h,cpp}` | `tonemapOperator` enum replaces `finalizeWithACES` (migrated on load); GT7 bypasses the dynamic tone curve; push-constant `static_assert` | additive plus one branch |
+| `rtx_local_tone_mapping.{h,cpp}` | same operator enum and migration; luminance pass gains the operator args | additive |
+| `rtx_context.cpp` | auto exposure now receives `resetHistory` on camera cut — upstream never passed it | one argument added |
+| `tonemap/tonemapping.h` | `AgxArgs`, `Gt7Args`, operator constants, histogram domain constants; `ToneMappingApplyToneMappingArgs` is now **exactly 128 bytes** | additive, but the budget is full |
+| `tonemapping_apply_tonemapping.comp.slang` | operator dispatch; GT7 replaces the dynamic curve | one branch |
+| `local_tonemap/local_tonemapping.h` | `LuminanceArgs` and `FinalCombineArgs` gain the operator args | additive |
+| `local_tonemap/local_tonemapping.slangh` | `localTonemapRuler()` — the fusion's ruler follows the selected operator | new function in an upstream header |
+| `local_tonemap/luminance.comp.slang` | three ruler calls; also fixes the missing `suppressBlackLevelClamp` | rewritten lines |
+| `local_tonemap/final_combine.comp.slang` | operator dispatch plus the ruler probe | two sites |
+| `ThirdPartyLicenses.txt` | AgX (Wrensch, MIT), three.js (MIT), GT7 (Polyphony Digital, MIT) | additive |
+| `RtxOptions.md` | generated; regenerate after any option change. It will conflict on a rebase and the resolution is to regenerate, never to merge by hand | generated |
+
+**New files (zero upstream churn) for this work:**
+- `src/dxvk/rtx_render/rtx_agx.{h,cpp}` — AgX look presets, the `TonemapOperator` enum, and the
+  `finalizeWithACES` migration helper shared by both tone mapping paths.
+- `src/dxvk/rtx_render/rtx_gt7.{h,cpp}` — GT7 setup, a transcription of the reference's
+  `initializeAsSDR()`/`initializeCurve()`.
+- `src/dxvk/shaders/rtx/pass/tonemap/agx.slangh`, `gt7.slangh` — the two operators.
+- `src/dxvk/shaders/rtx/pass/tonemap/reference/gt7_tone_mapping.cpp` — Polyphony's GT7 sample
+  implementation kept verbatim as the source of truth, plus `reference/README.md` recording its
+  provenance and how it was verified. **Not built**; meson lists sources explicitly and
+  `compile_shaders.py` only walks `.slang`. Never edit it to fix a port bug - fix the port.
+- `documentation/ToneMappingExposureNotes.md` — six defects (five of them upstream), the design
+  decisions and their measurements.
+
+**Three things a rebase should check first here:**
+1. `ToneMappingApplyToneMappingArgs` is exactly at the 128-byte push-constant limit. Three
+   `static_assert`s guard it. If upstream adds a field to that struct, the fix is to move the
+   operator argument blocks into a uniform buffer, not to shrink them.
+2. The operator enum is mirrored in two places — `dxvk::TonemapOperator` in `rtx_agx.h` and the
+   `tonemapOperator*` constants in `tonemapping.h` — with `static_assert`s tying them together.
+3. `rtx.autoExposure` deprecated options must stay registered. Deleting them makes existing
+   `rtx.conf` files log unknown-option noise.
 
 Rule for every guarded hook: **one branch, no reformatting of surrounding code,
 and the guarded path calls into our module rather than inlining logic.** A
@@ -700,6 +789,11 @@ the fire, and inherit both numbers above as `effectLightDerivedIntensity` and
 `dusklight-ao/docs/effect-lights.md`; overlay surface and status:
 `DusklightOverlay.md` §6.
 
+**HD texture packs: tested good 2026-08-06**, first try. The pack reaches Remix
+without its bytes entering D3D9, so texture tagging is unchanged. One known
+characteristic: a long first-launch warm-up (§12.1 below). Design and failure
+modes live in `aurora-ao/docs/dx9/texture-replacements.md`.
+
 **Still untested, as of 2026-08-04:** the ambient grade — which should stay
 untested until the defect below is fixed, because grading on a wrongly-lit sky
 is tuning against a moving target — and everything built since 2026-07-29 and
@@ -710,6 +804,62 @@ self-illumination rule) is likewise CI-green and unrun; it is tracked in
 
 `disableFrustumCulling` **is** tested: it works and it visibly helps with
 light leakage.
+
+### 12.1 The HD texture pack's first-launch warm-up
+
+**Observed 2026-08-06:** with a pack installed, the first launch spends a long
+period at poor performance before the replacements appear; every later launch
+has them essentially immediately. Not a defect — but it is a real cost, and it
+is worth knowing it is expected rather than rediscovering it.
+
+**What is verified in source:** Remix keeps **no on-disk cache of loaded
+textures.** `AssetDataManager::findAsset` opens the `.dds` with `std::fopen`
+for the header and `CreateFileMapping`/`MapViewOfFile` for the data, every
+launch (`rtx_asset_data_manager.cpp:200,294-305`). The only in-memory dedupe is
+`m_assetHashToTextures` (`rtx_texture_manager.cpp:1435-1448`), which does not
+survive the process. So nothing in the runtime is warm on launch 2 that was
+cold on launch 1.
+
+**But that does not make the OS file cache the cause, and an earlier revision of
+this section said it did.** Correction, same day: reasoning from "no *texture*
+cache" to "no durable cache" skipped one. **DXVK writes a pipeline state cache
+to disk** (`<exe>.dxvk-cache`, `dxvk_state_cache.cpp:1120-1128`, with
+`dxvk.enableStateCache` defaulting true at `dxvk_options.cpp:29`), and this
+runtime's own options describe the effect: a significant performance impact
+"whenever shaders are uncached (e.g. on first load)" (`rtx_options.h:397`).
+Every first launch is slow for that reason, pack or no pack.
+
+Two candidates, then, and only one of them survives a reboot:
+
+| Contributor | Cached where | Survives a reboot? |
+| :-- | :-- | :-- |
+| Pipeline/shader compilation | `<exe>.dxvk-cache` | **Yes** |
+| The pack's `.dds` reads | nowhere durable; OS page cache only | **No** |
+
+**Which dominates is unmeasured**, and the texture side is partly a symptom
+rather than a cause: creation is budgeted per frame, so slow frames from *any*
+source stretch how long the pack takes to finish arriving. Reboot and relaunch
+to separate them — that clears the page cache and keeps `.dxvk-cache`.
+
+**Our own contribution, and it is real:** the game creates materials at
+`kTexRepCreationsPerFrame = 16` per frame (`dusklight-ao/src/dusk/remix_bridge.cpp`),
+and each `remixapi_CreateMaterial` reads the DDS header **synchronously on the
+CS thread** — the `// async load` comment above it notwithstanding, both
+`preloadTextureAsset` branches pass `async=false`. Sixteen cold-cache file opens
+per frame is a per-frame stall for as many frames as the pack has entries / 16.
+
+**How to confirm it rather than argue about it:** the game logs
+`texrep: N replacement(s) selected by the registry` when it starts and
+`texrep: N material(s) created, M skipped` when it finishes. The wall-clock gap
+between those two lines, compared between a cold first launch and a warm second
+one, measures exactly this. No one has to describe how it felt.
+
+**If it needs fixing** — and only if the reboot test says texture I/O is the
+dominant term — the cheap change is a time budget instead of a count (bounds the
+per-frame stall rather than the per-frame count), and the better one is
+prefetching the pack on a worker thread so the CS thread never waits on cold
+reads. Neither was done as part of the tested 2026-08-06 change.
+`aurora-ao/docs/dx9/texture-replacements.md` §9.
 
 ### The live defect: the medium dims the generated sky
 

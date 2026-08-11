@@ -48,6 +48,7 @@
 #include "rtx_render/rtx_options.h"
 #include "rtx_render/rtx_dusklight_env.h"
 #include "rtx_render/rtx_dusklight_game.h"
+#include "rtx_render/rtx_dusklight_texrep.h"
 #include "rtx_render/rtx_dusklight_emissive.h"
 #include "../../d3d9/d3d9_rtx_matrep.h"
 #include "../rtx_render/rtx_dusklight_catrep.h"
@@ -3055,16 +3056,48 @@ namespace dxvk {
     // The controls below are read by the game, so they are only live if the game is
     // both connected and new enough to know about them. Those are different failures
     // and they look identical from here unless we say so.
+    //
+    // Skew has two directions and until 2026-08-11 only one of them was detected. The
+    // undetected one is the likelier of the two in practice: a session branch bumps the
+    // protocol several times while Fixed-Function-dev stays where it is, so a game built
+    // from the branch meets a d3d9.dll built from the trunk far more often than the
+    // reverse. It reported "Connected" with no caveat, which is the worst of the three
+    // possible answers - the tab is the first thing this project's own notes tell you to
+    // read before debugging anything else, and it was confidently saying the pairing was
+    // fine. Both directions are reported now, and both print the two numbers, because
+    // "your builds do not match" without saying which side is behind still costs the
+    // rebuild-and-see round it exists to prevent.
     constexpr int kRequiredProtocol = 11;
-    const bool gameTooOld = feedLive && DusklightEnv::protocol() < kRequiredProtocol;
+    const int gameProtocol = DusklightEnv::protocol();
+    const bool gameTooOld = feedLive && gameProtocol < kRequiredProtocol;
+    const bool remixTooOld = feedLive && gameProtocol > kRequiredProtocol;
 
-    if (feedLive && !gameTooOld) {
-      ImGui::TextUnformatted("Connected: the game is feeding its environment state to Remix.");
+    if (feedLive && !gameTooOld && !remixTooOld) {
+      ImGui::Text("Connected: the game is feeding its environment state to Remix. Protocol %d.",
+                  kRequiredProtocol);
     } else if (gameTooOld) {
       ImGui::TextWrapped(
-        "Connected, but the game build is older than this build of Remix: it does not read these "
-        "settings, so every control below will appear to do nothing. The readouts are still "
-        "accurate. Update the game to a build that reports protocol 7 or newer.");
+        "Connected, but the game build is OLDER than this build of Remix (game reports protocol "
+        "%d, this d3d9.dll wants %d): it does not read these settings, so every control below "
+        "will appear to do nothing. The readouts are still accurate. Update the game to a build "
+        "that reports protocol %d or newer.",
+        gameProtocol, kRequiredProtocol, kRequiredProtocol);
+    } else if (remixTooOld) {
+      // What actually happens, rather than a guess: the game asks for each setting by
+      // string name through the getRtxOptionValue export, which returns 0 for a name it
+      // does not declare (rtx_option_manager.cpp), and the game's readOption* helpers
+      // turn that into "keep the local value" (remix_bridge.cpp). So nothing errors and
+      // nothing logs - the newer settings simply stay at whatever config.json says,
+      // forever, and no control for them is drawn here because this build has never
+      // heard of them.
+      ImGui::TextWrapped(
+        "Connected, but this build of Remix is OLDER than the game (game reports protocol %d, "
+        "this d3d9.dll only knows %d). The controls below still work, but every setting the "
+        "game has gained since protocol %d is MISSING from this tab entirely - the game keeps "
+        "its config.json value for those and nothing here can move it - and the readouts they "
+        "feed are absent for the same reason. Nothing errors and nothing is logged, so this "
+        "notice is the only symptom. Rebuild d3d9.dll from the same commit point as the game.",
+        gameProtocol, kRequiredProtocol, kRequiredProtocol);
     } else {
       ImGui::TextWrapped(
         "Not connected - the game is not reporting anything. It needs to be running on its D3D9 "
@@ -3296,6 +3329,49 @@ namespace dxvk {
       ImGui::TextWrapped(
         "Radius changes brightness as well as softness: the radiance is solved so the light still "
         "reaches the same distance, so a larger emitter needs less of it.");
+      ImGui::Unindent();
+    }
+
+    if (RemixGui::CollapsingHeader("HD Texture Pack", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Use HD Replacements", &DusklightTexRep::enableObject());
+      RemixGui::Checkbox("Apply To HUD", &DusklightTexRep::applyToRasterObject());
+      RemixGui::Checkbox("Hold At Full Resolution", &DusklightTexRep::forceFullMipsObject());
+      RemixGui::Checkbox("Log A Report Next Frame", &DusklightTexRep::reportObject());
+
+      const auto& texRepStats = dusklightTexRep::stats();
+      ImGui::Text("Game: %d selected, %d handed over, %d skipped",
+                  DusklightEnv::texrepEntries(), DusklightEnv::texrepCreated(),
+                  DusklightEnv::texrepSkipped());
+      ImGui::Text("Remix: %u draws tagged, %u substituted (%u of them HUD), %u still loading, %u unknown",
+                  texRepStats.handlesSeen, texRepStats.applied, texRepStats.appliedRaster,
+                  texRepStats.pending, texRepStats.missing);
+
+      // "Handed over" and "substituted" failing separately are quite different bugs and read
+      // identically as "the pack does nothing", so each is named rather than left to be inferred.
+      if (!DusklightEnv::texrepEnabled()) {
+        ImGui::TextWrapped(
+          "The game is not handing a pack over. Either texture replacements are off in its config, its "
+          "texture_replacements directory is empty, or the game build predates this feature - the Bridge "
+          "section above says whether it is connected at all.");
+      } else if (DusklightEnv::texrepCreated() == 0 && DusklightEnv::texrepEntries() > 0) {
+        ImGui::TextWrapped(
+          "The game selected replacements but has handed none over yet. It spreads creation over frames "
+          "at launch; if this stays at zero, its D3D9 device never registered with Remix.");
+      } else if (texRepStats.handlesSeen == 0 && DusklightEnv::texrepCreated() > 0) {
+        ImGui::TextWrapped(
+          "Materials were handed over but no draw is tagged with one, so the D3D9 stream is not carrying "
+          "the index. That is an aurora older than this build of Remix, or a scene whose textures simply "
+          "have no replacements in the pack.");
+      } else if (texRepStats.missing > 0) {
+        ImGui::TextWrapped(
+          "Some draws are tagged with an index Remix has no material for. The two sides disagree about "
+          "the pack - most likely the game reloaded its registry after handing it over.");
+      }
+      ImGui::TextWrapped(
+        "The pack never travels through D3D9, so the game's own textures are what Remix hashes and what "
+        "the texture categorization list shows. Tags and rtx.conf categories are unaffected by installing, "
+        "changing or removing a pack.");
       ImGui::Unindent();
     }
 
