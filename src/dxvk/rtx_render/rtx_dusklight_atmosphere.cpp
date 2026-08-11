@@ -243,6 +243,51 @@ namespace dxvk {
     return out;
   }
 
+  // Reports each distinct colour pattern that reaches the Palace of Twilight bypass, once per run.
+  //
+  // Bounded by construction rather than by a rate limit: one bit per pattern, and the game's own
+  // pattern switch accepts 0-63, so a whole session cannot produce more than 64 lines plus one
+  // notice for anything outside that range. In practice an area uses two or three patterns.
+  //
+  // Written to be read by someone without the source: it spells out what colpat is, that the
+  // bypass is the colpat == 9 one, and whether it fired. The sun readings are here because they
+  // decide whether firing changed anything - the next test after this one drops the weight to zero
+  // at night anyway, so a bypass that only ever fires in the dark is costing nothing.
+  void DxvkDusklightAtmosphere::logColpatOnce(int colpat, bool guardFired) const {
+    if (colpat < 0 || colpat > 63) {
+      if (m_loggedColpatOutOfRange) {
+        return;
+      }
+
+      m_loggedColpatOutOfRange = true;
+      Logger::warn(str::format(
+        "[Dusklight] atmosphere: the game reported colour pattern (colpat) ", colpat,
+        ", which is outside the 0-63 range the game's own pattern table accepts - so either the "
+        "bridge or the game's field is wrong. Reported once per run. See "
+        "documentation/DusklightAtmosphere.md section 8.6."));
+      return;
+    }
+
+    const uint64_t bit = uint64_t(1) << colpat;
+
+    if ((m_loggedColpatMask & bit) != 0) {
+      return;
+    }
+
+    m_loggedColpatMask |= bit;
+
+    const float elevation = std::round(DusklightEnv::sunElevation() * 10.0f) / 10.0f;
+
+    Logger::info(str::format(
+      "[Dusklight] atmosphere: colour pattern (colpat) ", colpat,
+      " reached the physical sky with a visible sky present; sun elevation ", elevation,
+      " deg, daylight ", DusklightEnv::sunIsDay() ? "yes" : "no",
+      ". Palace of Twilight bypass (fires only on colpat 9, and switches the physical sky off "
+      "entirely when it does): ", guardFired ? "FIRED" : "not fired",
+      ". One line per distinct colpat per run. See documentation/DusklightAtmosphere.md section "
+      "8.6 for what this result decides."));
+  }
+
   float DxvkDusklightAtmosphere::resolvePhysicalWeight() const {
     if (!physicalSky() || !enable() || !DusklightEnv::enable()) {
       return 0.0f;
@@ -256,9 +301,30 @@ namespace dxvk {
     // The Palace of Twilight is a colour pattern like any other as far as the game is concerned,
     // but there is no physical description of it to reach for: it has no sun, and its sky is an
     // authored amber rather than anything air does. The model is bypassed there rather than tuned.
+    //
+    // THE LITERAL'S SOURCE IS THE WRONG INDEX SPACE, verified 2026-08-11. "9 = Palace of Twilight"
+    // is true of the game's wolf *sense* vision pattern - dKy_sense_pat_get returns 9 for stage
+    // D_MN08 (d_kankyo.cpp:266-270) and the debug combo box that overrides the same value labels
+    // entry 9 as "Lv8 only, D_MN08" (d_kankyo.cpp:7469). That is not colpat. colpat is
+    // g_env_light.wether_pat1, which indexes stage_envr_info_class::pselect_id[65] and is a
+    // separate numbering the game never relates to the sense patterns. Whether any stage authors
+    // colpat 9 lives in .dzs stage data, which the game checkout does not contain, so it is
+    // UNKNOWN rather than false - and the risk runs both ways: an outdoor stage that happens to
+    // select pattern 9 loses its physical sky for no reason.
+    //
+    // So the guard stays until observed, and the line below is what observes it. What each result
+    // means, and what will be done about it, is written down in DusklightAtmosphere.md 8.6.
     constexpr int kPalaceOfTwilightColpat = 9;
 
-    if (DusklightEnv::colpat() == kPalaceOfTwilightColpat) {
+    const int colpat = DusklightEnv::colpat();
+    const bool guardFires = colpat == kPalaceOfTwilightColpat;
+
+    // Placed here, after the skyHidden early-out, on purpose: reaching this point already means the
+    // sky path is live and the area reports a visible sky, which is exactly the case where firing
+    // would cost something.
+    logColpatOnce(colpat, guardFires);
+
+    if (guardFires) {
       return 0.0f;
     }
 
