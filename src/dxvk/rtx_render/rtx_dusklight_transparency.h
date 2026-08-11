@@ -33,35 +33,49 @@
 // reach them at all. So the game answers it per draw instead, through GXSetDrawClass ->
 // D3DMATERIAL9::Ambient.a. CLAUDE.md rule 1.
 //
-// What the two renderers actually are, because the choice between them is the whole point:
+// There are THREE paths, not two. The first draft of this file described two and that was the
+// reason haze had no good answer:
 //
-//   Untagged (today's default). Primary TLAS, non-opaque. The resolve loop takes a *stochastic*
-//   decision per pixel per frame - one layer survives, the rest are skipped - and the composite
-//   then reconstructs that layer's lighting by hunting for a neighbouring opaque pixel and
-//   borrowing its denoised radiance (`composite_alpha_blend.comp.slang`). For a dense stack of
-//   smoke quads that is one random layer a frame lit by whatever solid thing happens to be near
-//   it on screen, which is both the noise and the "transparency looks wrong".
+//   1. STOCHASTIC (the default for any blended draw). Primary TLAS. The resolve loop keeps one
+//      randomly chosen layer per pixel per frame and the composite reconstructs its lighting by
+//      hunting for a neighbouring *opaque* pixel and borrowing its denoised radiance
+//      (`composite_alpha_blend.comp.slang`). For a stack of smoke quads that is one random layer
+//      a frame tinted by whatever solid thing is near it on screen - the noise and the wrong
+//      colour, one mechanism.
 //
-//   Tagged a particle. The separate unordered TLAS, where every layer is accumulated in one
-//   order-independent traversal - no stochastic pick, no borrowed lighting - and lit from the
-//   volumetric radiance cache, which is genuinely where the light at that point in the air is.
+//   2. UNORDERED TLAS (isParticle). Every layer accumulated in one order-independent traversal -
+//      no stochastic pick, no borrowed lighting - lit from the volumetric radiance cache. Cheap
+//      for dense sprites. But `evaluateOpaqueApproximations` returns true, so the hit is never
+//      resolved as a surface: no NEE, no RTXDI, no direct light at all. And the froxel lookup
+//      *saturates* past the grid, capped at 120 m
+//      (`rtx.dusklight.atmosphere.froxelMaxDistanceMaxMeters`), so anything beyond it is lit as
+//      though it stood at the grid's edge.
 //
-// The unordered path is plainly better for smoke, and the reason it is not simply better for
-// everything is distance. The froxel grid this game runs is capped at
-// `rtx.dusklight.atmosphere.froxelMaxDistanceMaxMeters` (120 m), and the froxel lookup
-// *saturates* past its last slice rather than failing, so a surface beyond the grid is lit as
-// though it stood at the grid's edge. Everything past that boundary is instead carried by the
-// game's own fog ramp in the composite (`DusklightAtmosphere.md` §5.2), which reaches as far as
-// you like - and which the alpha-blend layer now gets too.
+//   3. ORDERED (isOrderedTransparency). Decline the stochastic path and the surface falls
+//      through to a real resolve: a genuine translucent surface, correctly ordered, path-traced,
+//      keeping its own albedo. Globally this is `rtx.enableStochasticAlphaBlend = False`, which
+//      is unaffordable because it applies to every blended draw in the scene. Per draw it is
+//      exactly right for a handful of large authored layers.
 //
-// So the split is by distance, and the handover is the same 120 m:
+// Which class takes which, and why:
 //
-//   PARTICLE - near by nature (an enemy dies next to you). Inside the grid, so the unordered
-//              path's lighting is real. Promoted.
-//   HAZE     - a layered wall standing in for distance, hundreds of metres out. Outside the
-//              grid, so promoting it would trade a stochastic pick for a saturated froxel
-//              lookup and lose the far fog ramp that the composite path applies. Left on the
-//              composite path by default; `hazeAsParticle` exists to A/B that in one session.
+//   PARTICLE -> 2. Near by nature (an enemy dies next to you), so inside the froxel grid where
+//               that path's lighting is real, and dense enough that resolving every layer as a
+//               surface would be correct and unaffordable. Tested in game 2026-08-11.
+//
+//   HAZE     -> 3. A layered wall standing in for distance. Path 2 is wrong for it twice over:
+//               it sits far beyond the 120 m cap, and it is *authored scenery* that is meant to
+//               read as itself rather than as generic haze - the owner's word for the Death
+//               Mountain wall is that it "looks distinctly different from the rest of the distant
+//               vista", which is the game's intent, not a defect. So neither suppressing it nor
+//               flattening it into the fog is the answer; resolving it properly is.
+//               `hazeOrdered` (default on) and `hazeAsParticle` (default off) A/B all three.
+//
+// **Known open question**: a haze surface on path 3 is a real surface, so `applyFog`'s far ramp
+// now fogs it by its own view distance - on top of the fade the game already painted into it.
+// That is the same double-count as moya particles versus volumetric density
+// (`DusklightAtmosphere.md` §8.1) and it has NOT been measured. If the wall comes back looking
+// flatter than intended, that is the first suspect.
 //
 // Design and the measurements behind it: aurora-ao/docs/dx9/remix-material-interface.md §11.
 
@@ -100,6 +114,11 @@ namespace dxvk {
     // class, which is what makes this safe to default on: an unclassified draw reads 0 and
     // behaves exactly as it does today.
     static bool treatAsParticle(const D3DMATERIAL9& material);
+
+    // Whether this draw should decline the stochastic alpha blend and resolve as a real
+    // translucent surface. This is the accommodation for authored distant scenery - a fog wall
+    // that is meant to look like *itself*, not like the generic haze everything else fades into.
+    static bool treatAsOrderedTransparency(const D3DMATERIAL9& material);
 
     // Counts what was classified this frame, for the periodic report. Called from the one
     // decision site so the log describes the decision actually taken, not a re-derivation.
@@ -154,6 +173,13 @@ namespace dxvk {
                "Resolve draws the game marked as particles (smoke, dust, explosion puffs) through the unordered TLAS instead of the stochastic alpha blend. "
                "This is the fix for noisy enemy death smoke: the stochastic path keeps one randomly chosen layer per pixel per frame and lights it from a neighbouring opaque pixel, "
                "while the unordered path accumulates every layer and lights them from the volumetric radiance cache.");
+
+    RTX_OPTION("rtx.dusklight.transparency", bool, hazeOrdered, true,
+               "Resolve draws the game marked as haze as genuine translucent surfaces rather than through the stochastic alpha blend. "
+               "This is the third transparency path and the one authored distant scenery wants: ordered rather than one random layer per pixel per frame, "
+               "path-traced rather than lit by borrowing a neighbouring opaque pixel's radiance, and keeping its own colour rather than being tinted by whatever solid thing is near it on screen. "
+               "It costs a resolve iteration per layer, which is why it is per-draw and not the global rtx.enableStochasticAlphaBlend switch. "
+               "Turn it off to compare against the stochastic path.");
 
     RTX_OPTION("rtx.dusklight.transparency", bool, hazeAsParticle, false,
                "Also resolve draws the game marked as haze (distant layered fog walls) through the unordered TLAS. "

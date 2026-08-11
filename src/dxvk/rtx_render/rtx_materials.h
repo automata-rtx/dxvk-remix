@@ -280,6 +280,9 @@ struct RtSurface {
     textureFlags |= rampTFactorIsHigh ? (1 << 16) : 0;
     // Dusklight self-illumination, see emissiveSource.
     textureFlags |= ((static_cast<uint32_t>(emissiveSource) & emissiveSourceMask) << 19);
+    // Dusklight ordered transparency: resolve this blended surface as a real surface instead of
+    // handing it to the stochastic alpha blend. rtx_dusklight_transparency.h.
+    textureFlags |= alphaState.isOrderedTransparency ? (1 << 21) : 0;
 
     static_assert(static_cast<uint32_t>(TexGenMode::Count) <= 4);
     textureFlags |= ((static_cast<uint32_t>(texgenMode) & 0x3) << 17);
@@ -479,6 +482,11 @@ struct RtSurface {
     bool invertedBlend = false;
     bool emissiveBlend = false;
     bool isParticle = false;
+    // Decline Remix's stochastic alpha blend for this draw and resolve it as a genuine
+    // translucent surface: ordered, path-traced, keeping its own colour. The third transparency
+    // path, and the right one for authored scenery that is meant to look like itself rather
+    // than like generic haze. rtx_dusklight_transparency.h.
+    bool isOrderedTransparency = false;
     bool isDecal = false;
   } alphaState;
 

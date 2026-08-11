@@ -452,6 +452,16 @@ struct Surface
     set { data13.z = (data13.z & ~(0x3 << 9)) | (uint32_t(newValue & 0x3) << 9); }
   }
 
+  // Dusklight: resolve this blended surface as a real surface rather than handing it to the
+  // stochastic alpha blend. The third transparency path - ordered, path-traced, keeping its own
+  // colour - for authored scenery that is meant to look like itself rather than like generic
+  // haze. rtx_dusklight_transparency.h.
+  property bool isOrderedTransparency
+  {
+    get { return packedFlagGet(data13.z, 1 << 21); }
+    set { data13.z = newValue ? packedFlagSet(data13.z, 1 << 21) : packedFlagUnset(data13.z, 1 << 21); }
+  }
+
   property uint8_t textureAlphaOperation
   {
     get { return uint8_t((data13.z >> 11) & 0x7); }

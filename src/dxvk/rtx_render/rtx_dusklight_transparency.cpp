@@ -175,6 +175,13 @@ namespace dxvk {
     return promote;
   }
 
+  bool DusklightTransparency::treatAsOrderedTransparency(const D3DMATERIAL9& material) {
+    // Only haze asks for this. A particle wants the unordered TLAS, where all its layers
+    // accumulate cheaply; resolving a dense smoke cluster as N real surfaces would be correct
+    // and unaffordable.
+    return drawClass(material) == DusklightDrawClass::Haze && hazeOrdered() && !hazeAsParticle();
+  }
+
   void DusklightTransparency::recordClassified(DusklightDrawClass drawClass, bool promoted) {
     if (!reportClasses()) {
       return;

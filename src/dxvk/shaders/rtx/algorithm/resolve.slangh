@@ -508,8 +508,13 @@ void resolveVertex<T: IBasePayloadState>(
 
 #ifdef RAY_TRACING_PRIMARY_RAY
     // Handle nearly-transparent early out logic and stochastic alpha blend
+    // Dusklight: a surface can decline the stochastic path per draw, and then resolves as a
+    // genuine translucent surface - ordered, path-traced, keeping its own albedo instead of
+    // borrowing a neighbouring opaque pixel's radiance. That costs a resolve iteration per
+    // layer, which is exactly why stochastic exists and exactly why this is per-draw rather
+    // than the global rtx.enableStochasticAlphaBlend switch. rtx_dusklight_transparency.h.
     bool handleStochasticAlphaBlend = 
-      useStochasticAlphaBlend && cb.enableStochasticAlphaBlend &&
+      useStochasticAlphaBlend && cb.enableStochasticAlphaBlend && !surface.isOrderedTransparency &&
       opacity > cb.resolveTransparencyThreshold && opacity <= cb.resolveStochasticAlphaBlendThreshold;
 
     isStochasticAlphaBlend = handleStochasticAlphaBlend;

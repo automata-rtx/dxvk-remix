@@ -850,6 +850,13 @@ namespace dxvk {
       // rtx_dusklight_transparency.h explains which classes are promoted and why haze is not.
       out.isParticle = drawCall.testCategoryFlags(InstanceCategories::Particle) ||
                        DusklightTransparency::treatAsParticle(drawCall.getMaterialData().getLegacyMaterial());
+      // The third path. Haze declines the stochastic alpha blend and resolves as a real
+      // translucent surface instead - ordered, path-traced, keeping its own colour. That is what
+      // authored distant scenery needs: the Death Mountain fog wall is meant to read as itself
+      // rather than as the generic haze the rest of the vista fades into, so neither erasing it
+      // nor flattening it into the fog is the answer. rtx_dusklight_transparency.h.
+      out.isOrderedTransparency =
+        DusklightTransparency::treatAsOrderedTransparency(drawCall.getMaterialData().getLegacyMaterial());
       out.isDecal = drawCall.testCategoryFlags(DECAL_CATEGORY_FLAGS);
     } else {
       out.invertedBlend = false;
