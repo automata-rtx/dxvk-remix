@@ -485,6 +485,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
 | Effect Lights section | landed 2026-08-06, protocol 7 — **CI-green, and run in game 2026-08-07: "it works", merged on that.** The diagnostics below were *not* read, so which effects the classifier accepts is still unknown; `dusklight-ao/docs/remix-open-issues.md` carries the four questions that leaves open. Replaces the local-light mirror as the default. Its readouts are the whole chain, so a light lost at any step is visible without asking anyone to describe a scene; two of them (`effLightsOrphans`, `effLightsVanilla`) exist to settle specific open questions rather than to be watched. `effectLightReportCommit` is the action counter that dumps the classifier's own inputs and verdicts. Design: `dusklight-ao/docs/effect-lights.md` |
+| Room Lights section | landed 2026-08-12, joins protocol 13 — **CI-green only, never run in game, and deliberately off by default.** The room's own authored lights (`dungeonlight`), a third registry from either of the two the bridge already forwards and the only one carrying a cone. Its six readouts exist to settle two questions from one log rather than from an argument: `roomLightsFound` vs `roomLightsDrawn` for whether a room has any, and `roomLightsShaped` vs `roomLightsUnshapeable` for whether the cone work carries any weight. The cone's **direction and angle are transcribed** from the game; the **shape of its edge is an approximation** (GX has four falloff curves, Remix has one) and the two ring-shaped curves cannot be expressed at all. Design: `dusklight-ao/docs/effect-lights.md` §8.1 |
 | HD Texture Pack section | landed 2026-08-05, protocol 7 — **tested good 2026-08-06, first try.** The counters split game-side from Remix-side exactly as intended. Known characteristic: a long first-launch warm-up, `DusklightAtmosphere.md` §12.1 |
 | Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the lava scores **0.00**, so no threshold could ever reach it. Rev 4 therefore drops the score from the decision entirely and cuts on three measured facts instead — the section now has no threshold in it, and only Emissive Brightness is expected to be touched. **Tested in game 2026-08-06:** the rule accepts the lava, and Emissive Brightness was dialled to 10.0 there, which is now its default. No protocol change: nothing in it is read by the game |
 
@@ -493,13 +494,17 @@ practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 13** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach`, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers` **and** `colpatPrev`/`colpatBlend`). `kRequiredProtocol`
+**Protocol is at 13** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach`, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers`, `colpatPrev`/`colpatBlend`, the three background alphas `bgWaterAlpha`/`bgAuxAlpha`/`bgFakeFogAlpha` **and** the six `roomLights*` readouts). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 > **13 covers everything on its session branch, and was taken once.**
-> `perBladeFlowers` and the `colpatPrev` / `colpatBlend` pair both landed on
-> `claude/japanese-naming-worklist-nea1rk` and ship as one build, so they share
-> one number rather than taking 13 and 14. A protocol number answers "does the
+> `perBladeFlowers`, the `colpatPrev` / `colpatBlend` pair, the three
+> background alphas (`bgWaterAlpha`, `bgAuxAlpha`, `bgFakeFogAlpha`, added
+> 2026-08-12) and the six room-light readouts (`roomLightsRunning`,
+> `roomLightsFound`, `roomLightsDrawn`, `roomLightsTracked`, `roomLightsShaped`,
+> `roomLightsUnshapeable`, added 2026-08-12) all landed on
+> `claude/japanese-naming-worklist-nea1rk` and ship as
+> one build, so they share one number rather than taking 13, 14, 15 and 16. A protocol number answers "does the
 > build on the other side have this"; two numbers for one build answers it
 > twice. **A further addition on this branch joins 13 too — it does not take
 > 14.**

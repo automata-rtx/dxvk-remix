@@ -3368,6 +3368,55 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
+    if (RemixGui::CollapsingHeader("Room Lights (authored, experimental)", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "The lights the room itself was built with, out of its stage file - not the torches and lanterns "
+        "actors register. These are what light a dungeon corridor that has no fire in it, and they are the "
+        "only lights in the game that carry a direction and a cone. Nothing read them until now.");
+      RemixGui::Checkbox("Room Lights Enabled", &DusklightGame::roomLightsObject());
+      RemixGui::DragFloat("Room Intensity##dusklight", &DusklightGame::roomLightIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
+      RemixGui::DragFloat("Room Radius##dusklight", &DusklightGame::roomLightRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
+      RemixGui::DragFloat("Cone Softness##dusklight", &DusklightGame::roomLightConeSoftnessObject(), 0.01f, 0.f, 4.f, "%.2f");
+
+      if (feedLive) {
+        ImGui::Text("Authored in this room: %d   drawn this frame: %d   tracked: %d",
+                    DusklightEnv::roomLightsFound(), DusklightEnv::roomLightsDrawn(),
+                    DusklightEnv::roomLightsTracked());
+        ImGui::Text("Of those drawn, %d carry a cone; %d used a ring cone that had to be dropped",
+                    DusklightEnv::roomLightsShaped(), DusklightEnv::roomLightsUnshapeable());
+
+        // Same three-way split the mirror needed: the count alone cannot tell "switched off",
+        // "nothing here" and "we are dropping them" apart, and they want quite different fixes.
+        if (!DusklightEnv::roomLightsRunning()) {
+          ImGui::TextWrapped(
+            "The game is not running its room light submission, so nothing here can reach Remix. Either "
+            "this switch is not reaching the game, or its D3D9 device never registered - the Bridge "
+            "section above says which.");
+        } else if (DusklightEnv::roomLightsFound() == 0) {
+          ImGui::TextWrapped(
+            "This room was authored with no lights of its own. Expected outdoors, where the sun and moon "
+            "take the first two slots, and in any room lit only by its palette.");
+        } else if (DusklightEnv::roomLightsDrawn() == 0) {
+          ImGui::TextWrapped(
+            "The room has authored lights but none reached Remix. Every one of them is either switched "
+            "off by a game switch, or the palette has taken its colour to black - both of which the game "
+            "does too, so this is more likely correct than broken.");
+        }
+      }
+
+      ImGui::TextWrapped(
+        "EXPERIMENTAL, and off by default on purpose. These are authored positions, which is the exact "
+        "property the effect lights exist because they distrust: a GameCube light casts no shadow, so it "
+        "could sit anywhere the shading looked right. Two things to look for with this on. Every fire "
+        "gaining a second light, offset from the first, means it is double counting with Effect Lights. "
+        "Shadows arriving from somewhere that is not a visible light means the placements do not survive "
+        "the path tracer, and the answer is to leave this off rather than to tune it.\n"
+        "The cone's direction and angle come straight from the game. The softness of its edge does not - "
+        "the game has four falloff curves and Remix has one - so treat Cone Softness as a preference.");
+      ImGui::Unindent();
+    }
+
     if (RemixGui::CollapsingHeader("HD Texture Pack", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
       RemixGui::Checkbox("Use HD Replacements", &DusklightTexRep::enableObject());
@@ -3634,6 +3683,20 @@ namespace dxvk {
         const Vector3 bgAmbient = DusklightEnv::bgAmbient();
         ImGui::Text("Actor ambient: %.3f, %.3f, %.3f", actorAmbient.x, actorAmbient.y, actorAmbient.z);
         ImGui::Text("BG ambient:    %.3f, %.3f, %.3f", bgAmbient.x, bgAmbient.y, bgAmbient.z);
+
+        // The three background alphas, carried since protocol 13. They share a struct with the BG
+        // ambient above and are not ambient at all - the game uses them as material constants on
+        // its water, murk and faked-fog surfaces. Shown here because nothing consumes them yet, so
+        // this readout is the only way to learn what an area asks for. A negative value is the
+        // game not reporting, deliberately distinct from a reported 0, which is authored.
+        const float bgWaterA = DusklightEnv::bgWaterAlpha();
+        if (bgWaterA < 0.0f) {
+          ImGui::TextUnformatted("BG alphas:     not reported - this game build predates protocol 13");
+        } else {
+          ImGui::Text("BG alphas:     water %.3f   aux %.3f   fake fog %.3f",
+                      bgWaterA, DusklightEnv::bgAuxAlpha(), DusklightEnv::bgFakeFogAlpha());
+        }
+
         ImGui::Text("Mono overlay:  %.2f", DusklightEnv::monoAmount());
 
         RemixGui::Separator();

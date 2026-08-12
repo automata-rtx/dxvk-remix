@@ -147,8 +147,10 @@ namespace dxvk {
     // RtxOptions.md are where somebody setting the game up will read about it, and until
     // 2026-08-07 both still told them to turn it on.
     RTX_OPTION("rtx.dusklight.game", bool, localLights, false,
-               "Mirrors the game's own point lights - torches, braziers, lanterns, campfires and the dungeon lights - into Remix as sphere lights, at the "
-               "positions the game gave them.\n"
+               "Mirrors the point lights the game's ACTORS register - torches, braziers, lanterns, campfires, Midna, bomb flashes - into Remix as sphere "
+               "lights, at the positions the game gave them.\n"
+               "It does not cover the lights a room is authored with; those are a separate registry with its own switch, rtx.dusklight.game.roomLights. "
+               "(This description used to say it covered \"the dungeon lights\", which read as if it did.)\n"
                "SUPERSEDED by rtx.dusklight.game.effectLights, which is on by default. Those positions are the problem: a GameCube point light casts no "
                "shadow, so the artists could put one wherever the shading looked best - offset from the flame, sunk into geometry, one light standing in "
                "for three - and none of it reads as wrong until a path tracer casts a real shadow from the exact point it occupies. The replacement puts "
@@ -283,6 +285,48 @@ namespace dxvk {
                     "this from above - 10 was tested against the Forest Temple light posts and clears them.",
                     args.minValue = 0.5f,
                     args.maxValue = 64.0f);
+
+    // Room lights - the room's OWN authored lights, a third registry from either of the two
+    // above and the only one in the game that carries a cone. Off by default until one log says
+    // whether they double-count with the effect lights. dusklight-ao/docs/effect-lights.md 8.1.
+    RTX_OPTION("rtx.dusklight.game", bool, roomLights, false,
+               "Forwards the lights the room itself was built with - the ones in its stage file, placed by whoever laid the room out - into Remix as sphere "
+               "lights, with their cones.\n"
+               "These are NOT the torches and lanterns rtx.dusklight.game.localLights mirrors. Those are registered by actors; these are authored per room, "
+               "are what lights a dungeon corridor with no fire in it, and are the only lights in the game with a direction and a cutoff angle at all. "
+               "Nothing in this project read them until now.\n"
+               "OFF BY DEFAULT, and the reason is the same one that turned the local light mirror off: these are authored positions, and a GameCube light "
+               "casts no shadow, so a room light could be sunk in a wall or floating over a doorway and nothing would have looked wrong at the time. A path "
+               "tracer casts a real shadow from exactly where it sits. Turn this on, look at where the shadows come from, and read the counters below - if "
+               "every fire ends up with two lights it is double counting with rtx.dusklight.game.effectLights, and if the shadows come from nowhere "
+               "sensible then the placements do not survive the path tracer and the honest answer is to leave this off.");
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, roomLightIntensity, 19.0f,
+                    "Scales the room's authored lights.\n"
+                    "Starts at the same 19 as rtx.dusklight.game.localLightIntensity, but for a weaker reason. That one converts a radius the game really "
+                    "does treat as a reach. This one starts from the room light's authored radius, which the game loads into its hardware with a reference "
+                    "brightness of 0.99999 - so the light is still at full strength AT that radius and would need thousands of times it to fade out. In "
+                    "other words the original room lights barely fall off at all, and the number here is a nominal size being used as a reach because it is "
+                    "the only distance the authors wrote down.\n"
+                    "Expect to move this. A path-traced sphere light falls off physically whatever the setting, so a bright spot near the light where the "
+                    "game had an even wash is the predicted behaviour rather than a bug.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 64.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, roomLightRadius, 10.0f,
+                    "Emitter radius of the room's authored lights in world units.\n"
+                    "Changes brightness as well as softness, the same way rtx.dusklight.game.localLightRadius does: the radiance is solved so the light "
+                    "still reaches the same distance, so a larger emitter needs less of it.",
+                    args.minValue = 0.5f,
+                    args.maxValue = 64.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, roomLightConeSoftness, 1.0f,
+                    "How soft the edge of a room spotlight's cone is, as a multiple of the widest softening that still fits inside the cone.\n"
+                    "Read this as a knob, not as a conversion. The cone's DIRECTION and its ANGLE are transcribed exactly from the game. The SHAPE of the "
+                    "falloff between the edge and the axis is not: the game has four different curves for it and Remix has one, so every curve except the "
+                    "hard-edged one is approximated by the same smooth ramp and this scales how far in that ramp reaches. 0 gives a hard edge, 1 softens "
+                    "across the whole cone.\n"
+                    "The game's two ring-shaped spot functions - dark on axis, brightest partway out - cannot be expressed by Remix's shaping at all. Those "
+                    "lights are sent with no cone rather than dropped, and rtx.dusklight.env.roomLightsUnshapeable counts them.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 4.0f);
 
     // Effect lights. The replacement for the mirror above, and the reason it now defaults off.
     // Full design, citations and exclusion policy: dusklight-ao/docs/effect-lights.md.

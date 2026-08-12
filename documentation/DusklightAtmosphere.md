@@ -38,6 +38,23 @@ Companion docs:
   generated and still carries the old wording. Derivation:
   `dusklight-ao/docs/japanese-naming.md` §6.
 
+  **Two more of the same kind, found the same way (2026-08-12).**
+  `rtx.dusklight.env.skyColor` said "the game's sky colour **at the zenith**" —
+  the game says only 空の色, *sora no iro*, the sky's colour
+  (`d_kankyo.cpp:6280`, CSV column `:6582`, debug view `d_kankyo_debug.cpp:284`),
+  and where on the dome it lands is decided by `vrbox_sora.bmd`, which is in none
+  of the three checkouts. The fork treating it as the dome's base colour is a
+  modelling choice of ours and now says so. `rtx.dusklight.env.bloomBlurRatio`
+  said "the game's bloom **brightness**"; the original team's slider labels the
+  field blur **density**, paired with blur **width** beside it
+  (`d_kankyo.cpp:7083-7084`, `japanese-naming.md` §8). Neither changes a number —
+  both are descriptions someone would have reached for and been misled by. **The
+  three `kumo*` cloud descriptions are the same class of error and are
+  deliberately left alone here**: they are already corrected on the unmerged
+  `claude/kasumi-naming-correction-w3e204`, and fixing them twice would be a
+  conflict whose obvious resolution is fine but whose *second* copy of the
+  reasoning is not.
+
 Everything below is grounded in code as of 2026-07-28. File references are
 repo-relative; `dusklight-ao/` and `aurora-ao/` prefixes point at the other two
 repos.
