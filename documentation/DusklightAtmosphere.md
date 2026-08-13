@@ -411,20 +411,103 @@ uncalibrated, and the test plan was aiming at the wrong place.
 enable Remix's remap; we write the derived coefficients straight into
 `VolumeArgs`. See §6.1 for why that direction matters.
 
-### 5.2 The range split
+### 5.2 The split — by job, not by distance
 
-The mapping above matches density but not shape: at `z = end` vanilla is 100%
-opaque and an exponential is ~75%. Distant terrain would stay more visible than
-in the original. Fix it by giving each system the range it is good at:
+**Reworked 2026-08-13. `rtx.dusklight.atmosphere.fogRampMode` selects between the
+two, defaulting to the new one; the old one is kept as the A/B baseline. What
+follows describes both, because the reason the first one had to go is the most
+useful thing in this section.**
 
-- **`[0, froxelMaxDistance]` — volumetrics.** Shafts, godrays, torch glow,
-  sky-light scattering into shadow. Things a depth ramp fundamentally cannot
-  do.
+#### The original: split by distance
+
+The §5.1 mapping matches density but not shape: at `z = end` vanilla is 100%
+opaque and an exponential is ~75%. So each system got the range it was good at:
+
+- **`[0, froxelMaxDistance]` — volumetrics.** Shafts, godrays, torch glow.
 - **`(froxelMaxDistance, ∞)` — the vanilla ramp, analytically.** Closes to
-  exactly 100% at `end`, matching the original.
+  exactly 100% at `end`.
 
-Upstream, `src/dxvk/shaders/rtx/pass/composite/composite.comp.slang` forbids
-this (landed as A3 — the guarded version is §12's "What landed"):
+**The flaw is at the near end, not the far one, and it is C11.** A homogeneous
+medium cannot be clear where the game is clear. TP's ramp is *exactly zero*
+before `fogStartZ`; an exponential starts extinguishing at the camera. With
+`start` halfway to `end`, `z_half = 0.75·end`, so at `z = start` the derived
+medium is already `1 − 2^(−0.667) ≈ 37%` opaque where the original is untouched.
+Under a split-by-distance scheme that error is unreachable — the near field is
+precisely the region the medium was made responsible for.
+
+#### The rework: split by job
+
+The ramp owns the fog's **appearance** at every distance; the medium owns the
+**light**. The ramp is applied as the residual against whatever the medium
+already did:
+
+```
+f = saturate((z − start) / (end − start))     the game's ramp, unchanged
+m = 1 − T                                      what the medium already achieved
+t = saturate((f − m) / (1 − m))                what the ramp still owes
+out = lerp(radiance, fogColour, t)
+```
+
+**This is an identity, not an approximation.** Writing `T = 1 − m`:
+
+```
+T·(1 − t) = (1 − m)·(1 − (f − m)/(1 − m)) = (1 − m) − (f − m) = 1 − f
+```
+
+so the surface arrives attenuated by **exactly** the game's ramp, at every
+distance, *for any density the medium happens to have.* And with the medium's
+ambient in-scatter set to the same radiance the ramp blends towards — which is
+what `multiScatteringScale = 1` plus the albedo division in `applyVolumeArgs`
+means — the colour terms close the same way:
+
+```
+A·m·(1 − t) + A·t = A·[m(1 − f) + f − m]/(1 − m) = A·f
+```
+
+Total: `S·(1 − f) + A·f + I_lit·(1 − t)`. **The original's fog formula, plus the
+real in-scatter from real lights.** That last term is the shafts, and it is the
+only thing the volumetrics add to the picture — which is the correct division of
+labour, because it is the only thing they can do that a ramp cannot.
+
+**What this buys, and it is the whole point: density stops being a fidelity
+knob.** It no longer decides how thick the fog looks, so it is free to be set
+purely for shaft quality — and, critically, free to be held *under* the game's
+own curve so C11 stops happening.
+
+#### Holding the medium under the ramp
+
+`rtx.dusklight.atmosphere.limitDensityToRamp` (default on) lowers σ until
+
+```
+max over z of [ (1 − e^(−σz)) − f(z) ]  ≤  clearZoneTolerance
+```
+
+The peak is analytic — the difference of an exponential and a clamped line can
+only peak where the line starts, where the two slopes match
+(`z* = ln(σ·span)/σ`, real only once `σ·span > 1`), or at an endpoint — and it is
+monotone in σ, so a bisection solves it exactly. Both σ values, the peak and where
+it occurs are in the panel and in the log line.
+
+`clearZoneTolerance` (default 0.08) is **the one real trade in the fog system**.
+At 0 the near field is as crisp as the original and there is almost no medium
+left to scatter anything; higher buys shaft presence with a thin near-field haze.
+
+The residual clamps at zero rather than going negative, because subtracting
+already-integrated light means dividing it back out, which amplifies the froxel
+grid's noise. The cap is what keeps the clamp from being reached.
+
+#### Two consequences worth stating up front
+
+- **Alpha-blended surfaces need the same treatment.** They are fogged by the
+  medium alone (`composite.comp.slang`, the stochastic alpha blend block). That
+  was survivable while the medium carried most of the fog; with a thin medium a
+  particle in front of distant terrain would sit almost unfogged in front of it.
+  The same residual is applied there, on `surface.hitT`.
+- **The near half now needs a colour that means something.** See §5.3.
+
+Upstream, `src/dxvk/shaders/rtx/pass/composite/composite.comp.slang` forbids the
+ramp running at all under volumetrics (landed as A3 — the guarded version is
+§12's "What landed"):
 
 ```hlsl
 if (cb.volumeArgs.enable)
@@ -433,14 +516,90 @@ if (cb.volumeArgs.enable)
 }
 ```
 
-The change is to make that early-out conditional on the Dusklight path and, when
-active, evaluate the vanilla ramp *rebased* so it contributes only beyond the
-froxel grid — i.e. apply `saturate((z - max(start, froxelMaxDistance)) / (end -
-max(start, froxelMaxDistance)))` over the residual transmittance the froxel
-integration already produced, so the two never double-count.
+That early-out is conditional on the Dusklight path, and inside it the mode
+above decides what the ramp contributes.
 
-**This is the answer to "which system owns fog": one owner per unit of
-distance, not one owner overall.**
+**The answer to "which system owns fog" changed on 2026-08-13.** It used to be
+*one owner per unit of distance*. It is now **one owner per job**: the ramp owns
+appearance, the medium owns light. The first answer forced a homogeneous medium
+to imitate a linear ramp in the region where it is least able to.
+
+### 5.3 The fog's colour, and the dome light that is not in the light list
+
+**Landed 2026-08-13. Untested in game.**
+
+The medium's colour never came from lighting. It came from
+`multiScatteringEstimate`, a constant added at every raymarch step, and there is
+a hard reason it has to exist:
+
+> **Remix's froxel grid is lit by next event estimation over the RTXDI light
+> list, and that list holds five types — sphere, rect, disk, cylinder, distant
+> (`shaders/rtx/concept/light/light_types.h`). There is no dome light in it.**
+> `sampleDomeLightTexture` appears in the geometry resolver, the indirect
+> integrator and the composite, and **nowhere in the volumetric code**.
+
+So the volumetric fog is lit by the sun and by analytic lights and by nothing
+else. Outdoors, **fog standing in a shadow receives nothing at all from the
+sky**; indoors it receives nothing but the effect lights. Everything it showed in
+shadow was that flat constant, which is why shadowed fog read as a grey veil
+rather than as air.
+
+Three things were wrong with the constant, and all three are now addressed:
+
+1. **It was 4.4× darker than the far ramp, for the same fog colour.** The
+   raymarch adds `estimate × scatteringCoefficient` integrated along the ray, and
+   `scatteringCoefficient = σ·albedo`, so a constant `M` over a path of opacity
+   `1 − T` contributes `M·albedo·(1 − T)` — with `albedo` 0.9 and the old
+   `multiScatteringScale` default of 0.25, that is `0.225·C` where the far ramp
+   converges to `1.0·C`. **No setting could correct it**: `multiScatteringScale`
+   moves only the near half and `fogRadianceScale` moves both. Fixed by dividing
+   by the albedo in `applyVolumeArgs` and defaulting the scale to 1.0, which
+   makes the two halves algebraically equal (§5.2).
+2. **It was a display colour used as a radiance.** `fog_col` was authored to be
+   blended over a finished, exposed image; here it is a quantity of light in a
+   linear frame. Its *level* therefore means nothing. Ledger C10, still the root
+   cause of dark scenes reading grey, and only partly addressed — see below.
+3. **It could not follow the sky, because the fog cannot see the sky.** Fixed by
+   measuring the dome instead.
+
+**The measurement.** A new one-workgroup pass,
+`shaders/rtx/pass/dusklight/dusklight_sky_stats.comp.slang`, reduces the 256×128
+generated dome to its solid-angle-weighted mean radiance and writes one
+`DusklightSkyStats`. The host copies it into a `kMaxFramesInFlight` ring and
+reads the oldest slot — the same non-stalling pattern the auto-exposure debug
+stats use. The sky changes over minutes; a few frames of lag is invisible.
+
+A sphere average is the *right* quantity rather than a compromise: the term it
+feeds is an isotropic in-scatter estimate, so what it wants is the froxel's
+irradiance from the environment. The far ramp keeps sampling the dome in the
+**view direction**, which is aerial perspective proper; the two agree on average,
+which is the kind of agreement that matters.
+
+`skyAmbientWeight` (default 1.0) drives **both halves**. It used to be
+`physicalWeight` on the far half only, on the reasoning that the palette stops
+describing the sky once the sky is simulated — true, but too narrow: the game's
+fog colour is its sky colour under either model. Splitting the two weights is how
+the fog ends up one colour close by and another in the distance.
+
+**How much of C10 this fixes: outdoors, most of it; indoors, none.** A dome
+radiance is measured in the renderer's own units, so outdoor fog is now bright
+when the scene is bright and dark when it is dark without anyone tuning a level.
+Indoors there is no dome and the flat palette colour still stands, so a dark room
+can still have its blacks lifted by fog. **The exposure-relative treatment is
+deliberately not in this change** — it is the remaining half of C10.
+
+### 5.4 Forward scattering
+
+`rtx.volumetrics.anisotropy` is **0** upstream — perfectly isotropic — which
+spreads every light's in-scatter evenly in all directions and leaves shafts and
+torch glow flat and shapeless. Real atmospheric haze is strongly forward
+scattering. `rtx.dusklight.atmosphere.fogAnisotropy` (default 0.6) overrides
+`volumeArgs.volumetricFogAnisotropy` whenever the Dusklight medium is driving,
+the same way `froxelMaxDistance` already did.
+
+**Do not confuse it with `mieAnisotropy` (0.76)**, which shapes the sun's glow
+*inside the generated dome image* and never reaches the froxel grid. Both exist,
+both are about forward scattering, and they act on different things.
 
 ---
 
@@ -747,8 +906,8 @@ shows, and the first knob to reach for.
 | # | Compromise | How it will show | First knob |
 | :-- | :-- | :-- | :-- |
 | C0 | ~~The calibration pass was never run.~~ **Run 2026-07-28. Phase A/B confirmed good in-game.** One constant was wrong: `skyIntensity` at 1.0 gave a visibly dim sky. The analytic anchor was right but the arithmetic behind it was not — it ignored that the palette colours are decoded out of gamma before they are scaled, which takes a mid blue from 0.5 to about 0.2, so the multiplier needed to be ~6× larger to land the same sky-to-sun ratio. Now 6.0. `zHalfMin` and `froxelRangeScale` were not reported as wrong. | — | — |
-| C11 | **A homogeneous medium cannot be clear near the camera.** The game's ramp is exactly zero before `fogStartZ`; an exponential medium starts extinguishing at the camera. With a large `fogStartZ` (say 50 m of clear air, then fog to 100 m) the derived medium is already ~35% opaque where the original is untouched. | Near-field haze in areas the original left crisp. Worst where `fogStartZ` is large relative to `fogEndZ`. | No single σ fixes it — it is the shape, not the level. `rtx.volumetrics.enableHeterogeneousFog` is the real answer: a density that ramps with distance rather than a constant one. Until then, `densityScale` trades near-field clarity against far-field weight. |
-| C10 | **Fog is composited in linear HDR, not the game's display space.** The original blended fog over a finished, display-referred image; here both halves of the range split happen pre-tonemap. | Fog reads with a different contrast curve than vanilla - typically holding its colour longer in the bright end. | `rtx.dusklight.atmosphere.fogRadianceScale`. The structural fix is moving the far ramp post-tonemap, the same correction the bloom needed. |
+| C11 | ~~**A homogeneous medium cannot be clear near the camera.**~~ **Largely resolved 2026-08-13, untested in game.** The observation stands and the arithmetic was worse than this row said: with `start` halfway to `end` the matched medium is **~37%** opaque where the original is untouched. What changed is that the medium no longer has to reproduce the fog at all (§5.2), so σ is capped until its peak excess over the game's own ramp is within `clearZoneTolerance` (default 0.08) and the ramp supplies the rest. | Residual near-field haze bounded by `clearZoneTolerance`, and reported exactly: "peak excess over the game's ramp" in the panel and the log. | `rtx.dusklight.atmosphere.clearZoneTolerance` — lower for a crisper near field, higher for more shaft presence. This is now the *only* trade in the fog system. |
+| C10 | **Fog is composited in linear HDR, not the game's display space.** The original blended fog over a finished, display-referred image; here it happens pre-tonemap, so the palette's fog colour has no meaningful *level*. **Half addressed 2026-08-13:** outdoors the fog's colour is now measured off the generated dome (§5.3), which is a real radiance in the renderer's units, so it scales with the scene without tuning. Indoors there is no dome and the flat palette colour still stands. | Dark interiors can still have their blacks lifted by fog, which reads as grey and low-contrast. Outdoors this should now be much closer. | `rtx.dusklight.atmosphere.fogRadianceScale` for the indoor case. The structural fix is the remaining half: scale the palette colour by the inverse of the auto-exposure so a display colour is treated as one. `AutoExposureDebugStats` already carries `exposure` and already has a non-stalling host ring, currently gated on the tuning panel being open. **Deliberately deferred**, 2026-08-13. |
 | C1 | **Dusk saturation.** Physical twilight is more graduated and less saturated than TP's authored dusk. | Sunsets read calmer / less punchy than vanilla. | Lower `physicalWeight`'s `elevationTerm` at low sun; or add a saturation push applied to the *medium's* Rayleigh/Mie tint, not to output pixels. |
 | C2 | **Exponential never fully closes.** | Distant terrain slightly more visible than vanilla at `fog_end_z`. | The §5.2 range split is the fix; if still short, lower the split distance so the vanilla ramp owns more. |
 | C3 | **Clouds have no physical analogue.** `kumo_top/bottom/shadow` (**kumo** = 雲, cloud) describe painted cloud bands. | Skies read emptier than vanilla if the vrbox — the game's skybox dome — is replaced wholesale. | Keep TP's cloud layer as geometry over our sky (Phase D). |
@@ -880,7 +1039,9 @@ row says otherwise.
 | `rtx_scene_manager.cpp` | fog state selection + `prepareSceneData` | `DusklightAtmosphere::active()` |
 | `rtx_global_volumetrics.cpp` `getVolumeArgs` | one early branch to the Dusklight derivation | same |
 | `rtx_composite.cpp` | fills `DusklightCompositeArgs` for the far half of the fog | same |
-| `composite.comp.slang` `applyFog` | range split | `cb.dusklightArgs.enable` |
+| `composite.comp.slang` `applyFog` | range split (mode 0) / top-up residual (mode 1), plus three helpers next to `sampleDomeLightTexture` | `cb.dusklightArgs.enable` |
+| `composite.comp.slang` stochastic alpha blend | the same top-up applied to alpha-blended surfaces, so particles are fogged like the geometry behind them | `cb.dusklightArgs.enable` and `fogRampMode != 0` |
+| `rtx_global_volumetrics.cpp` | `volumetricFogAnisotropy` taken from the Dusklight medium instead of `rtx.volumetrics.anisotropy` | `dusklight` |
 | `composite_args.h` | one args struct added (`DusklightCompositeArgs`) | additive only |
 | `froxel.slangh` + `VolumeArgs` | `previousFroxelMaxDistance` | additive; also a genuine upstream fix |
 | `rtx_light_manager.cpp` | **two** related corrections, both unguarded, both about the RTXDI buffer index on API lights — a rebase that re-applies one and not the other gets the worse half of each. See the row below and *Effect lights* | none — straight corrections, and they apply to every API light |
@@ -1041,6 +1202,8 @@ aurora, not against Remix.
 | Time-of-day scrub + freeze | landed 2026-07-28, **tested good 2026-07-29** — `DusklightOverlay.md` §3.2.1 |
 | Fog-avoid tag (kytag08) | **closed 2026-08-11 without code.** It touches no fog; §8.2 and C6 record why, and nothing is owed |
 | colpat 9 bypass | **instrumented 2026-08-11, decision deferred.** `logColpatOnce` added; the literal's source is the wrong index space and whether any stage runs colpat 9 is UNKNOWN. **Untested in game — one play session with the clock freeze off settles it.** §8.6 has the three possible results and what each one triggers |
+| `skyFogMode` = Exempt | **TESTED GOOD 2026-08-13.** The sky no longer picks up the medium; the horizon seam and the dingy sky are gone. Weighted stays as a taste control for foggy weather rather than as a rival candidate, and Off stays as the A/B baseline. This closes the "live defect" below |
+| Fog rework: top-up ramp, density cap, dome-derived ambient, forward scattering | **landed 2026-08-13, UNTESTED IN GAME.** No protocol bump — this is fork-only and reads game state that was already on the wire. §5.2/§5.3/§5.4 carry the design and the derivations; the four causes it addresses are C11, C10 (half), the 4.4× near/far colour mismatch and the isotropic phase function |
 | colpat crossfade (`styleTerm`) | **landed 2026-08-11, protocol 13, UNTESTED IN GAME.** The bridge pushed one third of the game's palette blend; `styleTerm` now follows all three and lerps instead of cutting on the incoming index. Default-safe by algebra at `colpatBlend == 1.0`, which is both the option default and the game's steady state. §4.1 has the derivation, the regression signature and why the colpat 9 guard was left alone |
 
 Owner's verdict on A + B after testing: *"a massive, frankly monumental
@@ -1136,7 +1299,13 @@ prefetching the pack on a worker thread so the CS thread never waits on cold
 reads. Neither was done as part of the tested 2026-08-06 change.
 `aurora-ao/docs/dx9/texture-replacements.md` §9.
 
-### The live defect: the medium dims the generated sky
+### The live defect: the medium dims the generated sky — CLOSED 2026-08-13
+
+**Exempt was run in game and confirmed good.** The section below is kept as the
+record of the defect and of how it was found, because §14.8's general lesson —
+a guard in one path is not a guarantee across the system — outlives it. Both
+other modes remain: Off as the A/B baseline, Weighted as a taste control for
+genuinely foggy weather. Neither is a candidate any more.
 
 Found 2026-07-29. Frozen noon with `physicalSky` on, and worse in Lake Hylia
 morning fog with it off: the visible sky reads dim and dingy, and there is a
@@ -1365,6 +1534,36 @@ Two general lessons in it:
    Remix code that attenuates something by the full grid depth behaves very
    differently for us than it does for stock. Worth checking the same question
    anywhere else `volumeAttenuation` is applied to a distant or infinite source.
+
+### 14.11 The volumetric fog cannot see the sky, and never could
+
+Found 2026-08-13, and it explains a complaint nobody had connected to a
+mechanism: outdoor fog reading as a flat grey veil in shadow rather than as air.
+
+**Remix's froxel grid is lit by next event estimation over the RTXDI light list.
+That list holds five types — sphere, rect, disk, cylinder, distant
+(`shaders/rtx/concept/light/light_types.h`, `lightTypeCount = 5`). A dome light
+is not one of them.** It lives in `domeLightArgs` and is sampled by
+`sampleDomeLightTexture`, which appears in the geometry resolver, the indirect
+integrator and the composite — and in none of the volumetric code.
+
+So the fog is lit by the sun and by analytic lights and by nothing else.
+Everything it showed in shadow came from `multiScatteringEstimate`, a flat
+constant. The fidelity table in §9 already said "Remix has no dome light type"
+for interiors; what nobody drew out is that it is equally true **outdoors**,
+where there very much is a sky and the fog still cannot see it.
+
+Two lessons:
+
+1. **"The sky lights the scene" and "the sky lights the fog" are separate
+   claims here.** The first is true through ray miss on indirect bounces; the
+   second is false, and no amount of dome-light tuning changes it.
+2. **The general shape: a system fed by one list is blind to anything not in
+   that list, however visible it is elsewhere in the frame.** Worth checking
+   the same question for any other consumer of `RAB_GetLightRange`.
+
+The fix is §5.3 — measure the dome and hand the fog its average — rather than
+adding a light type, which would mean changing RTXDI.
 
 ### 14.9 "No texture, therefore untaggable" was wrong — there are three routes, not one
 

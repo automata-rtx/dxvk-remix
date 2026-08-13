@@ -48,6 +48,49 @@ float3 sampleDomeLightTexture(Sampler2D<float3> DomeLight, float3 worldDirection
   return DomeLight.SampleLevel(sampleUV, 0).xyz;
 }
 
+// The game's own fog at a distance: GX_FOG_PERSP_LIN, and nothing else.
+// f(z) = saturate((z - start) / (end - start)), applied at d_kankyo.cpp:9423.
+float dusklightGameFog(float viewDistance)
+{
+  const float span = cb.dusklightArgs.rampEnd - cb.dusklightArgs.rampStart;
+
+  if (cb.dusklightArgs.enable == 0 || span <= 0.0f)
+  {
+    return 0.0f;
+  }
+
+  return saturate((viewDistance - cb.dusklightArgs.rampStart) / span);
+}
+
+// How much fog is still owed after the medium has had its say, as a fraction of what the medium left
+// unfogged. Derived at the use site in applyFog; the short version is that blending by this lands the
+// surface behind exactly the game's own ramp, whatever density the medium happens to have.
+float dusklightTopUpResidual(float gameFog, vec3 volumeAttenuation)
+{
+  const float mediumOpacity = 1.0f - saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
+
+  return saturate((gameFog - mediumOpacity) / max(1.0f - mediumOpacity, 1e-4f));
+}
+
+// What the fog blends towards: the game's palette colour, steered towards the sky actually behind
+// this pixel. Distant things fade towards whatever sky is behind them, which is why the original
+// authored its fog colour in the same palette entry as its sky in the first place.
+float3 dusklightFogRadiance(float3 worldDirection)
+{
+  float3 radiance = cb.dusklightArgs.fogColor;
+
+  if (cb.dusklightArgs.skyColorWeight > 0.0f && cb.domeLightArgs.active)
+  {
+    const float3 skyRadiance = cb.domeLightArgs.radiance *
+      sampleDomeLightTexture(SkyLight, worldDirection, cb.domeLightArgs.worldToLightTransform) *
+      max(cb.dusklightArgs.skyAmbientScale, 0.0f);
+
+    radiance = lerp(radiance, skyRadiance, saturate(cb.dusklightArgs.skyColorWeight));
+  }
+
+  return radiance;
+}
+
 void preCompositeDebugView(uint2 pixelCoordinate)
 {
   // Debug views that need to run before the union-active early-out so they cover every pixel.
@@ -533,8 +576,26 @@ void applyVolumetricLighting(
           cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, false, cameraGetWorldPosition(cb.camera), surface.hitT, primaryRayDirections.worldDirection,
           alphaVolumetricPreintegratedRadiance, alphaVolumetricAttenuation);
 
-        alphaBlendOutput *= alphaVolumetricAttenuation * (1 - backgroundAlpha);
-        alphaBlendOutput += alphaVolumetricPreintegratedRadiance * (1 - backgroundAlpha);
+        vec3 alphaFogged = alphaBlendOutput * alphaVolumetricAttenuation + alphaVolumetricPreintegratedRadiance;
+
+        // The same top up the opaque path gets, and it has to be here or alpha blended surfaces are
+        // fogged by the medium alone while everything around them is fogged by the medium plus the
+        // ramp. That was survivable while the medium carried most of the fog; once it is thinned to
+        // fit under the game's own curve, a particle in front of distant terrain would sit in front
+        // of it almost unfogged. No sparse compensation on the fog colour, for the same reason the
+        // comment below gives for the rest of this signal: it is already dense.
+        if (cb.dusklightArgs.enable != 0 && cb.dusklightArgs.fogRampMode != 0)
+        {
+          const float alphaFogT =
+            dusklightTopUpResidual(dusklightGameFog(surface.hitT), alphaVolumetricAttenuation);
+
+          if (alphaFogT > 0.0f)
+          {
+            alphaFogged = lerp(alphaFogged, dusklightFogRadiance(primaryRayDirections.worldDirection), alphaFogT);
+          }
+        }
+
+        alphaBlendOutput = alphaFogged * (1 - backgroundAlpha);
       }
       else
       {
@@ -630,9 +691,8 @@ void applyFog(
 {
   if (cb.volumeArgs.enable)
   {
-    // Volumetric fog is applied in volume integration - but only as far as the froxel grid reaches, because the froxel
-    // lookup saturates past its last slice and stops accumulating there. Dusklight's fog regularly runs far beyond that,
-    // so the game's own ramp carries the rest of the distance. DusklightAtmosphere.md §5.2.
+    // The game's own ramp, applied on top of the medium. Which part of the distance it covers depends on fogRampMode -
+    // see dusklight_composite_args.h and DusklightAtmosphere.md §5.2.
     if (cb.dusklightArgs.enable == 0)
     {
       return;
@@ -649,47 +709,78 @@ void applyFog(
 
     const float span = cb.dusklightArgs.rampEnd - cb.dusklightArgs.rampStart;
 
-    if (span <= 0.0f || viewDistance <= cb.dusklightArgs.handoverDistance)
+    if (span <= 0.0f)
     {
       return;
     }
 
-    // How much of the ramp the grid already covered, and how much of what it left is still to be fogged. Expressing the
-    // remainder as a fraction of the *remaining* clear signal is what stops the two halves counting the same air twice,
-    // and it reaches exactly 1 at the ramp's end - which is where the original went fully opaque and where an
-    // exponential medium never quite arrives.
-    const float fogAtHandover = saturate((cb.dusklightArgs.handoverDistance - cb.dusklightArgs.rampStart) / span);
-    const float fogAtDistance = saturate((viewDistance - cb.dusklightArgs.rampStart) / span);
-    const float remaining = 1.0f - fogAtHandover;
+    // The original's fog at this distance. This is the number the whole system is trying to land on.
+    const float fogAtDistance = dusklightGameFog(viewDistance);
 
-    if (remaining <= 1e-4f)
+    float t;
+
+    if (cb.dusklightArgs.fogRampMode == 0)
     {
-      // The grid already reaches past the end of the ramp; there is nothing left to add.
+      // Handover: the ramp only owns what is past the froxel grid, rebased there so the two halves never count the same
+      // air twice. Kept as the A/B baseline for the top up mode below.
+      if (viewDistance <= cb.dusklightArgs.handoverDistance)
+      {
+        return;
+      }
+
+      const float fogAtHandover = saturate((cb.dusklightArgs.handoverDistance - cb.dusklightArgs.rampStart) / span);
+      const float remaining = 1.0f - fogAtHandover;
+
+      if (remaining <= 1e-4f)
+      {
+        // The grid already reaches past the end of the ramp; there is nothing left to add.
+        return;
+      }
+
+      t = saturate((fogAtDistance - fogAtHandover) / remaining);
+
+      // Scaled by how much light the near volume still lets past, since the far fog sits behind that volume and can only
+      // affect what survives it. An approximation, and the top up mode replaces it with an identity.
+      t *= saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
+    }
+    else
+    {
+      // Top up: the ramp owns the fog's appearance at every distance, and what it adds is the residual against what the
+      // medium already achieved. The medium is then free to be whatever density carries light shafts well, because it is
+      // no longer the thing responsible for how thick the fog looks.
+      //
+      // The residual is exact, not a blend that happens to look right. Writing T for the medium's transmittance to this
+      // surface, m = 1 - T for the opacity it already produced, and f for the game's ramp above:
+      //
+      //     t = (f - m) / (1 - m)
+      //     T * (1 - t) = (1 - m) * (1 - (f - m) / (1 - m)) = (1 - m) - (f - m) = 1 - f
+      //
+      // so the surface arrives attenuated by exactly the game's ramp, at every distance, for any density the medium
+      // happens to have. The in-scatter riding along with it is scaled by the same (1 - t) and the fog colour is added
+      // at t; with the medium's ambient term set to the same radiance this blends towards - which is what
+      // rtx.dusklight.atmosphere.multiScatteringScale = 1 means - those two sum to exactly fogColor * f as well.
+      // The medium's *lit* in-scatter, the shafts, is the only thing left over, which is the entire intent.
+      //
+      // The residual is clamped at zero rather than allowed to go negative. Negative means the medium is denser than
+      // the game's fog here, and the honest response is to stop adding rather than to subtract light that has already
+      // been integrated - dividing it back out amplifies the froxel grid's noise. The host bounds that case ahead of
+      // time instead, by capping sigma so the medium cannot outrun the ramp; the peak it allows is
+      // rtx.dusklight.atmosphere.clearZoneTolerance and it is reported in the atmosphere panel and the log.
+      t = dusklightTopUpResidual(fogAtDistance, volumeAttenuation);
+    }
+
+    // Nothing to add. Worth its own exit rather than folding into the lerp: top up mode runs at every
+    // hit pixel rather than only distant ones, and the dome fetch below is the only expensive line
+    // here. Near geometry, where the residual is zero, therefore costs a compare.
+    if (t <= 0.0f)
+    {
       return;
     }
 
-    float t = saturate((fogAtDistance - fogAtHandover) / remaining);
-
-    // Scaled by how much light the near volume still lets past, since the far fog sits behind that volume and can only
-    // affect what survives it. It also stands in for a separation we cannot make here: radianceOutput already holds the
-    // surface radiance and the near in-scatter summed, and only the former is behind the far fog, so blending both would
-    // erase in-scatter that is in front of it. Weighting by the near transmittance keeps that error where the in-scatter
-    // is small, which is the same place the far fog is strong.
-    t *= saturate(dot(volumeAttenuation, vec3(1.0f / 3.0f)));
-
-    vec3 farFogRadiance = cb.dusklightArgs.fogColor;
-
-    // Distant geometry fades towards the sky that is behind it, which is what aerial perspective
-    // means and why the original's fog colour was authored in the same palette entry as its sky.
-    // Once the sky is simulated the palette no longer describes it, so the fog follows the sky
-    // itself - sampled in the view direction, so it varies across the frame the way the sky does.
-    if (cb.dusklightArgs.skyColorWeight > 0.0f && cb.domeLightArgs.active)
-    {
-      const vec3 skyRadiance = cb.domeLightArgs.radiance *
-        sampleDomeLightTexture(SkyLight, worldDirection, cb.domeLightArgs.worldToLightTransform);
-
-      farFogRadiance = lerp(farFogRadiance, skyRadiance, saturate(cb.dusklightArgs.skyColorWeight));
-    }
+    // The near half of the fog follows the same dome, as a sphere average, because the term it feeds
+    // is isotropic. One weight drives both (skyAmbientWeight); splitting them is how the fog ends up
+    // one colour close by and another in the distance.
+    vec3 farFogRadiance = dusklightFogRadiance(worldDirection);
 
     if (cb.sparseRenderingArgs.mode != SparseRenderingMode::Off)
     {

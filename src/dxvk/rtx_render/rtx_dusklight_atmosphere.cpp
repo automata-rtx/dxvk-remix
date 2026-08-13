@@ -30,17 +30,21 @@
 #include "dxvk_scoped_annotation.h"
 #include "rtx_render/rtx_shader_manager.h"
 #include "rtx/pass/dusklight/dusklight_sky.h"
+#include "rtx/pass/dusklight/dusklight_sky_stats.h"
 #include "rtx/pass/dusklight/dusklight_atmosphere.h"
 #include "rtx/pass/dusklight/dusklight_composite_args.h"
 
 #include <rtx_shaders/dusklight_sky.h>
+#include <rtx_shaders/dusklight_sky_stats.h>
 #include <rtx_shaders/dusklight_transmittance.h>
 #include <rtx_shaders/dusklight_multiscatter.h>
 #include "rtx_imgui.h"
+#include "rtx_utils.h"
 #include "../../util/util_color.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace dxvk {
   // Defined within an unnamed namespace to ensure unique definition across binary
@@ -87,6 +91,20 @@ namespace dxvk {
 
     PREWARM_SHADER_PIPELINE(DusklightMultiScatterShader);
 
+    class DusklightSkyStatsShader : public ManagedShader
+    {
+      SHADER_SOURCE(DusklightSkyStatsShader, VK_SHADER_STAGE_COMPUTE_BIT, dusklight_sky_stats)
+
+      PUSH_CONSTANTS(DusklightAtmosphereArgs)
+
+      BEGIN_PARAMETER()
+        RW_TEXTURE2D_READONLY(DUSKLIGHT_SKY_STATS_INPUT)
+        RW_STRUCTURED_BUFFER(DUSKLIGHT_SKY_STATS_OUTPUT)
+      END_PARAMETER()
+    };
+
+    PREWARM_SHADER_PIPELINE(DusklightSkyStatsShader);
+
     // Small on purpose. The dome is a smooth gradient with no detail to lose, and every ray that
     // misses geometry samples it, so a compact image stays resident in cache. It doubles as the
     // physical sky's sky-view lookup - that is why there is no fourth Hillaire table here.
@@ -108,6 +126,11 @@ namespace dxvk {
       0.0f, 1.0f, 0.0f, 0.0f,
       0.0f, 0.0f, 0.0f, 1.0f,
     };
+
+    // A session that visits more distinct fog states than this gets one notice and then silence.
+    // Areas reuse a handful of ramps each, so in practice this is never reached; it exists so that
+    // an area which retunes its fog every frame cannot fill a disk.
+    constexpr size_t kMaxLoggedFogStates = 32;
 
     bool isFinite(float v) {
       return !std::isnan(v) && !std::isinf(v);
@@ -140,6 +163,11 @@ namespace dxvk {
     // Forget what the tables held, or they would be considered current after being destroyed.
     m_lutSkyColor = Vector3(-1.0f, -1.0f, -1.0f);
     m_lutPaletteInfluence = -1.0f;
+    // The dome is gone, so its average describes nothing. The flag rather than the value, so the fog
+    // falls back to the palette colour instead of holding a stale radiance.
+    m_skyStatsGpu = nullptr;
+    m_skyStatsHost = nullptr;
+    m_skyAmbientValid = false;
   }
 
   bool DxvkDusklightAtmosphere::active() const {
@@ -173,12 +201,92 @@ namespace dxvk {
     m_derived = resolve();
   }
 
+  // Peak of (medium opacity - the game's ramp) over the ramp's own range.
+  //
+  // Both curves are known analytically, so this is four candidate points rather than a search. The
+  // medium is 1 - exp(-sigma * z); the game is a clamped line. Their difference can only peak where
+  // the line starts (the medium has been extinguishing since the camera and the line has not begun),
+  // where their slopes are equal, or at an end of the interval.
+  float DxvkDusklightAtmosphere::rampExcessPeak(float sigma, float start, float end, float& peakDistance) {
+    peakDistance = 0.0f;
+
+    const float span = end - start;
+
+    if (!(span > 0.0f) || !(sigma > 0.0f) || !(end > 0.0f)) {
+      return 0.0f;
+    }
+
+    const auto excessAt = [&](float z) {
+      const float mediumOpacity = 1.0f - std::exp(-sigma * z);
+      const float gameOpacity = std::clamp((z - start) / span, 0.0f, 1.0f);
+      return mediumOpacity - gameOpacity;
+    };
+
+    // The clear zone's far edge, which is where a positive excess almost always lives. Clamped to
+    // zero because a scripted fog bank sets a negative start and then has no clear zone at all.
+    float bestDistance = std::max(start, 0.0f);
+    float best = excessAt(bestDistance);
+
+    const auto consider = [&](float z) {
+      if (z <= 0.0f || z > end) {
+        return;
+      }
+
+      const float value = excessAt(z);
+
+      if (value > best) {
+        best = value;
+        bestDistance = z;
+      }
+    };
+
+    // Where the exponential's slope falls to the line's. Only exists once sigma * span > 1; below
+    // that the line is always steeper and the difference is decreasing from the clear zone onward.
+    if (sigma * span > 1.0f) {
+      consider(std::log(sigma * span) / sigma);
+    }
+
+    consider(end);
+
+    peakDistance = bestDistance;
+
+    return std::max(best, 0.0f);
+  }
+
+  float DxvkDusklightAtmosphere::solveSigmaWithinTolerance(float sigmaMatched, float start, float end,
+                                                           float tolerance) {
+    float unusedDistance = 0.0f;
+
+    if (!(sigmaMatched > 0.0f) || rampExcessPeak(sigmaMatched, start, end, unusedDistance) <= tolerance) {
+      return sigmaMatched;
+    }
+
+    // The peak rises monotonically with sigma - every point of the medium's curve does, and the ramp
+    // it is measured against does not move - so a plain bisection converges without a starting guess
+    // and cannot land on a local answer. 40 steps takes the bracket below single precision.
+    float low = 0.0f;
+    float high = sigmaMatched;
+
+    for (int i = 0; i < 40; ++i) {
+      const float mid = (low + high) * 0.5f;
+
+      if (rampExcessPeak(mid, start, end, unusedDistance) <= tolerance) {
+        low = mid;
+      } else {
+        high = mid;
+      }
+    }
+
+    return low;
+  }
+
   DxvkDusklightAtmosphere::Derived DxvkDusklightAtmosphere::resolve() const {
     Derived out = {};
     out.outdoor = DusklightEnv::enable() && !DusklightEnv::skyHidden();
     // Resolved before the fog checks below, deliberately: an area can have a sky and no fog, and
     // the sky must not go dark just because nobody put haze in the room.
     out.physicalWeight = resolvePhysicalWeight();
+    out.fogAnisotropy = std::clamp(fogAnisotropy(), -0.95f, 0.95f);
 
     if (!enable() || !DusklightEnv::enable() || !DusklightEnv::fogActive()) {
       return out;
@@ -201,9 +309,28 @@ namespace dxvk {
     // opaque point behind it too; the clamp is what stops the density running away there.
     const float zHalf = std::max((start + end) * 0.5f, std::max(zHalfMin(), 1e-3f));
 
-    out.sigma = std::max(std::log(2.0f) / zHalf, 0.0f) * std::max(densityScale(), 0.0f);
+    out.sigmaMatched = std::max(std::log(2.0f) / zHalf, 0.0f) * std::max(densityScale(), 0.0f);
+    out.sigma = out.sigmaMatched;
     out.rampStart = start;
     out.rampEnd = end;
+
+    // Hold the medium under the game's own ramp.
+    //
+    // Only in top up mode, and the distinction is not a detail. In handover mode the medium *is* the
+    // fog for everything inside the froxel grid, so thinning it would delete the fog rather than
+    // correct it. In top up mode the ramp supplies whatever opacity the medium falls short of, so
+    // the only thing the medium must not do is overshoot - and the half density match overshoots
+    // badly wherever the original left a clear zone, because the game's ramp is exactly zero before
+    // fogStartZ and an exponential has been extinguishing since the camera. With start halfway to
+    // end, the matched medium is already about 37% opaque at the point the original is untouched.
+    // That haze over the near field is the single largest reason the volumetric path reads greyer
+    // and flatter than the depth ramp it replaced. DusklightAtmosphere.md ledger C11.
+    if (fogRampMode() == 1 && limitDensityToRamp()) {
+      out.sigma = solveSigmaWithinTolerance(out.sigmaMatched, start, end,
+                                            std::clamp(clearZoneTolerance(), 0.0f, 0.5f));
+    }
+
+    out.excessPeak = rampExcessPeak(out.sigma, start, end, out.excessPeakDistance);
 
     // The game authors its fog colour to be blended over a finished, display referred image. Here
     // it is a quantity of light in a linear frame that has not been tone mapped yet, so it is
@@ -211,6 +338,28 @@ namespace dxvk {
     // keeps the near medium and the far ramp the same colour.
     out.fogRadiance = sRGBGammaToLinear(sanitizeColor(DusklightEnv::fogColor())) *
                       std::max(fogRadianceScale(), 0.0f);
+
+    // Steer that colour towards the sky the scene is actually standing under.
+    //
+    // Two things are wrong with the palette colour on its own, and this fixes the second and softens
+    // the first. It is a display colour rather than a radiance, so its level means nothing in a
+    // linear frame - and the froxel grid is lit by next event estimation over the RTXDI light list,
+    // which has no dome light in it, so fog in shadow receives nothing from the sky and falls back
+    // to that colour entirely. The dome's mean radiance is a real measurement of the same thing the
+    // palette entry was describing, taken in the units the renderer works in.
+    //
+    // Gated on an actual reduction having run. Until then, and anywhere there is no sky at all, the
+    // palette colour stands - which is also exactly the behaviour this had before the change.
+    const bool skyAmbientAvailable = m_skyAmbientValid && skyActive();
+
+    out.skyAmbientWeight = skyAmbientAvailable ? std::clamp(skyAmbientWeight(), 0.0f, 1.0f) : 0.0f;
+    out.fogAmbient = out.fogRadiance;
+
+    if (out.skyAmbientWeight > 0.0f) {
+      const Vector3 domeAmbient = m_skyAmbient * std::max(skyAmbientScale(), 0.0f);
+
+      out.fogAmbient = out.fogRadiance * (1.0f - out.skyAmbientWeight) + domeAmbient * out.skyAmbientWeight;
+    }
 
     // Size the grid from the game's own fog range, so its fixed slice count lands where the fog
     // actually is. This costs nothing: the slice count does not change, only how far it reaches.
@@ -240,7 +389,80 @@ namespace dxvk {
     out.froxelMaxDistance = m_smoothedFroxelMaxDistance;
     out.fogValid = true;
 
+    logFogStateOnce(out);
+
     return out;
+  }
+
+  // Everything the fog's level and shape depend on, in one line, once per distinct state.
+  //
+  // It exists so that "the fog looks wrong in this cave" can be answered from a log rather than by
+  // asking someone to describe a colour. The three numbers that actually decide the look are the two
+  // extinctions (equal unless the clear zone cap is binding, and their ratio is how much density the
+  // cap is spending), the peak excess (how far the medium out-fogs the original, which is what the
+  // top up ramp cannot undo), and the ambient with its source (palette or dome, which is what decides
+  // whether a dark room's fog can lift the blacks).
+  void DxvkDusklightAtmosphere::logFogStateOnce(const Derived& d) const {
+    // Quantised so that a fog range easing through a transition reports its endpoints rather than
+    // every frame in between. Coarse on purpose: two states that differ by less than these steps
+    // cannot look different.
+    const auto bucket = [](float value, float step) {
+      return static_cast<int64_t>(std::llround(value / step));
+    };
+
+    uint64_t key = 1469598103934665603ull;
+
+    const auto mix = [&key](int64_t value) {
+      key ^= static_cast<uint64_t>(value);
+      key *= 1099511628211ull;
+    };
+
+    mix(bucket(d.rampStart, 16.0f));
+    mix(bucket(d.rampEnd, 16.0f));
+    mix(bucket(d.sigma * 1e5f, 1.0f));
+    mix(bucket(d.fogAmbient.x + d.fogAmbient.y + d.fogAmbient.z, 0.05f));
+    mix(bucket(d.skyAmbientWeight, 0.1f));
+
+    for (const uint64_t seen : m_loggedFogStates) {
+      if (seen == key) {
+        return;
+      }
+    }
+
+    if (m_loggedFogStates.size() >= kMaxLoggedFogStates) {
+      if (!m_loggedFogStateOverflow) {
+        m_loggedFogStateOverflow = true;
+        Logger::info(str::format(
+          "[Dusklight] fog: ", kMaxLoggedFogStates,
+          " distinct fog states reported; further ones are suppressed for the rest of this run."));
+      }
+      return;
+    }
+
+    m_loggedFogStates.push_back(key);
+
+    const auto round2 = [](float value) {
+      return std::round(value * 100.0f) / 100.0f;
+    };
+
+    const bool capped = d.sigma < d.sigmaMatched * 0.999f;
+
+    Logger::info(str::format(
+      "[Dusklight] fog: ramp ", std::llround(d.rampStart), "..", std::llround(d.rampEnd),
+      " units, extinction ", d.sigma, "/unit",
+      capped ? str::format(" (capped from ", d.sigmaMatched, " to keep the medium under the game's ramp)")
+             : std::string(" (uncapped - the half density match already fits under the game's ramp)"),
+      ", half density at ", d.sigma > 1e-8f ? std::llround(std::log(2.0f) / d.sigma) : 0ll,
+      " units, grid reach ", std::llround(d.froxelMaxDistance),
+      " units, peak excess over the game's ramp ", round2(d.excessPeak),
+      " at ", std::llround(d.excessPeakDistance),
+      " units, ambient ", round2(d.fogAmbient.x), ",", round2(d.fogAmbient.y), ",", round2(d.fogAmbient.z),
+      " (", round2(d.skyAmbientWeight * 100.0f), "% from the sky dome, the rest from the game's palette colour ",
+      round2(d.fogRadiance.x), ",", round2(d.fogRadiance.y), ",", round2(d.fogRadiance.z),
+      "), ramp mode ", fogRampMode() == 1 ? "top-up" : "handover",
+      ", anisotropy ", round2(d.fogAnisotropy),
+      ". One line per distinct fog state, capped at ", kMaxLoggedFogStates,
+      ". See documentation/DusklightAtmosphere.md section 5.2."));
   }
 
   // Reports each distinct colour pattern that reaches the Palace of Twilight bypass, once per run.
@@ -456,8 +678,23 @@ namespace dxvk {
 
     // The colour arrives here rather than through extinction. Without it the fog is only ever as
     // bright as the lights that reach it, and the game's fog is never black - it was a blend
-    // towards an authored colour, not a simulation, so an unlit room still had coloured fog.
-    multiScatteringEstimate = d.fogRadiance * std::max(multiScatteringScale(), 0.0f);
+    // towards an authored colour, not a simulation, so an unlit room still had coloured fog. It is
+    // also the only thing the fog receives from the sky, since the froxel grid's next event
+    // estimation runs over the RTXDI light list and no dome light appears in it.
+    //
+    // Divided by the albedo on the way in, and that division is what makes the two halves of the fog
+    // agree. The raymarch adds this term as (estimate * scatteringCoefficient) integrated along the
+    // ray, and scatteringCoefficient is sigma * albedo, so a constant estimate M over a path of
+    // opacity (1 - T) contributes M * albedo * (1 - T). Undoing the albedo here lands that on
+    // exactly fogAmbient * (1 - T) - the same radiance, and the same curve, that the composite's
+    // ramp blends towards. Without it the near half of the fog reached 0.9 of the far half's colour
+    // at best, and 0.225 of it with the multiScatteringScale default that shipped before 2026-08-13.
+    const Vector3 albedoFloor(std::max(albedo.x, 1e-3f), std::max(albedo.y, 1e-3f), std::max(albedo.z, 1e-3f));
+    const Vector3 ambient = d.fogAmbient * std::max(multiScatteringScale(), 0.0f);
+
+    multiScatteringEstimate = Vector3(ambient.x / albedoFloor.x,
+                                      ambient.y / albedoFloor.y,
+                                      ambient.z / albedoFloor.z);
   }
 
   void DxvkDusklightAtmosphere::fillCompositeArgs(DusklightCompositeArgs& args) const {
@@ -470,20 +707,30 @@ namespace dxvk {
     const Derived& d = m_derived;
 
     args.enable = 1;
+    // The palette colour, not the resolved ambient: the shader does its own lerp towards the dome,
+    // sampled in the view direction rather than averaged, and passing the already-blended value
+    // would apply the sky twice.
     args.fogColor = d.fogRadiance;
     args.rampStart = d.rampStart;
     args.rampEnd = d.rampEnd;
     args.handoverDistance = d.froxelMaxDistance;
-    // The same weight the sky itself was blended with. Once the sky stops coming from the palette,
-    // the palette's fog colour stops describing it, and letting the fog keep the old colour would
-    // leave the horizon one weather and the air in front of it another.
-    args.skyColorWeight = skyActive() ? std::clamp(d.physicalWeight, 0.0f, 1.0f) : 0.0f;
+    // The same weight the medium's ambient was blended with, so the fog is one colour at every
+    // distance. It used to be the physical sky's blend weight, which meant the far fog followed the
+    // sky only while the scattering model was running - and left the near half following a palette
+    // colour regardless. Both halves now follow the dome whenever there is one.
+    args.skyColorWeight = std::clamp(d.skyAmbientWeight, 0.0f, 1.0f);
+    args.skyAmbientScale = std::max(skyAmbientScale(), 0.0f);
     args.skyFogMode = static_cast<uint32_t>(std::clamp(skyFogMode(), 0, 2));
     args.skyFogAmount = std::clamp(skyFogAmount(), 0.0f, 1.0f);
+    args.fogRampMode = static_cast<uint32_t>(std::clamp(fogRampMode(), 0, 1));
   }
 
   void DxvkDusklightAtmosphere::prepareSceneData(Rc<RtxContext> ctx, SceneManager& sceneManager) {
     if (!skyActive()) {
+      // No dome this frame, so the last reduction describes a sky that is no longer there. Dropping
+      // the flag rather than the value sends the fog back to the game's palette colour, which is the
+      // right answer indoors and the only answer available there.
+      m_skyAmbientValid = false;
       return;
     }
 
@@ -520,6 +767,32 @@ namespace dxvk {
     if (m_skyTexture.view == nullptr || m_transmittanceLut.view == nullptr || m_multiScatterLut.view == nullptr) {
       ONCE(Logger::err("[Dusklight] failed to create the generated sky images; falling back to Remix's sky probe."));
       return;
+    }
+
+    // One device local element the reduction writes, plus a host visible ring of kMaxFramesInFlight
+    // that is copied into and read from at an offset old enough to have landed. The same shape as
+    // the auto exposure debug stats, and for the same reason: reading a GPU write in the frame that
+    // produced it means a stall, and nothing here is worth a stall.
+    if (m_skyStatsGpu == nullptr) {
+      DxvkBufferCreateInfo statsInfo;
+      statsInfo.size = sizeof(DusklightSkyStats);
+      statsInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+      statsInfo.stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+      statsInfo.access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+      m_skyStatsGpu = m_device->createBuffer(statsInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                             DxvkMemoryStats::Category::RTXBuffer, "dusklight sky stats");
+      ctx->clearBuffer(m_skyStatsGpu, 0, statsInfo.size, 0);
+
+      statsInfo.size = sizeof(DusklightSkyStats) * kMaxFramesInFlight;
+      statsInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      statsInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
+      statsInfo.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+      m_skyStatsHost = m_device->createBuffer(statsInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                                              DxvkMemoryStats::Category::RTXBuffer, "dusklight sky stats HOST");
+
+      if (m_skyStatsHost != nullptr && m_skyStatsHost->mapPtr(0) != nullptr) {
+        std::memset(m_skyStatsHost->mapPtr(0), 0, statsInfo.size);
+      }
     }
 
     const Derived& d = derived();
@@ -628,6 +901,47 @@ namespace dxvk {
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
     }
 
+    // Reduce the dome to the one radiance the fog needs, and collect the answer from a few frames
+    // ago. Runs every frame, unconditionally, rather than only while a tuning panel is open: this
+    // one feeds the image rather than a readout, and a value that appears only when someone is
+    // looking is the definition of a heisenbug.
+    if (m_skyStatsGpu != nullptr && m_skyStatsHost != nullptr) {
+      {
+        ScopedGpuProfileZone(ctx, "Dusklight Sky Ambient");
+
+        // imageSize is already the sky's extent from the dispatch above; the reduction reads the
+        // same two numbers, so nothing is re-derived here.
+        ctx->pushConstants(0, sizeof(pushArgs), &pushArgs);
+
+        ctx->bindResourceView(DUSKLIGHT_SKY_STATS_INPUT, m_skyTexture.view, nullptr);
+        ctx->bindResourceBuffer(DUSKLIGHT_SKY_STATS_OUTPUT, DxvkBufferSlice(m_skyStatsGpu));
+        ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, DusklightSkyStatsShader::getShader());
+        ctx->dispatch(1, 1, 1);
+      }
+
+      const uint32_t frameId = m_device->getCurrentFrameId();
+      const uint32_t writeIndex = frameId % kMaxFramesInFlight;
+
+      ctx->copyBuffer(m_skyStatsHost, sizeof(DusklightSkyStats) * writeIndex,
+                      m_skyStatsGpu, 0, sizeof(DusklightSkyStats));
+
+      const uint32_t readIndex = (frameId + 1) % kMaxFramesInFlight;
+
+      if (const void* mapped = m_skyStatsHost->mapPtr(sizeof(DusklightSkyStats) * readIndex)) {
+        DusklightSkyStats stats = {};
+        std::memcpy(&stats, mapped, sizeof(stats));
+
+        const Vector3 ambient(stats.ambient.x, stats.ambient.y, stats.ambient.z);
+
+        // Trusted only once it is both flagged valid and finite. The buffer starts zeroed, so the
+        // first few frames of a launch read valid == 0 and the palette colour stands.
+        if (stats.valid != 0 && isFinite(ambient.x) && isFinite(ambient.y) && isFinite(ambient.z)) {
+          m_skyAmbient = Vector3(std::max(ambient.x, 0.0f), std::max(ambient.y, 0.0f), std::max(ambient.z, 0.0f));
+          m_skyAmbientValid = true;
+        }
+      }
+    }
+
     TextureRef skyRef(m_skyTexture.view);
     sceneManager.trackTexture(skyRef, m_skyTextureIndex, true, false);
 
@@ -656,10 +970,39 @@ namespace dxvk {
 
     RemixGui::Separator();
     ImGui::TextUnformatted("Fog");
+
+    {
+      static const char* kFogRampModes[] = { "Handover (legacy)", "Top up" };
+      static int rampMode;
+      rampMode = std::clamp(fogRampMode(), 0, 1);
+      if (RemixGui::Combo("Ramp Owns##dusklightAtmo", &rampMode, kFogRampModes, IM_ARRAYSIZE(kFogRampModes))) {
+        fogRampMode.setDeferred(rampMode);
+      }
+      if (rampMode == 0) {
+        ImGui::TextWrapped("The medium reproduces the fog out to the froxel grid's edge and the ramp takes over past it. A "
+                           "homogeneous medium cannot be clear where the original is clear, so the near field hazes over. "
+                           "Here to be compared against.");
+      } else {
+        ImGui::TextWrapped("The ramp reaches the game's exact opacity at every distance and the medium only has to carry "
+                           "light. Density then costs nothing but shaft quality, so it can be held under the original's "
+                           "own fog curve.");
+      }
+    }
+
     RemixGui::DragFloat("Half Density Floor##dusklightAtmo", &zHalfMinObject(), 1.0f, 1.f, 10000.f, "%.0f units");
     RemixGui::DragFloat("Density Scale##dusklightAtmo", &densityScaleObject(), 0.01f, 0.f, 8.f, "%.2f");
+    RemixGui::Checkbox("Hold Density Under The Ramp##dusklightAtmo", &limitDensityToRampObject());
+    ImGui::BeginDisabled(!limitDensityToRamp() || fogRampMode() != 1);
+    RemixGui::DragFloat("Clear Zone Tolerance##dusklightAtmo", &clearZoneToleranceObject(), 0.005f, 0.f, 0.5f, "%.3f");
+    ImGui::EndDisabled();
     RemixGui::DragFloat("Fog Radiance Scale##dusklightAtmo", &fogRadianceScaleObject(), 0.01f, 0.f, 16.f, "%.2f");
-    RemixGui::DragFloat("Multi Scattering##dusklightAtmo", &multiScatteringScaleObject(), 0.01f, 0.f, 4.f, "%.2f");
+    RemixGui::DragFloat("Ambient In-Scatter##dusklightAtmo", &multiScatteringScaleObject(), 0.01f, 0.f, 4.f, "%.2f");
+    RemixGui::DragFloat("Forward Scatter##dusklightAtmo", &fogAnisotropyObject(), 0.01f, -0.95f, 0.95f, "%.2f");
+    RemixGui::DragFloat("Sky Ambient##dusklightAtmo", &skyAmbientWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
+    RemixGui::DragFloat("Sky Ambient Scale##dusklightAtmo", &skyAmbientScaleObject(), 0.01f, 0.f, 8.f, "%.2f");
+    ImGui::TextWrapped("Sky Ambient takes the fog's colour from the generated dome rather than from the palette entry that "
+                       "describes it. It matters because Remix's froxel grid samples no dome light, so without it fog "
+                       "standing in shadow sees nothing of the sky at all.");
 
     RemixGui::Separator();
     ImGui::TextUnformatted("Froxel grid");
@@ -685,8 +1028,9 @@ namespace dxvk {
                          "this does not change how bright the night is to stand in.");
     }
 
-    // Two candidate fixes for one defect, side by side so they can be compared rather than argued
-    // about. One of them is meant to be deleted once the comparison has been made.
+    // Two candidate fixes for one defect, built side by side so the choice could be made by looking.
+    // It was: Exempt was run in game on 2026-08-13 and confirmed good, and is the default. Weighted
+    // is kept as a taste control for foggy weather rather than as a rival candidate.
     {
       static const char* kSkyFogModes[] = { "Off (untreated)", "Exempt", "Weighted" };
       static int mode;
@@ -705,7 +1049,8 @@ namespace dxvk {
         break;
       case 1:
         ImGui::TextWrapped("Faithful to the original, which drew its sky with fog switched off at any density. Costs any "
-                           "light shaft that would have been visible against the sky - that is the same in-scatter.");
+                           "light shaft that would have been visible against the sky - that is the same in-scatter. "
+                           "Tested in game 2026-08-13 and confirmed good; this is the default.");
         break;
       default:
         ImGui::TextWrapped("A foggy day still veils the sky, and shafts against it survive in proportion, but the sky is "
@@ -746,7 +1091,19 @@ namespace dxvk {
       ImGui::Text("ramp: %.0f .. %.0f units", d.rampStart, d.rampEnd);
       ImGui::Text("sigma: %.6f /unit   half density at %.0f units",
                   d.sigma, d.sigma > 1e-8f ? std::log(2.0f) / d.sigma : 0.0f);
-      ImGui::Text("fog radiance: %.3f, %.3f, %.3f", d.fogRadiance.x, d.fogRadiance.y, d.fogRadiance.z);
+      if (d.sigma < d.sigmaMatched * 0.999f) {
+        ImGui::Text("  capped from %.6f (x%.2f) to hold the medium under the game's ramp",
+                    d.sigmaMatched, d.sigmaMatched > 0.0f ? d.sigma / d.sigmaMatched : 1.0f);
+      }
+      // The number that decides whether the top up ramp is exact or clamped. Zero means the medium is
+      // nowhere thicker than the original's fog and the composite reproduces it exactly; anything
+      // above the tolerance means density is being spent where the original was clear.
+      ImGui::Text("peak excess over the game's ramp: %.3f at %.0f units",
+                  d.excessPeak, d.excessPeakDistance);
+      ImGui::Text("fog radiance (palette): %.3f, %.3f, %.3f", d.fogRadiance.x, d.fogRadiance.y, d.fogRadiance.z);
+      ImGui::Text("fog ambient (used): %.3f, %.3f, %.3f   %.0f%% from the dome%s",
+                  d.fogAmbient.x, d.fogAmbient.y, d.fogAmbient.z, d.skyAmbientWeight * 100.0f,
+                  d.skyAmbientWeight > 0.0f ? "" : "  (no sky, or the reduction has not run yet)");
       ImGui::Text("froxel grid reaches %.0f units (%.1f m)",
                   d.froxelMaxDistance, d.froxelMaxDistance / RtxOptions::getMeterToWorldUnitScale());
     }
@@ -762,9 +1119,10 @@ namespace dxvk {
     ImGui::Text("physical weight: %.3f%s", d.physicalWeight,
                 d.physicalWeight <= 0.0f ? "  (the game's own sky)" : "");
 
-    ImGui::TextWrapped("The constants above were derived analytically and have never been measured against a "
-                       "running build. Read the game's own fog range off the Dusklight tab in the places that "
-                       "look wrong and tune from there.");
+    ImGui::TextWrapped("Everything above is also written to the log once per distinct fog state, so an area that reads "
+                       "wrong can be diagnosed from a session log rather than from a description. Read 'peak excess' "
+                       "first: above zero means the medium is thicker than the original's fog somewhere, which the ramp "
+                       "cannot undo, and lowering Clear Zone Tolerance is the answer.");
 
     ImGui::Unindent();
     ImGui::Unindent();

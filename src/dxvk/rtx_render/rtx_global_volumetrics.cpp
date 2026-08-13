@@ -621,7 +621,14 @@ namespace dxvk {
     volumeArgs.maxFilteredRadianceU = 1.f - volumeArgs.minFilteredRadianceU;
     volumeArgs.multiScatteringEstimate = multiScatteringEstimate;
     volumeArgs.enableReferenceMode = enableReferenceMode();
-    volumeArgs.volumetricFogAnisotropy = anisotropy();
+    // Note: Upstream's default is 0 - perfectly isotropic - which spreads every light's in-scatter
+    // evenly in all directions and leaves shafts and torch glow flat. Real haze is strongly forward
+    // scattering, so the Dusklight medium carries its own value rather than inheriting that.
+    // Not the same quantity as the generated sky's mieAnisotropy, which shapes the sun's glow inside
+    // the dome image and never reaches this grid.
+    volumeArgs.volumetricFogAnisotropy = dusklight
+      ? dusklightAtmosphere.derived().fogAnisotropy
+      : anisotropy();
 
     volumeArgs.enableNoiseFieldDensity = enableHeterogeneousFog();
     volumeArgs.noiseFieldSubStepSize = noiseFieldSubStepSizeMeters() * RtxOptions::getMeterToWorldUnitScale();
