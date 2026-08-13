@@ -48,7 +48,7 @@ readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
 compares it against a `kRequiredProtocol` constant and names the older side in
-the tab. **Currently 11.**
+the tab. **Currently 15.**
 
 **Both directions are reported, as of 2026-08-11; until then only one was.** The
 check was `protocol() < kRequiredProtocol`, so a game *newer* than the DLL fell
@@ -485,6 +485,8 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Time of day: slider, presets, Freeze Time | landed 2026-07-28, **tested 2026-07-29: "flawlessly and as expected"** |
 | Controls tab | landed 2026-07-29, protocol 6 — **not yet run in game** |
 | Effect Lights section | landed 2026-08-06, protocol 7 — **CI-green, and run in game 2026-08-07: "it works", merged on that.** The diagnostics below were *not* read, so which effects the classifier accepts is still unknown; `dusklight-ao/docs/remix-open-issues.md` carries the four questions that leaves open. Replaces the local-light mirror as the default. Its readouts are the whole chain, so a light lost at any step is visible without asking anyone to describe a scene; two of them (`effLightsOrphans`, `effLightsVanilla`) exist to settle specific open questions rather than to be watched. `effectLightReportCommit` is the action counter that dumps the classifier's own inputs and verdicts. Design: `dusklight-ao/docs/effect-lights.md` |
+| Shadow Insect sparks | landed 2026-08-13, protocol 15 — **CI-green and syntax-checked only, never run in game.** Two options (`effectLightSparks`, `effectLightSparkHold`) and one readout (`effLightsSparks`) for 闇虫 *yami mushi*, the Shadow Insect — the twilight bug whose body is drawn **only** under wolf senses, so its electric spark is the only sign of it in normal view. Verified from source: the actor returns from `draw()` before entering any draw list while senses are down, the spark emitters are untouched by that, and the state machine takes a 30% branch into the sparking state **specifically when the body's alpha is zero**. **Nothing here newly lights anything** — the eight spark effects were already ungated `Class::Other`; they moved to `Class::Spark` so they could be named, counted and switched. `effectLightSparks` is therefore an **undo** switch, on by default because that is the existing behaviour. `effectLightSparkHold` is a renderer setting, not a look setting: the bug's shortest spark window is 5-15 frames, shorter than the base grace period, so without it a bouncing bug destroys and re-creates its light and loses its temporal history each time. **Whether these effects pass the additive-and-glow rule at all is unknown from source** — the `.jpa` assets are not in the repo — which is exactly what `effLightsSparks` (`seen N  lit N`) reports. Design: `dusklight-ao/docs/effect-lights.md` §3.2 |
+| Room Lights section | landed 2026-08-12, joins protocol 13 — **CI-green only, never run in game, and deliberately off by default.** The room's own authored lights (`dungeonlight`), a third registry from either of the two the bridge already forwards and the only one carrying a cone. Its six readouts exist to settle two questions from one log rather than from an argument: `roomLightsFound` vs `roomLightsDrawn` for whether a room has any, and `roomLightsShaped` vs `roomLightsUnshapeable` for whether the cone work carries any weight. The cone's **direction and angle are transcribed** from the game; the **shape of its edge is an approximation** (GX has four falloff curves, Remix has one) and the two ring-shaped curves cannot be expressed at all. Design: `dusklight-ao/docs/effect-lights.md` §8.1 |
 | HD Texture Pack section | landed 2026-08-05, protocol 7 — **tested good 2026-08-06, first try.** The counters split game-side from Remix-side exactly as intended. Known characteristic: a long first-launch warm-up, `DusklightAtmosphere.md` §12.1 |
 | Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the lava scores **0.00**, so no threshold could ever reach it. Rev 4 therefore drops the score from the decision entirely and cuts on three measured facts instead — the section now has no threshold in it, and only Emissive Brightness is expected to be touched. **Tested in game 2026-08-06:** the rule accepts the lava, and Emissive Brightness was dialled to 10.0 there, which is now its default. No protocol change: nothing in it is read by the game |
 
@@ -493,8 +495,65 @@ practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 11** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach`, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`). `kRequiredProtocol`
+**Protocol is at 15** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach` - **retired at 14**, see below, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers`, `colpatPrev`/`colpatBlend`, the three background alphas `bgWaterAlpha`/`bgAuxAlpha`/`bgFakeFogAlpha` **and** the six `roomLights*` readouts, 14 = the effect-light vocabulary rework: `effectLightReachScale`, `effectLightRadiusScale`, `effectLightAuthoredColor`, `effectLightAuthoredRadius`, the four `effectLightLantern*` options and the `effLightsAuthored`/`effLightsClasses` readouts, 15 = the Shadow Insect spark: `effectLightSparks`, `effectLightSparkHold` and the `effLightsSparks` readout). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
+
+> **13 covers everything on its session branch, and was taken once.**
+> `perBladeFlowers`, the `colpatPrev` / `colpatBlend` pair, the three
+> background alphas (`bgWaterAlpha`, `bgAuxAlpha`, `bgFakeFogAlpha`, added
+> 2026-08-12) and the six room-light readouts (`roomLightsRunning`,
+> `roomLightsFound`, `roomLightsDrawn`, `roomLightsTracked`, `roomLightsShaped`,
+> `roomLightsUnshapeable`, added 2026-08-12) all landed on
+> `claude/japanese-naming-worklist-nea1rk` and ship as
+> one build, so they share one number rather than taking 13, 14, 15 and 16. A protocol number answers "does the
+> build on the other side have this"; two numbers for one build answers it
+> twice.
+>
+> **That last sentence used to read "a further addition on this branch joins 13
+> too — it does not take 14", and the effect-light rework on 2026-08-13 took 14
+> anyway, at the owner's instruction.** Both readings are defensible and the
+> difference is what a number is for: sharing one number keeps it a statement
+> about a *build*, and taking a new one keeps it a statement about a *feature*
+> the other side can ask for. The precedent the owner cited is the second —
+> `perBladeGrass` took 4→5 and `lanternInfiniteOil` took 9→10, and both are
+> fork-declared options that only the game reads, exactly like this one. So the
+> rule is now: **an addition on a shipped branch takes a new number when the
+> game reads a new option, and joins the existing one when it only adds
+> readouts.** 13's own contents are left as they are; they shipped together.
+>
+> **13 does not include 12's vrbox sky-dome alphas**, which are on the separate
+> unmerged `claude/kasumi-naming-correction-w3e204`. See the note below for the
+> merge-order rule, and one refinement of it this branch's second feature makes
+> concrete.
+
+> **12 is missing from that list on purpose, and a build reporting 13 does not
+> carry it.** Protocol **12** belongs to `claude/kasumi-naming-correction-w3e204`,
+> which adds the vrbox alpha readouts and had **not merged** when 13 was taken on
+> 2026-08-11. Taking 12 as well would have been the double-bump this registry
+> exists to make visible, so this branch skipped it and took the next free number
+> instead — a gap in the ladder is the cheap outcome, two features sharing a
+> version is the expensive one.
+>
+> Whichever of the two merges second, the *merge resolution* is **13**: 13 is
+> already the higher number and both features are then present, so keeping 13 is
+> correct and neither branch has to be rewritten to merge. The case that needs
+> action is a **third** branch: it must take **14**, not 12, even though 12 looks
+> free from a checkout that cannot see the kasumi branch. Reusing 12 would ship
+> two features claiming one version and `check_dusklight_invariants.py` cannot
+> see it, because nothing can see an unmerged branch.
+>
+> **One refinement, noted 2026-08-11 while adding the second feature to 13.**
+> "The union is 13" is a statement about resolving the merge, not a guarantee
+> about a build. If **13 merges first**, `Fixed-Function-dev` sits at 13 *without*
+> the vrbox alphas until the kasumi branch lands, and after it lands the same
+> number means something larger — so a game and a DLL built from either side of
+> that merge both report 13 while disagreeing about what exists, and the mismatch
+> notice cannot fire. Bumping the kasumi branch to **14** as part of that merge
+> would close it. That is the tidier resolution and costs nothing; it is not
+> *required*, because the standing rule is to build both sides from the same
+> commit point and skew never arises when it is followed. **Recorded as a
+> judgement call, not settled** — whoever performs the merge decides, and should
+> write down which they chose.
 
 ### Open
 

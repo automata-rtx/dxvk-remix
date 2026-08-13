@@ -53,9 +53,16 @@ namespace dxvk {
                     "The game's bloom threshold (its 0..255 'point' value normalized to 0..1). Written by the game's kankyo bridge.\n"
                     "Consumed by the Dusklight bloom pass scaled by rtx.bloom.dusklightThresholdScale.");
     RTX_OPTION_FLAG("rtx.dusklight.env", float, bloomBlurSize, 64.0f, RtxOptionFlags::NoSave,
-                    "The game's bloom blur size in its native 0..255 range. Written by the game's kankyo bridge.");
+                    "The game's blur width in its native 0..255 range, the first half of how its bloom is authored. Written by the game's kankyo bridge.");
+    // Corrected 2026-08-12: this said "the game's bloom brightness", which is what the value does
+    // rather than what the game calls it, and it invites reaching for this to brighten a bloom. The
+    // original team's own slider (d_kankyo.cpp:7084) labels the field blur DENSITY, paired with
+    // blur WIDTH on the line above it (:7083) - dusklight-ao docs/japanese-naming.md section 8
+    // carries the whole panel, which is a primary source in its section 6 sense.
     RTX_OPTION_FLAG("rtx.dusklight.env", float, bloomBlurRatio, 128.0f, RtxOptionFlags::NoSave,
-                    "The game's bloom brightness in its native 0..255 range. Written by the game's kankyo bridge.");
+                    "The game's blur density in its native 0..255 range, the other half. Written by the game's kankyo bridge.\n"
+                    "Density rather than brightness: it is the weight each blur sample carries, which does read as brightness on screen, but the game "
+                    "authors width and density as a pair and reading it as a brightness dial loses that.");
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, bloomTint, Vector3(1.0f, 1.0f, 1.0f), RtxOptionFlags::NoSave,
                     "The game's bloom blend colour, normalized to 0..1. Written by the game's kankyo bridge.");
     RTX_OPTION_FLAG("rtx.dusklight.env", float, bloomBaseWeight, 1.0f, RtxOptionFlags::NoSave,
@@ -72,9 +79,46 @@ namespace dxvk {
                     "The ambient colour the game's environment system is currently applying to actors, normalized to 0..1. Written by the game's kankyo bridge.\n"
                     "This is the ambient the original fixed function pipeline tinted every character and object with; path tracing replaces that lighting, "
                     "so rtx.dusklight.grade.* uses it to put the mood back.");
+    // Corrected 2026-08-12: this said "room and terrain geometry" without qualification, which
+    // reads as all of it. The game keeps FOUR background ambient layers and hands a piece of room
+    // geometry one of them by the low two bits of its tevstr type (d_kankyo.cpp:4199-4200), from a
+    // fixed table in the room actor - d_a_bg.cpp:336, over the six room model files model.bmd ..
+    // model5.bmd. This option carries layer 0 only. dusklight-ao
+    // docs/kankyo-tuning-surface.md section 2.1a has the routing table and why the other three
+    // are not sent.
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, bgAmbient, Vector3(1.0f, 1.0f, 1.0f), RtxOptionFlags::NoSave,
-                    "The ambient colour the game's environment system is currently applying to room and terrain geometry, normalized to 0..1. "
-                    "Written by the game's kankyo bridge. The counterpart to rtx.dusklight.env.actorAmbient for everything that is not an actor.");
+                    "The ambient colour the game's environment system is applying to background layer 0, normalized to 0..1. Written by the game's kankyo bridge.\n"
+                    "Layer 0 is the one the original team's panel labels 'chikei', terrain; it lights the room's first and last model files, and it is what the "
+                    "game itself reuses whenever it wants 'the' background ambient without a piece of geometry in hand - particles, grass, flowers, mirror "
+                    "reflections. The other three layers light the room's other model files and are deliberately not sent: along that path they are ambient "
+                    "light, which path tracing replaces. The counterpart to rtx.dusklight.env.actorAmbient for everything that is not an actor.");
+
+    // The three background ALPHAS, carried since protocol 13. They live in the alpha slot of the
+    // ambient colours above and have nothing to do with ambient light: setLight_bg overwrites all
+    // four of those alphas with 255 (d_kankyo.cpp:2931-2934) before anything is lit. Each is
+    // blended per frame from its own palette column and each had a slider in the original team's
+    // own panel, so they are authored values rather than struct padding.
+    //
+    // Pushed and displayed only, by both sides. Nothing consumes them, and the reason to carry
+    // them at all is that the fork cannot recover them from the D3D9 feed - they arrive per draw
+    // already folded into the TEV chain and no material name reaches Remix, so there is no way to
+    // tell which draw carried which one. -1 means the game has not reported it: a build older
+    // than protocol 13, or the bridge not running. Distinguishing that from a genuine 0 matters,
+    // because 0 is a real authored value.
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, bgWaterAlpha, -1.0f, RtxOptionFlags::NoSave,
+                    "The game's water-surface alpha, 0..1, or -1 when the game has not reported it. Written by the game's kankyo bridge.\n"
+                    "The original team's slider calls it 'suimen alpha' - suimen is water surface. The game feeds it to the murk material's konstant alpha "
+                    "and to the water and shimmer materials beside it, and its mud particles read it too. Not consumed.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, bgAuxAlpha, -1.0f, RtxOptionFlags::NoSave,
+                    "The game's 'auxiliary' background alpha, 0..1, or -1 when the game has not reported it. Written by the game's kankyo bridge.\n"
+                    "The original team's slider calls it 'hosa alpha' - hosa is assistance or support - and named it that rather than for a surface, so no "
+                    "more specific meaning is claimed here. It travels with the water alpha above, as the second of the pair the murk and water materials "
+                    "take. Not consumed.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, bgFakeFogAlpha, -1.0f, RtxOptionFlags::NoSave,
+                    "The strength of the game's own faked fog, 0..1, or -1 when the game has not reported it. Written by the game's kankyo bridge.\n"
+                    "The original team's slider is labelled 'uso Fog' - uso means a lie - and the game applies it as a material constant on three of its "
+                    "background material classes rather than through the fog hardware, which is what makes it separate from rtx.dusklight.env.fogActive and "
+                    "the distances beside it. Worth watching next to the atmosphere's own extinction in an area that looks over-fogged. Not consumed.");
 
     // Fog. The game authors these in the same palette entry as the sky colours below, selected by
     // the same time of day and weather indices and blended by the same call, so its fog colour is
@@ -113,8 +157,17 @@ namespace dxvk {
                     "True when the game's current area has no sky at all - interiors and most dungeons. Written by the game's kankyo bridge.\n"
                     "The game decides this itself by checking whether its sky colours sum to zero, so this is its own answer rather than a guess, "
                     "and it is what stops a sky light being added indoors.");
+    // Corrected 2026-08-12: this said "at the zenith". Nothing in the game places it there. The
+    // original team call it just the sky's colour - the panel heading reads "sora no iro"
+    // (d_kankyo.cpp:6280), the palette CSV column is "sorairo" (:6582) and the debug view prints it as
+    // "Sky" (d_kankyo_debug.cpp:284). Where on the dome it lands is decided by vrbox_sora.bmd,
+    // which is in none of the three checkouts, so the fork treating it as the dome's base colour
+    // is a modelling choice of ours and is stated as one. Same class of unsourced positional claim
+    // as the kasumi pair corrected above.
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, skyColor, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
-                    "The game's sky colour at the zenith, normalized to 0..1. Written by the game's kankyo bridge.");
+                    "The game's sky colour, normalized to 0..1. Written by the game's kankyo bridge.\n"
+                    "The game names this one simply the sky's colour and the haze bands separately; the atmosphere uses it as the dome's base colour, which "
+                    "is this fork's reading of it rather than something the game states.");
     // Corrected 2026-08-10: these were described as the haze "on the sun's side" and "away from
     // the sun". Nothing in the game relates either field to sun position. The split is front/back,
     // and the game says so in three places - the palette CSV exporter's Japanese header
@@ -141,6 +194,28 @@ namespace dxvk {
                     "0 is clear weather; others are weather, story and area variants. Pattern 9 is the Palace of Twilight, whose sky has no "
                     "physical description at all - there is no sun and the look is authored - so it is the clearest signal to stop trying to "
                     "model the sky and reproduce the palette instead.");
+    // The other two thirds of the same thing. The game never holds a single colour pattern: it
+    // holds a crossfade between an outgoing and an incoming one, and every palette value it
+    // produces - sky, fog, ambient - is that lerp. colpat above is only the incoming end of it.
+    //
+    // Outside a transition the game pins colpatBlend at 1.0 and makes colpatPrev equal colpat, so
+    // these say nothing new most of the time. During a transition they are the difference between
+    // a consumer that steps and a consumer that follows: the game's own kankyo tags drive the
+    // blend continuously (the Lost Woods mist tag ramps it over roughly a second, and that ramp is
+    // the mist's strength), while the pattern index flips on the first frame.
+    //
+    // The default of 1.0 is what makes this safe against a game build that does not push it, and
+    // against the frames before the first push arrives: at blend 1.0 any lerp between the two
+    // patterns collapses to colpat exactly, which is the behaviour that shipped before these
+    // existed. See documentation/DusklightAtmosphere.md section 4.
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, colpatPrev, 0, RtxOptionFlags::NoSave,
+                    "The colour pattern the game is fading OUT of. Written by the game's kankyo bridge.\n"
+                    "Equal to the current pattern except while a weather, room or event transition is running. Pair it with colpatBlend: "
+                    "at blend 0 the game's colours are entirely this pattern, at 1 entirely the current one.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", float, colpatBlend, 1.0f, RtxOptionFlags::NoSave,
+                    "How far the game is through the fade from the previous colour pattern to the current one, 0..1. Written by the game's kankyo bridge.\n"
+                    "Sits at 1.0 whenever no transition is running, so 1.0 is also the correct reading when nothing has been pushed yet. "
+                    "A value outside 0..1 means the reading is wrong rather than extreme - the game clamps its own ratio to 0..1 - and consumers clamp defensively.");
     RTX_OPTION_FLAG("rtx.dusklight.env", int, moyaMode, 0, RtxOptionFlags::NoSave,
                     "Which of the game's haze particle modes is running, 0 for none. Written by the game's kankyo bridge.\n"
                     "These are billboard particles rather than fog, but they are already never drawn on the D3D9 backend "
@@ -209,6 +284,35 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsTracked, 0, RtxOptionFlags::NoSave,
                     "How many of the game's own point lights currently hold a live Remix light. Written by the game's kankyo bridge.");
 
+    // Room lights - the room's own authored lights. found vs drawn is the same separation the
+    // mirror above needed; shaped vs unshapeable is the pair that answers the cone question,
+    // which nothing in this project has ever been able to answer by reading, because the data
+    // lives in the game's stage files rather than in its source.
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, roomLightsRunning, false, RtxOptionFlags::NoSave,
+                    "True when the game got past every gate and actually ran its room light submission. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, roomLightsFound, 0, RtxOptionFlags::NoSave,
+                    "How many lights the room the player is standing in was authored with, as the game itself counts them - so at most six, and with the two "
+                    "slots the sun and moon take outdoors already removed. Written by the game's kankyo bridge.\n"
+                    "This is what tells a room that has no authored lights apart from a bridge that is failing to submit them.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, roomLightsDrawn, 0, RtxOptionFlags::NoSave,
+                    "How many of the room's authored lights were submitted to Remix this frame. Written by the game's kankyo bridge.\n"
+                    "Lower than roomLightsFound is normal and not a fault: a light whose switch is off, or whose colour the palette has taken to black, is "
+                    "skipped exactly as the game skips it.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, roomLightsTracked, 0, RtxOptionFlags::NoSave,
+                    "How many of the room's authored lights currently hold a live Remix light. Written by the game's kankyo bridge.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, roomLightsShaped, 0, RtxOptionFlags::NoSave,
+                    "How many of the lights submitted this frame carried a cone.\n"
+                    "The first number this project has ever had for how much of the game is actually spotlit. Zero everywhere would mean the cone work is "
+                    "carrying no weight at all, which is worth knowing before anyone tunes it.\n"
+                    "Counted only while roomLightsRunning is true - it counts submissions, not the room. A zero while the system is off says nothing about "
+                    "whether the room has cones; the game's log answers that either way, one block per room entered.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, roomLightsUnshapeable, 0, RtxOptionFlags::NoSave,
+                    "How many room lights used one of the game's two ring-shaped cone functions, which are dark on the axis and brightest partway out.\n"
+                    "Remix's light shaping only ever gets brighter towards the axis, so a ring cannot be expressed at any setting. Those lights are sent "
+                    "with no cone at all rather than dropped, on the grounds that a wrongly-shaped light beats an unlit room - this counts how often that "
+                    "compromise is being made. If it is always zero the game does not use them and nothing is owed.\n"
+                    "Counted only while roomLightsRunning is true, same as roomLightsShaped.");
+
     // Effect lights. The chain reads emitters -> considered -> candidates -> sites -> drawn, so
     // whichever step a light was lost at is visible without asking anyone to describe a scene.
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, effLightsRunning, false, RtxOptionFlags::NoSave,
@@ -249,6 +353,34 @@ namespace dxvk {
                     "still being set when the bridge runs, which in turn depends on where the game's environment process falls in the frame - a question we "
                     "could not answer by reading. If the spot count is always zero while you are stood at a lit torch, the answer is 'too late', and those "
                     "torches are falling back to the configured defaults instead of the game's own colour. That is a quality loss, not a misplacement.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, effLightsAuthored, "", RtxOptionFlags::NoSave,
+                    "Which of this frame's lights were solved from values the effect's own artists authored, rather than from the settings, as "
+                    "'colour N  radius N  lantern N'.\n"
+                    "colour counts sites whose hue came from the effect's authored colour ramp. It does NOT count sites that adopted one of the game's "
+                    "own lights - those take that light's colour, which wins over both - so in a room full of registered torches this can legitimately "
+                    "read 0 while the setting is on. radius counts sites whose sphere grew to the authored extent, which is 0 unless "
+                    "rtx.dusklight.game.effectLightAuthoredRadius is on. lantern counts sites solved from the lantern's own settings.\n"
+                    "This is the readout that says whether the authored derivations are running at all. A colour count of 0 with no game lights available "
+                    "means the resources carried no colour, which is a different failure from the setting being off.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, effLightsClasses, "", RtxOptionFlags::NoSave,
+                    "This frame's lights split by what the game's own name says each effect IS, as 'other N  fire N  lantrn N  glow N  spark N  lava N  "
+                    "burst N  excl N'.\n"
+                    "The classes come from the original team's vocabulary rather than from anything we invented: kantera is Link's lantern, kirakira is "
+                    "glitter, yogan is lava, and so on. excl is always 0 here - an effect the name refuses never becomes a site, and "
+                    "rtx.dusklight.env.effLightsExcluded is where those are counted instead. burst is 0 unless "
+                    "rtx.dusklight.game.effectLightBursts is on.\n"
+                    "A lantrn count of 0 while the lamp is lit means the lantern's emitter failed the additive-and-glow rule that frame, not that the "
+                    "classification is wrong; the full report names it either way.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, effLightsSparks, "", RtxOptionFlags::NoSave,
+                    "Spark effects this frame, as 'seen N  lit N'. This is the Shadow Insect readout - one glance says whether the twilight bug's spark "
+                    "is being lit.\n"
+                    "seen counts spark emitters the game was actually DRAWING, so a non-zero seen means a bug was sparking in front of the camera. lit "
+                    "counts how many of those the additive-and-glow rule then accepted. The two numbers separate two failures that have opposite fixes: "
+                    "'seen 4  lit 0' means the bug sparked in view and the rule refused it, which is a property of the effect's authored blend mode and "
+                    "colour and cannot be fixed by classification - press Log Full Effect Light Report and read the verdict on ids 0x393-0x396. "
+                    "'seen 0  lit 0' means no spark was ever in view at all, which is a question about where you were standing or about the draw-group "
+                    "filter, not about the rule.\n"
+                    "lit is forced to 0 when rtx.dusklight.game.effectLightSparks is off, by construction.");
 
     // HD texture replacement packs, game side.
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, texrepEnabled, false, RtxOptionFlags::NoSave,

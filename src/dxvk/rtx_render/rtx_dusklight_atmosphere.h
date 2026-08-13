@@ -135,6 +135,12 @@ namespace dxvk {
     Derived resolve() const;
     float resolvePhysicalWeight() const;
 
+    // Instrumentation only, and deliberately narrow: it reports which colour patterns actually
+    // reach the Palace of Twilight bypass in resolvePhysicalWeight, so one play session can settle
+    // whether that bypass has any target at all. See DusklightAtmosphere.md 8.6 for what each
+    // possible result means and what will be done about it.
+    void logColpatOnce(int colpat, bool guardFired) const;
+
     // The two lookup tables depend on the medium and on nothing else - not the sun, not the view -
     // so they are rebuilt only when the medium actually changes. That is what makes a physically
     // based sky affordable per frame at all.
@@ -148,6 +154,13 @@ namespace dxvk {
     // following them rather than snapping is faithful as well as cheap on the denoiser. A large
     // jump - a room change or an area load - snaps instead; see resolve().
     mutable float m_smoothedFroxelMaxDistance = 0.0f;
+
+    // One bit per colour pattern already reported by logColpatOnce. The game's own pattern switch
+    // (d_kankyo.cpp:1896-1990) accepts 0-63 and nothing wider, so a 64 bit mask caps the whole
+    // instrument at 64 lines for a session - in practice a handful - with one more line if a value
+    // ever arrives outside that range.
+    mutable uint64_t m_loggedColpatMask = 0;
+    mutable bool m_loggedColpatOutOfRange = false;
 
     // Owned once and kept alive for the process, not rebuilt per frame: the dome light holds a
     // bindless index into it, and dropping the image for even one frame drops the sky back to

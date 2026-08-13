@@ -38,6 +38,23 @@ Companion docs:
   generated and still carries the old wording. Derivation:
   `dusklight-ao/docs/japanese-naming.md` §6.
 
+  **Two more of the same kind, found the same way (2026-08-12).**
+  `rtx.dusklight.env.skyColor` said "the game's sky colour **at the zenith**" —
+  the game says only 空の色, *sora no iro*, the sky's colour
+  (`d_kankyo.cpp:6280`, CSV column `:6582`, debug view `d_kankyo_debug.cpp:284`),
+  and where on the dome it lands is decided by `vrbox_sora.bmd`, which is in none
+  of the three checkouts. The fork treating it as the dome's base colour is a
+  modelling choice of ours and now says so. `rtx.dusklight.env.bloomBlurRatio`
+  said "the game's bloom **brightness**"; the original team's slider labels the
+  field blur **density**, paired with blur **width** beside it
+  (`d_kankyo.cpp:7083-7084`, `japanese-naming.md` §8). Neither changes a number —
+  both are descriptions someone would have reached for and been misled by. **The
+  three `kumo*` cloud descriptions are the same class of error and are
+  deliberately left alone here**: they are already corrected on the unmerged
+  `claude/kasumi-naming-correction-w3e204`, and fixing them twice would be a
+  conflict whose obvious resolution is fine but whose *second* copy of the
+  reasoning is not.
+
 Everything below is grounded in code as of 2026-07-28. File references are
 repo-relative; `dusklight-ao/` and `aurora-ao/` prefixes point at the other two
 repos.
@@ -200,7 +217,8 @@ and the consistency guarantee structural.
 │            hide_vrbox                                           │
 │    fog:    fog_col, mFogNear, mFogFar                           │
 │    sun:    azimuth, elevation, fade, isDay                      │
-│    scene:  colpat pattern, indoor/outdoor, moya mode/count      │
+│    scene:  colpat crossfade (prev, curr, ratio), indoor/outdoor,│
+│            moya mode/count                                      │
 │    time:   daytime                                              │
 │  Pushed through the existing rtx.dusklight.env.* NoSave options │
 └──────────────────────────────┬──────────────────────────────────┘
@@ -228,12 +246,24 @@ and the consistency guarantee structural.
 choice. `g_env_light.fog_col` / `mFogNear` / `mFogFar` are the *final* values
 after every modifier the game applies: the four-way palette blend, the
 `addcol_fog` additive offset, the `now_fogcol_ratio` scale that lightning
-pulses (`d_kankyo_rain.cpp:362`), the `dKy_fog_startendz_set` override that the
-Lost Woods mist tag drives, and the *second* "gather" colpat blend
-(`mColPatBlendGather`). Reading the outputs means every one of those comes
-along for free and stays correct when the game changes. Re-deriving from the
-palette tables would mean reimplementing all six layers and keeping them in
-sync forever.
+pulses (`d_kankyo_rain.cpp:362`), and the `dKy_fog_startendz_set` override that
+the Lost Woods mist tag drives. Reading the outputs means every one of those
+comes along for free and stays correct when the game changes. Re-deriving from
+the palette tables would mean reimplementing all four modifiers and keeping
+them in sync forever.
+
+**Four, and both of the other counts were wrong.** `kankyo-fog.md` listed a
+*sixth* modifier, the `fog_avoid_tag`, until 2026-08-11; it modifies no fog
+(§8.2). And what this paragraph used to call a fifth — "the *second* 'gather'
+colpat blend (`mColPatBlendGather`)" — **is not a second blend at all.** The
+`*Gather` fields are the staging area every tag and event writes into;
+`exeKankyo` copies them onto `wether_pat0` / `wether_pat1` / `pat_ratio` once a
+frame and clears them back to sentinels
+(`dusklight-ao/src/d/d_kankyo.cpp:4788-4828`), and `dKy_change_colpat`
+(`:9528-9533`) writes only there. There is exactly one `pat_ratio` and one
+blend on it (`:2406-2409`). Corrected on both sides 2026-08-11;
+`dusklight-ao/docs/kankyo-fog.md` §2 has the game-side account, and §4 below has
+what the miscount cost this renderer.
 
 **Layer 2 owns all derivation.** Nothing downstream computes atmosphere
 parameters; they consume. That is what makes "sky and fog cannot disagree" a
@@ -255,13 +285,72 @@ physicalWeight = elevationTerm × outdoorTerm × styleTerm
 | :-- | :-- | :-- |
 | `elevationTerm` | smoothstep on sun elevation | Real and stylised skies converge at high sun; they diverge most at dawn/dusk, and a physical model has nothing to say at night. |
 | `outdoorTerm` | `g_env_light.hide_vrbox` + colpat | The game already reports "this area has no sky" — `d_a_vrbox.cpp:69` sets `hide_vrbox` when the sky colours sum to zero. Free and authoritative. |
-| `styleTerm` | colpat pattern | Pattern 9 = Palace of Twilight → 0. Weather patterns → low. See §8.6. |
+| `styleTerm` | colpat **crossfade** — both patterns and the ratio | Weather patterns → low, and the term follows the game's own fade between them rather than cutting on the incoming index (below). It also drops to 0 on colpat 9, on the belief that colpat 9 is the Palace of Twilight — **that belief is unverified and its stated source is a different index space entirely.** §8.6 has the correction, the instrumentation added to settle it, and what happens next in each case. |
 
 At `physicalWeight = 0` the system is a faithful reproduction of the vanilla
 gradient and vanilla fog. At `1` it is Hillaire driven by palette-derived
 parameters. Every intermediate value blends the **radiance function**, not the
 output pixels — so GI, visible sky and aerial perspective stay mutually
 consistent at every setting.
+
+### 4.1 `styleTerm` follows the game's fade — protocol 13, UNTESTED IN GAME
+
+**What was wrong.** The game never holds one colour pattern. It holds a
+crossfade: `wether_pat0` (outgoing), `wether_pat1` (incoming) and `pat_ratio`
+between them, and *every* colour this weight is blended against — sky, fog,
+ambient, bloom — is that lerp. The bridge pushed `wether_pat1` alone, so
+`styleTerm` cut hard on the incoming index: it **stepped on the first frame of
+a weather transition and stayed stepped for its duration**, while everything
+beside it moved continuously.
+
+Worst exactly at the change frame. `dKy_change_colpat` sets the ratio to `0.0f`
+and does not touch `wether_pat0` (`d_kankyo.cpp:9528-9533`), so the frame the
+index changes on the wire is the frame the palette is **100% the old pattern**.
+The renderer's answer was as far from the game's as it ever gets, at the one
+moment the two are compared.
+
+And the kankyo tags make it structural rather than transient. `kytag01`, the
+Lost Woods mist tag, writes both endpoints *and* the ratio every frame with
+`mColPatModeGather = 1` (`d_a_kytag01.cpp:96-99`), which stops the game
+advancing the ratio itself (`d_kankyo.cpp:2192`) and hands the tag the whole
+blend. Its ratio is a `cLib_addCalc` ramp taking roughly 50 frames to travel
+0 → 1 (`:129-148`) — **that ramp is the mist's strength**, and reading the index
+alone saw full mist from the first frame the tag was in range.
+
+**What landed.** Two more readouts, `rtx.dusklight.env.colpatPrev` and
+`colpatBlend` (quantized to 0.01 game-side), and `styleTerm` became a lerp:
+
+```
+weatherTerm = w(colpatPrev) * (1 - blend) + w(colpat) * blend
+w(p)        = p == 0 ? 1 : clamp(physicalWeatherWeight, 0, 1)
+```
+
+**Default-safe by algebra, not by assertion.** `colpatBlend` defaults to `1.0f`
+and the game pins it at `1.0f` whenever no transition is running, so the
+ordinary reading — and the reading from a game build too old to push it — is
+exactly `1.0f`. At `blend == 1.0f` the first product is multiplied by exactly
+`1.0f - 1.0f`, and since `w(p)` is either `1.0f` or a value already clamped to
+`[0,1]` it is always finite, so `w * 0.0f` is exactly `+0.0f` (not NaN) and
+`0.0f + w(colpat)` is exactly `w(colpat)` in IEEE-754. The result is the
+previous expression bit for bit, not approximately.
+
+**The colpat 9 guard is untouched**, deliberately: it returns before this line,
+so nothing here bypasses it, and it is still under instrumentation (§8.6).
+One stated consequence rather than a discovered one — a transition *out of*
+pattern 9 now lerps from that pattern's ordinary weather weight rather than
+from the guard's zero, which is a fade beginning at the moment the guard stops
+firing, not a new step.
+
+**Regression signature.** The stylised/physical handover becomes **gradual
+where it used to snap**. If instead it becomes erratic or oscillates during a
+weather change, `colpatBlend` is being read at the wrong point in the frame.
+The atmosphere panel and the Dusklight tab both now print the pattern as
+`prev -> curr @ ratio` beside the resolved physical weight, which is where that
+distinction is visible: a healthy transition sweeps the ratio 0 → 1 once and
+stops, and outside a transition the two patterns are equal with the ratio at
+`1.00`.
+
+**Untested in game.** CI-only as of 2026-08-11.
 
 ---
 
@@ -419,7 +508,7 @@ would compute the same thing twice.
 
 | Quantity | Computed | Consumed by | Note |
 | :-- | :-- | :-- | :-- |
-| Palette blend (fog + sky + ambient) | **game**, once per frame | everything | Reading outputs also inherits addcol, ratio, override and gather layers for free (§3) |
+| Palette blend (fog + sky + ambient) | **game**, once per frame | everything | Reading outputs also inherits the addcol, ratio and override layers for free, and the tag/event writes that stage through the `*Gather` fields into that same blend (§3) |
 | Transmittance LUT (256×64) | on medium change only | sky-view LUT, aerial persp | Function of the medium alone — **not** of sun direction. Dirty-flag it on colpat/time-slot change; it does not belong in the per-frame path |
 | Multi-scattering LUT (32×32) | on medium change only | sky-view LUT | Same |
 | Sky-view LUT (lat-long) | per frame | dome light, visible sky **and** the far fog's colour | There is no separate sky-view table: the dome image *is* it. All three consumers already funnel through `sampleDomeLightTexture`, so one evaluation serves appearance, GI and aerial perspective with no new plumbing |
@@ -449,13 +538,57 @@ camera-facing quads. Keeping them *and* a dense medium double-counts the haze.
 `noiseFieldDensityScale`. Real volumetric swirl instead of quads, which is an
 upgrade, and no double-count. Compromise recorded in §9.
 
-### 8.2 The fog-avoid tag (kytag08)
+### 8.2 The fog-avoid tag (kytag08) — no clash, and no work is owed
 
-`g_env_light.fog_avoid_tag` tracks a moving position that pushes fog away from
-the player. A homogeneous medium cannot express "clear here".
+> **Withdrawn 2026-08-11. This section described a clash that does not exist.**
+> It said `g_env_light.fog_avoid_tag` "tracks a moving position that pushes fog
+> away from the player", that "a homogeneous medium cannot express *clear
+> here*", and it booked a heterogeneous-fog feature against carrying it later.
+> **The tag writes no fog state anywhere.** Kept rather than deleted so the
+> claim is not rediscovered and re-planned.
 
-**Resolution:** ignore in Phases A–C. The heterogeneous noise field could carry
-it later as a density subtraction around a world position. Recorded in §9.
+What was read in the game tree, all of it citable:
+
+- The field has exactly four references in the game tree: its declaration
+  (`include/d/d_kankyo.h:332`), one write (`d_a_kytag08.cpp:264`, on actor
+  create), and one read, tested then dereferenced (`d_kankyo.cpp:11608`,
+  `:11610`). There is no other consumer.
+- That read sits inside `dKy_bg_MAxx_proc`, in the branch for background
+  materials named `MA11` (`d_kankyo.cpp:11539`), on the non-twilight side of
+  `dKy_darkworld_check()`. All it does is build a `C_MTXLightPerspective`
+  projection aimed at the tag's `mAvoidPos` and hand it to that material's
+  **texture matrix 0** via `setEffectMtx` (`:11608-11637`). That is a projected
+  texture on ordinary drawn geometry — no `J3DFogInfo`, no `GXSetFog`, no
+  palette field.
+- **The game names the geometry.** The same branch sets the material's TEV
+  colours 1 and 2 (`:11584`, `:11590`), and the HIO panel that overrides exactly
+  those two in a debug build (`mist_twilight_c1_col` / `c2_col`, `:11594-11604`)
+  is headed 「霧沼　トワイライト時　色設定」 — *kirinuma*, **fog swamp**,
+  "colour settings while in twilight" (`d_kankyo.cpp:7594`, sliders
+  `:7596-7603`). So the "fog" the tag clears is a **painted ground surface**,
+  and the tag's job is to punch a projected hole in it.
+- The rest of `d_a_kytag08.cpp` is two JPA particle emitters (`0x84A0`, plus
+  `0x84A1` or `0x84A2` by world, `:252-257`), audio
+  (`mDoAud_setFogWipeWidth` `:80`, `mDoAud_startFogWipeTrigger` `:97`) and one
+  player flag (`onFogFade()` `:157`, which sets `FLG2_FOG_FADE`). Grepping the
+  file for `fog_col`, `mFogNear`, `mFogFar`, `dKy_fog_startendz_set`,
+  `GXSetFog`, `J3DFogInfo`, `addcol_fog` and `now_fogcol_ratio` returns nothing.
+
+**Resolution: no work is owed, in any phase.** The clear bubble is a mesh with a
+projected texture on it plus particles, so it arrives through the ordinary draw
+stream exactly like any other geometry. It was never in our medium, so it cannot
+be lost from it — and a density subtraction around that position would carve a
+hole in the atmosphere that the original never carved, on top of a bubble the
+draw stream already delivers. C11 (a homogeneous medium cannot be clear near the
+camera) is still a real reason to want heterogeneous fog; **this tag is not, and
+nothing is queued behind it.**
+
+**What this does not claim.** Whether that projected texture still *looks* right
+once path traced is a separate, untested question about materials. Aurora does
+forward the matrix — a `GX_TG_MTX3x4` camera-space texgen becomes
+`D3DTTFF_COUNT3 | D3DTTFF_PROJECTED`
+(`aurora-ao/lib/dx9/dx9_tev.cpp:858`, `:919-921`) — but nobody has looked at the
+result in game. It is not tracked here because it is not a fog question.
 
 ### 8.3 Per-object fog
 
@@ -495,19 +628,113 @@ alone. Two consequences carried into this design: **never bake the sun disc
 into the dome texture** (keep it analytic and NEE-sampled), and keep the
 *lighting* variant of the sky-view LUT smoother than the visible one.
 
-### 8.6 Twilight Realm
+### 8.6 Twilight Realm — and the colpat 9 bypass, which is unverified
 
-Less special than it looks: `d_kankyo.cpp:266-270` shows the Palace of Twilight
-is simply colpat pattern 9. Same `vrbox_*`, same `fog_col`, same
-`fog_start_z/end_z` machinery with different numbers, plus the full-screen
+The design point still stands: **a physical atmosphere has no valid parameters
+for the Twilight Realm.** There is no sun; the look is amber over black with
+drifting particles. Rayleigh/Mie/ozone cannot produce it at any setting, so
+`physicalWeight` is driven to 0 there — bypass, not tune. Because the same
+weight drives fog colour, the amber fog stays amber automatically. It is
+otherwise unremarkable machinery: the same `vrbox_*`, `fog_col` and
+`fog_start_z/end_z` blend with different numbers, plus the full-screen
 desaturate-and-tint already bridged (`monoAmount` ≈ 0.38).
 
-But it forces one thing to be explicit: **a physical atmosphere has no valid
-parameters for the Twilight Realm.** There is no sun; the look is amber over
-black with drifting particles. Rayleigh/Mie/ozone cannot produce it at any
-setting. `styleTerm` drives `physicalWeight` to 0 there — bypass, not tune.
-Because the same weight drives fog colour, the amber fog stays amber
-automatically.
+**What was wrong was the number the bypass cuts on, and where it came from.**
+
+> **Corrected 2026-08-11.** This section used to say "`d_kankyo.cpp:266-270`
+> shows the Palace of Twilight is simply colpat pattern 9", and
+> `resolvePhysicalWeight` still carries `kPalaceOfTwilightColpat = 9` on that
+> reading. **That citation is a different index space.**
+> `d_kankyo.cpp:266-270` is inside `dKy_sense_pat_get` (`:135-316`), which
+> returns the **wolf-sense vision pattern** — the index that picks what
+> senses-mode looks like, in `dKy_WolfPowerup_BgAmbCol` (`:318`) and
+> `dKy_WolfPowerup_FogNearFar` (`:416`), both reached only from the
+> wolf-powerup branches of the `setLight` family (`:2452-2453`, `:2519`,
+> `:2928`, `:2982`, `:3040`, `:3157`). The game's
+> own debug panel confirms the space: the combo box bound to
+> `twilight_sense_pat`, under the heading
+> 「■ トワイライト　センスパターン」 (`d_kankyo.cpp:7456`, combo at `:7459-7474`),
+> labels entry 9 as 「９：Ｌｖ８専用　D_MN08」 — *"9: for Lv8 only, D_MN08"*
+> (`:7469`). So "9 = Palace of Twilight" is a true statement **about the sense
+> patterns**, and nothing anywhere relates it to colpat.
+>
+> `rtx.dusklight.env.colpat` is `g_env_light.wether_pat1`
+> (`dusklight-ao/src/dusk/remix_bridge.cpp:1878-1879`). That field indexes
+> `stage_envr_info_class::pselect_id[65]` (`d_stage.h:171`) through the pattern
+> switch at `d_kankyo.cpp:1896-1990`, which handles 0–7 explicitly and 8–63 in
+> its `default` arm. It is a per-stage palette-slot selector authored in stage
+> data, unrelated to the sense patterns and with no shared meaning for any
+> value.
+>
+> **That one panel has now produced three wrong attributions, and this is the
+> first one that is traced rather than suspected.** The other two both come from
+> its entry 2, 「２：ハイリア湖専用」 — *"2: Lake Hylia only"* (`d_kankyo.cpp:7462`)
+> — read as colpat, which is the *probable* origin of the Lost Woods fog tag
+> being placed at Lake Hylia across twelve passages in two repos
+> (`dusklight-ao/docs/kankyo-fog.md` §3.3, `docs/japanese-naming-audit.md` §4.1;
+> stated there as a likely cause, not a proven one). Reading a label out of its
+> panel is the recurring failure here, not a one-off.
+
+**Does any stage actually run colpat 9? UNKNOWN, and not knowable from source.**
+What is established:
+
+- No literal 9 is written to colpat anywhere in the game tree.
+  `dKy_change_colpat` is called with 0–6 and 10–12 only, and the direct writes
+  to `wether_pat1` use 1, 2, 3, 4 and 6.
+- But colpat **can** be 9, from stage data, through three routes.
+  `d_a_kytag06.cpp:1105-1107` writes `wether_pat0`/`wether_pat1` straight from
+  the actor's own parameter (`field_0x591 = fopAcM_GetParam(a_this) & 0xFF`,
+  `:1070`); `d_a_kytag01.cpp:174,182-183` does the same with
+  `fopAcM_GetParam(i_this)`; and `d_a_kytag06.cpp:876` passes a **path point's**
+  `mArg0` to `dKy_change_colpat`, which reaches `wether_pat1` via
+  `mColpatCurrGather` at `d_kankyo.cpp:4798`/`:4819`. Actor parameters and path
+  points live in `.dzs`/`.dzr` stage data, which this checkout does not contain.
+- So the honest answer is UNKNOWN. It is **not** "no". A related detail worth
+  noting rather than concluding from: pselect slots 8 and 9 are also what the
+  game's own *underwater* override reaches for (`d_kankyo.cpp:1996-2010`), so a
+  stage authoring colpat 9 would land on the same slot. Whether that means
+  authors avoided 9 or reused it is **not established**.
+
+**Where the bypass sits, and why that matters.** In `resolvePhysicalWeight` the
+order is: feature switches → `skyHidden()` → **colpat 9** → `sunIsDay()`. The
+`skyHidden()` test above it already returns 0 for every area with no sky, so the
+bypass can only fire outdoors. And the Palace of Twilight — the thing it was
+written for — is permanently in the dark world (`l_darkworld_tbl`,
+`d_kankyo_data.cpp:135`, `D_MN08` at `KY_DARKLV_UNCLEARABLE`, a level nothing
+ever clears), where `setDaytime` pins `daytime = 0` (`d_kankyo.cpp:1630-1636`),
+which makes the bridge's `sunIsDay` false (`remix_bridge.cpp:632`, day is
+`daytime` in 67.5–292.5). **The `sunIsDay()` test four lines below would return
+0 there anyway.** So in the one place the bypass names, it changes nothing; the
+only place it can change anything is an outdoor, daylit stage that happens to
+select pattern 9 — which is the failure mode, not the feature.
+
+**It has not been removed, because "probably inert" is exactly the reasoning
+that produced three no-op fixes on this project.** Instead
+`resolvePhysicalWeight` now calls `logColpatOnce`, which emits **one line per
+distinct colpat per run**, only when a sky is visible, reporting the pattern,
+the sun elevation, whether it is daylight, and whether the bypass fired. It is
+capped by a 64-bit mask over the game's own 0–63 pattern range, so a whole
+session cannot spam it.
+
+**What each possible result decides.** Written down now so the follow-up is
+mechanical rather than another judgement call:
+
+| What the log shows over a session that visits outdoor areas **and** the Palace of Twilight | Reading | What will be done |
+| :-- | :-- | :-- |
+| No line ever says `FIRED` | colpat 9 never reaches the bypass; the literal has no target | **Delete the bypass and `kPalaceOfTwilightColpat`.** Dead code. Say so in this section and in §4. |
+| `FIRED` appears, always with `daylight no` | the bypass fires only where `sunIsDay()` would return 0 four lines later | **Delete the bypass.** It is redundant, not load-bearing; `physicalWeight` stays 0 with it gone. |
+| `FIRED` appears with `daylight yes` | an outdoor, daylit area is losing its entire physical sky on this literal | **Remove the bypass**, and note the colpat value that did it. The Twilight Realm does not need it — `sunIsDay` already covers it — so what remains is a stage being penalised for a palette-slot number. |
+
+> **One trap in reading that table.** The fork's own clock freeze
+> (`rtx.dusklight.game.freezeTime`) deliberately skips the `daytime = 0` that
+> the dark-world branch applies (`d_kankyo.cpp:1560-1567`), so a frozen clock
+> carried into the Twilight Realm **can** produce `FIRED` with `daylight yes`
+> *inside* the Palace of Twilight. Read the third row only from a session with
+> the clock freeze **off**.
+
+**Deferred, not open.** No log exists yet and none can be produced from a
+checkout, so the decision waits on exactly one play session. Until then the
+bypass stays as it is. Nothing else in this document is blocked on it.
 
 ---
 
@@ -527,7 +754,7 @@ shows, and the first knob to reach for.
 | C3 | **Clouds have no physical analogue.** `kumo_top/bottom/shadow` (**kumo** = 雲, cloud) describe painted cloud bands. | Skies read emptier than vanilla if the vrbox — the game's skybox dome — is replaced wholesale. | Keep TP's cloud layer as geometry over our sky (Phase D). |
 | C4 | **Weather has no physical analogue.** Clear-sky scattering cannot do "rain grey". | Storms look insufficiently oppressive. | `styleTerm` drops `physicalWeight` on weather colpats; overcast can also be faked with high Mie + suppressed sun. |
 | C5 | ~~Moya swirl replaced by noise.~~ **Withdrawn - the problem does not exist on this backend.** `mMoyaCount` feeds `mpCloudPacket->mCount` (`d_kankyo_rain.cpp:1616`, inside `cloud_shadow_move`), and `dKankyo_cloud_Packet::draw` already returns early on D3D9 (`d_kankyo_wether.cpp:119-126`). The haze billboards were never drawn here, so there is nothing to double count and no switch was needed. `moyaMode`/`moyaCount` are still pushed, as a signal of how much haze an area wants folded into the medium. | — | — |
-| C6 | **Fog-avoid tag ignored.** (§8.2) | No clear bubble around the player in heavy fog. | Deferred feature, not a tuning knob. |
+| C6 | ~~**Fog-avoid tag ignored.**~~ **Withdrawn 2026-08-11 — nothing was being given up.** `fog_avoid_tag` (kytag08) writes no fog state at all: its only reader aims a projected texture matrix at the `MA11` ground material the game itself calls 霧沼 *kirinuma*, "fog swamp", and the rest of the actor is particles, audio and a player flag. The clear bubble is drawn geometry and reaches Remix through the ordinary draw stream. §8.2 has every citation. **No heterogeneous-fog work is owed to this** — C11 is still a reason to want it, this is not. | — | — |
 | C7 | **Per-object fog flattened to one global.** (§8.3) | Objects authored with distinct fog match their room instead. | Could be restored per-instance later; costs a per-instance field. |
 | C8 | **Night is fully stylised.** Physics gives near-black without a sun. | No moonlight scattering / no physical night sky. | Deliberate. Moon-driven scattering is possible but is a separate feature. |
 | C9 | **`zHalfMin` clamp is a magic number.** (§5.1) | Extremely dense scripted fog may cap below vanilla. | Single tunable; raise the cap. |
@@ -812,6 +1039,9 @@ aurora, not against Remix.
 | Phase C (C1-C3) | implemented 2026-07-28, **run 2026-07-29 — scattering confirmed, verdict blocked by the sky/fog defect below** |
 | Overlay, warp, input blocking | landed 2026-07-28, **tested good 2026-07-29** |
 | Time-of-day scrub + freeze | landed 2026-07-28, **tested good 2026-07-29** — `DusklightOverlay.md` §3.2.1 |
+| Fog-avoid tag (kytag08) | **closed 2026-08-11 without code.** It touches no fog; §8.2 and C6 record why, and nothing is owed |
+| colpat 9 bypass | **instrumented 2026-08-11, decision deferred.** `logColpatOnce` added; the literal's source is the wrong index space and whether any stage runs colpat 9 is UNKNOWN. **Untested in game — one play session with the clock freeze off settles it.** §8.6 has the three possible results and what each one triggers |
+| colpat crossfade (`styleTerm`) | **landed 2026-08-11, protocol 13, UNTESTED IN GAME.** The bridge pushed one third of the game's palette blend; `styleTerm` now follows all three and lerps instead of cutting on the incoming index. Default-safe by algebra at `colpatBlend == 1.0`, which is both the option default and the game's steady state. §4.1 has the derivation, the regression signature and why the colpat 9 guard was left alone |
 
 Owner's verdict on A + B after testing: *"a massive, frankly monumental
 success."* Range, shape and per-area fog scaling all validated; see §13's

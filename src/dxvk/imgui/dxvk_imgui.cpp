@@ -2806,19 +2806,46 @@ namespace dxvk {
     }
     s_sliderHeld = ImGui::IsItemActive();
 
-    // The quarter points, which are also the four the light actually differs at. Buttons rather
-    // than a combo because the whole value of these is landing on the same number twice.
+    // The game's own six time lights, at the game's own numbers. Its environment palette holds
+    // six time-of-day slots and its light schedule (l_time_attribute, d_kankyo_data.cpp:212)
+    // cross-fades between them; the values below are the ones the game's own debug time-fix
+    // menu pins (d_kankyo.cpp, dScnKy_env_light_c::setDaytime), each chosen so the schedule
+    // resolves to exactly one slot with no blend. So each button shows one authored palette
+    // entry rather than a point part-way between two.
+    //
+    // The names are the game's too, romanized: asa 0/1 (morning), hiru (midday - not afternoon,
+    // and not noon: it is pinned at 11:00), yuu 0/1 (evening), yoru (night).
+    //
+    // Three of the six are reachable ONLY at their exact value. The schedule holds midday over
+    // 135-240, evening 0 over 255-270 and night over 300-75, but morning 0, morning 1 and
+    // evening 1 sit on a single instant each (90, 105, 285) with a cross-fade either side. A
+    // slider cannot realistically be dragged onto them, which is most of why these buttons are
+    // worth having.
+    //
+    // This replaced four clock quarter points (0/90/180/270). Those were not wrong - each did
+    // resolve to one pure slot (night, morning 0, midday, evening 0) - but they reached only
+    // four of the six, and the two they missed are two of the three a slider cannot reach.
+    //
+    // Dropping 0 and 180 costs nothing measurable for the sun and moon, which are on their own
+    // orbit rather than on the palette schedule: setSunpos peaks at 59.0 deg of elevation at
+    // 0/180 and gives 57.4 deg at 345/165, so Night and Midday stand in for midnight and noon
+    // to within about 1.6 deg. Use the slider if an exact solar extreme is what is wanted.
+    //
+    // Buttons rather than a combo because the whole value of these is landing on the same number
+    // twice. Two rows so six fit without the window widening.
     struct TimePreset {
       const char* label;
       float degrees;
     };
     static constexpr TimePreset kPresets[] = {
-      { "Midnight", 0.0f }, { "Sunrise", 90.0f }, { "Noon", 180.0f }, { "Sunset", 270.0f },
+      { "Morning 0", 90.0f },  { "Morning 1", 105.0f }, { "Midday", 165.0f },
+      { "Evening 0", 255.0f }, { "Evening 1", 285.0f }, { "Night", 345.0f },
     };
     constexpr size_t kPresetCount = sizeof(kPresets) / sizeof(kPresets[0]);
+    constexpr size_t kPresetsPerRow = 3;
 
     for (size_t i = 0; i < kPresetCount; i++) {
-      if (i > 0) {
+      if (i % kPresetsPerRow != 0) {
         ImGui::SameLine();
       }
       if (ImGui::Button(kPresets[i].label)) {
@@ -2827,6 +2854,13 @@ namespace dxvk {
       }
     }
 
+    ImGui::TextWrapped(
+      "The six buttons are the game's own six time-of-day palette entries, at the six clock "
+      "values the game itself uses to show one of them cleanly. Between them the schedule is "
+      "cross-fading two entries, and Morning 0, Morning 1 and Evening 1 exist for one instant "
+      "each - the slider cannot land on them, and without Freeze Time the clock walks straight "
+      "back off them. So an A/B of anything palette driven belongs on a button, frozen.");
+
     RemixGui::Checkbox("Freeze Time", &DusklightGame::freezeTimeObject());
     ImGui::TextWrapped(
       "Freeze before shooting an A/B pair. Without it the sun has moved between the two shots and "
@@ -2834,8 +2868,9 @@ namespace dxvk {
     ImGui::TextWrapped(
       "The moon to sun handover sits around 67 to 75 degrees, which is the window to sit in for "
       "anything about the celestial light. The physical sky blend is driven by sun elevation "
-      "rather than by the clock, so noon is where it is at full strength and sunrise or sunset is "
-      "where the game's own palette keeps it.");
+      "rather than by the clock, so Midday is where it is at full strength. Morning 0 puts the "
+      "sun about 15 degrees up and Evening 1 is already a little past sunset, which is where "
+      "the game's own palette carries the look instead.");
 
     ImGui::Unindent();
   }
@@ -3068,7 +3103,7 @@ namespace dxvk {
     // fine. Both directions are reported now, and both print the two numbers, because
     // "your builds do not match" without saying which side is behind still costs the
     // rebuild-and-see round it exists to prevent.
-    constexpr int kRequiredProtocol = 11;
+    constexpr int kRequiredProtocol = 15;
     const int gameProtocol = DusklightEnv::protocol();
     const bool gameTooOld = feedLive && gameProtocol < kRequiredProtocol;
     const bool remixTooOld = feedLive && gameProtocol > kRequiredProtocol;
@@ -3166,6 +3201,14 @@ namespace dxvk {
         "which a path tracer shows immediately.");
 
       RemixGui::DragFloat("Master Intensity##dusklight", &DusklightGame::effectLightIntensityObject(), 0.02f, 0.f, 8.f, "%.2f");
+      RemixGui::DragFloat("Master Reach##dusklight", &DusklightGame::effectLightReachScaleObject(), 0.02f, 0.f, 16.f, "%.2fx");
+      RemixGui::DragFloat("Master Radius##dusklight", &DusklightGame::effectLightRadiusScaleObject(), 0.02f, 0.01f, 8.f, "%.2fx");
+      ImGui::TextWrapped(
+        "One multiplier per value this system takes from the game - brightness, how far a light carries, how big its sphere is - "
+        "each starting at 1.00 and each reaching every light at once. They are here for when the game's own numbers come out too "
+        "weak or too strong, without needing a rebuild.\n"
+        "Master Reach replaced the old Derived Reach and does the same job for both halves. Radiance is solved to carry to the same "
+        "distance whatever the radius is, so Master Radius changes softness, not how far light travels.");
 
       RemixGui::Checkbox("Infinite Lantern Oil", &DusklightGame::lanternInfiniteOilObject());
       ImGui::TextWrapped(
@@ -3183,7 +3226,6 @@ namespace dxvk {
 
       ImGui::TextUnformatted("From the game (a light was authored beside the effect)");
       RemixGui::DragFloat("Derived Intensity##dusklight", &DusklightGame::effectLightDerivedIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
-      RemixGui::DragFloat("Derived Reach##dusklight", &DusklightGame::effectLightDerivedReachObject(), 0.02f, 0.f, 16.f, "%.2fx");
       RemixGui::DragFloat("Derived Radius##dusklight", &DusklightGame::effectLightDerivedRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
 
       ImGui::TextUnformatted("Invented (nothing authored - fire arrows, unlit torches)");
@@ -3194,6 +3236,37 @@ namespace dxvk {
         "The two intensities are separate on purpose. The derived one maps the game's units onto "
         "Remix's scale; the invented one picks a size out of nothing. They will not want the same "
         "number, and tying them together means tuning one breaks the other.");
+
+      RemixGui::Separator();
+      ImGui::TextUnformatted("What the effect's own artists authored");
+      RemixGui::Checkbox("Colour From The Effect's Authored Ramp", &DusklightGame::effectLightAuthoredColorObject());
+      RemixGui::Checkbox("Grow The Sphere To The Authored Size", &DusklightGame::effectLightAuthoredRadiusObject());
+      ImGui::TextWrapped(
+        "The .jpa files carry a colour ramp and a size for every effect, and neither can change while you play - unlike the emitter's "
+        "live colour, which carries the time-of-day tint and, on shared torch effects, a colour cycle that has been running since the "
+        "level loaded and has nothing to do with any particular torch.\n"
+        "Colour changes hue only; nothing gets brighter. Size can only make a sphere larger than the configured radius, never smaller, "
+        "and it is off by default because it changes how soft every fire looks.\n"
+        "Neither invents a brightness. Nothing the artists wrote is a brightness - there is no such number anywhere in the effect data - "
+        "so that still comes from the game's own light registry and from the settings above.");
+
+      RemixGui::Separator();
+      ImGui::TextUnformatted("Link's lantern");
+      RemixGui::Checkbox("Give The Lantern Its Own Settings", &DusklightGame::effectLightLanternSeparateObject());
+      {
+        const bool separate = DusklightGame::effectLightLanternSeparate();
+        ImGui::BeginDisabled(!separate);
+        RemixGui::DragFloat("Lantern Intensity##dusklight", &DusklightGame::effectLightLanternIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
+        RemixGui::DragFloat("Lantern Reach##dusklight", &DusklightGame::effectLightLanternReachObject(), 5.f, 0.f, 8000.f, "%.0f units");
+        RemixGui::DragFloat("Lantern Radius##dusklight", &DusklightGame::effectLightLanternRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
+        ImGui::EndDisabled();
+      }
+      ImGui::TextWrapped(
+        "Off, the lantern is treated as any other fire and every multiplier above reaches it. On, these three replace the shared ones "
+        "outright - the master multipliers do not apply to it, which is the point of separating it.\n"
+        "The lantern is identified by the name the original team gave its flame, which nothing else in the game uses, and both the "
+        "still and the swung flame are covered - the game swaps between them when Link swings the lamp.\n"
+        "Its colour comes from the game's own lamp light either way.");
 
       RemixGui::Separator();
       RemixGui::DragFloat("Fire Height Offset##dusklight", &DusklightGame::effectLightFireOffsetObject(), 0.5f, -200.f, 200.f, "%.1f units");
@@ -3217,6 +3290,18 @@ namespace dxvk {
       RemixGui::DragInt("Max Lights (0 = no limit)##dusklight", &DusklightGame::effectLightMaxLightsObject(), 1.f, 0, 256);
       RemixGui::DragFloat("Max Distance##dusklight", &DusklightGame::effectLightMaxDistanceObject(), 50.f, 0.f, 100000.f, "%.0f units");
       RemixGui::Checkbox("Light Explosions and One-Shots", &DusklightGame::effectLightBurstsObject());
+
+      // The Shadow Insect controls. Deliberately a pair - the switch answers "I do not like
+      // this", the hold answers "it flickers" - because they are different complaints with
+      // different fixes and one control could only have served one of them.
+      RemixGui::Checkbox("Light Sparks (Shadow Insect, glitter)", &DusklightGame::effectLightSparksObject());
+      RemixGui::DragInt("Spark Hold (extra frames)##dusklight", &DusklightGame::effectLightSparkHoldObject(), 1.f, 0, 120);
+      ImGui::TextWrapped(
+        "The Shadow Insect - the twilight bug Wolf Link hunts - is invisible in normal view, and its "
+        "electric spark is the only sign of it. ON is what the game already did, so this is here to "
+        "undo it rather than to enable it; turning it OFF also removes the glitter effects that share "
+        "the class. The hold keeps one light alive across the gaps inside a spark burst instead of "
+        "destroying and re-creating it, which is what stops brief sparks flickering.");
 
       RemixGui::Separator();
       RemixGui::DragFloat("Min Chroma##dusklight", &DusklightGame::effectLightMinChromaObject(), 0.01f, 0.f, 1.f, "%.2f");
@@ -3250,6 +3335,14 @@ namespace dxvk {
                     DusklightEnv::effLightsCulled(), DusklightEnv::effLightsExcluded());
         ImGui::Text("game lights available to copy (point/spot): %s",
                     DusklightEnv::effLightsVanilla().c_str());
+        // What each light was made of, and what kind of thing each one is. Without these the
+        // only way to tell whether the authored derivations ran was to press the report button
+        // and read a log, which is a slow answer to a question asked constantly while tuning.
+        ImGui::Text("solved from authored values: %s", DusklightEnv::effLightsAuthored().c_str());
+        ImGui::Text("by class: %s", DusklightEnv::effLightsClasses().c_str());
+        // The Shadow Insect answer, without a log. seen>0 lit==0 is the negative result and is
+        // called out below rather than left to be inferred from two numbers.
+        ImGui::Text("sparks: %s", DusklightEnv::effLightsSparks().c_str());
 
         if (!DusklightEnv::effLightsRunning()) {
           ImGui::TextWrapped(
@@ -3333,6 +3426,55 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
+    if (RemixGui::CollapsingHeader("Room Lights (authored, experimental)", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "The lights the room itself was built with, out of its stage file - not the torches and lanterns "
+        "actors register. These are what light a dungeon corridor that has no fire in it, and they are the "
+        "only lights in the game that carry a direction and a cone. Nothing read them until now.");
+      RemixGui::Checkbox("Room Lights Enabled", &DusklightGame::roomLightsObject());
+      RemixGui::DragFloat("Room Intensity##dusklight", &DusklightGame::roomLightIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
+      RemixGui::DragFloat("Room Radius##dusklight", &DusklightGame::roomLightRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
+      RemixGui::DragFloat("Cone Softness##dusklight", &DusklightGame::roomLightConeSoftnessObject(), 0.01f, 0.f, 4.f, "%.2f");
+
+      if (feedLive) {
+        ImGui::Text("Authored in this room: %d   drawn this frame: %d   tracked: %d",
+                    DusklightEnv::roomLightsFound(), DusklightEnv::roomLightsDrawn(),
+                    DusklightEnv::roomLightsTracked());
+        ImGui::Text("Of those drawn, %d carry a cone; %d used a ring cone that had to be dropped",
+                    DusklightEnv::roomLightsShaped(), DusklightEnv::roomLightsUnshapeable());
+
+        // Same three-way split the mirror needed: the count alone cannot tell "switched off",
+        // "nothing here" and "we are dropping them" apart, and they want quite different fixes.
+        if (!DusklightEnv::roomLightsRunning()) {
+          ImGui::TextWrapped(
+            "The game is not running its room light submission, so nothing here can reach Remix. Either "
+            "this switch is not reaching the game, or its D3D9 device never registered - the Bridge "
+            "section above says which.");
+        } else if (DusklightEnv::roomLightsFound() == 0) {
+          ImGui::TextWrapped(
+            "This room was authored with no lights of its own. Expected outdoors, where the sun and moon "
+            "take the first two slots, and in any room lit only by its palette.");
+        } else if (DusklightEnv::roomLightsDrawn() == 0) {
+          ImGui::TextWrapped(
+            "The room has authored lights but none reached Remix. Every one of them is either switched "
+            "off by a game switch, or the palette has taken its colour to black - both of which the game "
+            "does too, so this is more likely correct than broken.");
+        }
+      }
+
+      ImGui::TextWrapped(
+        "EXPERIMENTAL, and off by default on purpose. These are authored positions, which is the exact "
+        "property the effect lights exist because they distrust: a GameCube light casts no shadow, so it "
+        "could sit anywhere the shading looked right. Two things to look for with this on. Every fire "
+        "gaining a second light, offset from the first, means it is double counting with Effect Lights. "
+        "Shadows arriving from somewhere that is not a visible light means the placements do not survive "
+        "the path tracer, and the answer is to leave this off rather than to tune it.\n"
+        "The cone's direction and angle come straight from the game. The softness of its edge does not - "
+        "the game has four falloff curves and Remix has one - so treat Cone Softness as a preference.");
+      ImGui::Unindent();
+    }
+
     if (RemixGui::CollapsingHeader("HD Texture Pack", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
       RemixGui::Checkbox("Use HD Replacements", &DusklightTexRep::enableObject());
@@ -3380,8 +3522,25 @@ namespace dxvk {
       ImGui::Indent();
       RemixGui::Checkbox("Disable Frustum Culling", &DusklightGame::disableFrustumCullingObject());
       RemixGui::Checkbox("Hide Sky Billboards (diagnostic)", &DusklightGame::hideSkyBillboardsObject());
+      ImGui::Indent();
+      RemixGui::Checkbox("...Including The Stars", &DusklightGame::hideStarBillboardsObject());
+      ImGui::TextWrapped(
+        "On by default: that is what Hide Sky Billboards has always done. Clear it, with Hide Sky "
+        "Billboards left on, to keep the star field while the sun and moon billboards stay hidden. "
+        "Only the sun packet draws the moon quad that was measured as the night shadow occluder, so "
+        "this separates the half that was tested from the half that never was - and the first 13 "
+        "stars are a constellation placed by hand. Does nothing while Hide Sky Billboards is off.");
+      ImGui::Unindent();
       RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
       RemixGui::Checkbox("Per-Blade Grass", &DusklightGame::perBladeGrassObject());
+      RemixGui::Checkbox("Per-Flower Blossoms", &DusklightGame::perBladeFlowersObject());
+      ImGui::TextWrapped(
+        "One actor plants both, and until now only the grass half had a switch. Grass and flowers are "
+        "separate packets in the game and each batches a whole room into one dynamic vertex stream, "
+        "which is what makes Remix lose track of them between frames. These two controls are the same "
+        "fix applied to the two packets, and they are separate because a flower costs more per draw "
+        "than a blade and because NEITHER has been run in game yet - turning them on one at a time is "
+        "how one session answers both questions. Both cost draw calls, which is why both default off.");
       RemixGui::Checkbox("Hide Epona Dash Effect", &DusklightGame::hideDashEffectObject());
       ImGui::TextWrapped(
         "The dash speed effect is placed in front of the camera rather than in the world, so Remix "
@@ -3393,10 +3552,14 @@ namespace dxvk {
         "camera, which is its own problem for a path tracer.");
       RemixGui::Checkbox("Game's Blob Shadows", &DusklightGame::blobShadowsObject());
       ImGui::TextWrapped(
-        "Blob shadows are the flat discs the game paints under rupees, hearts and pots. Off by "
+        "Blob shadows are the flat discs the game paints on the ground under an actor. Off by "
         "default: Remix traces a real shadow for each of those objects, so the disc lands on top of a "
         "correct one. The game drops them at registration, so no draw call is issued at all. Its "
-        "projected shadows - Link and the major actors - are a separate system and are untouched.");
+        "projected shadows - Link and the major actors - are a separate system and are untouched.\n"
+        "Wider than it sounds, and wider than this said until 2026-08-11: this is every actor that "
+        "registers a ground shadow, not just dropped items - pots, insects, enemies, NPCs and cutscene "
+        "actors too, through one shared suppression behind all 50 registration sites. The in-game test "
+        "that passed only looked at items, so an NPC losing its ground disc is expected, not a bug.");
       ImGui::TextWrapped(
         "The game drops geometry outside the camera's view, which a path tracer still needs: a wall "
         "culled because you turned away stops occluding, and light leaks through where it was. Costs "
@@ -3408,7 +3571,10 @@ namespace dxvk {
         "Per-blade grass gives every blade a stable hash, so it can be tagged, replaced with real "
         "geometry, and hold denoiser history - the batched form cannot, because its vertex positions "
         "change whenever any blade moves. It costs one draw call per blade, so expect a CPU cost in "
-        "dense grass.");
+        "dense grass.\n"
+        "Grass only. The same actor also plants the flowers, and those go through a second batch that "
+        "this does not reach and that has no switch of its own - so if flowers show the symptom too, "
+        "this control will not move them.");
       ImGui::Unindent();
     }
 
@@ -3528,6 +3694,38 @@ namespace dxvk {
       }
     }
 
+    if (RemixGui::CollapsingHeader("The Game's Own Tuning Values", collapsingHeaderClosedFlags)) {
+      ImGui::Indent();
+      ImGui::TextWrapped(
+        "Three values the game's original artists had sliders for, at the ranges they worked in. "
+        "Their tuning panel is compiled out of every build of this port, so these have not been "
+        "reachable by anyone since the game shipped - the labels and ranges survive in the source "
+        "and that is where these came from. Each starts at the value the game ships, so nothing "
+        "changes until you move one.");
+
+      RemixGui::DragFloat("Water Surface Gloss##dusklight", &DusklightGame::waterSurfaceShineObject(), 0.01f, 0.f, 1.f, "%.2f");
+      ImGui::TextWrapped(
+        "The game calls this 'tera-tera' - its word for a wet, glistening sheen. It dulls the water "
+        "surface's colour and slows its ripple animation together, which is how the game made one "
+        "lake look livelier than another. 1 is as shipped.");
+
+      RemixGui::DragFloat("Grass Light Influence##dusklight", &DusklightGame::grassLightInfluenceObject(), 0.01f, 0.f, 2.f, "%.2f");
+      ImGui::TextWrapped(
+        "How much the room's light colours each blade of grass before it is drawn. That tint is one "
+        "of the few colours that reaches Remix from the game, so this is the thing to reach for when "
+        "grass reads too dark or too flat against ground the path tracer has lit for real. Flowers "
+        "follow it too. 1 is as shipped.");
+
+      RemixGui::DragFloat("Clock Rate##dusklight", &DusklightGame::clockRateObject(), 0.05f, 0.f, 20.f, "%.2fx");
+      ImGui::TextWrapped(
+        "Speed of the game's clock, as a multiple of normal. Low is as useful as high: three of the "
+        "six time-of-day palettes exist for one instant each, and a slow clock is the only way to "
+        "watch one of those transitions instead of jumping onto it. Use Freeze Time in the Time of "
+        "day section for an A/B pair - that also holds the Twilight Realm's separate clock, which "
+        "this does not touch. The wolf's howl-to-dawn skip is left alone while it runs.");
+      ImGui::Unindent();
+    }
+
     if (RemixGui::CollapsingHeader("Environment Response", collapsingHeaderFlags)) {
       ImGui::Indent();
       ImGui::TextWrapped(
@@ -3543,6 +3741,20 @@ namespace dxvk {
         const Vector3 bgAmbient = DusklightEnv::bgAmbient();
         ImGui::Text("Actor ambient: %.3f, %.3f, %.3f", actorAmbient.x, actorAmbient.y, actorAmbient.z);
         ImGui::Text("BG ambient:    %.3f, %.3f, %.3f", bgAmbient.x, bgAmbient.y, bgAmbient.z);
+
+        // The three background alphas, carried since protocol 13. They share a struct with the BG
+        // ambient above and are not ambient at all - the game uses them as material constants on
+        // its water, murk and faked-fog surfaces. Shown here because nothing consumes them yet, so
+        // this readout is the only way to learn what an area asks for. A negative value is the
+        // game not reporting, deliberately distinct from a reported 0, which is authored.
+        const float bgWaterA = DusklightEnv::bgWaterAlpha();
+        if (bgWaterA < 0.0f) {
+          ImGui::TextUnformatted("BG alphas:     not reported - this game build predates protocol 13");
+        } else {
+          ImGui::Text("BG alphas:     water %.3f   aux %.3f   fake fog %.3f",
+                      bgWaterA, DusklightEnv::bgAuxAlpha(), DusklightEnv::bgFakeFogAlpha());
+        }
+
         ImGui::Text("Mono overlay:  %.2f", DusklightEnv::monoAmount());
 
         RemixGui::Separator();
@@ -3558,9 +3770,14 @@ namespace dxvk {
         const Vector3 skyColor = DusklightEnv::skyColor();
         const Vector3 kasumiInner = DusklightEnv::kasumiInner();
         const Vector3 kasumiOuter = DusklightEnv::kasumiOuter();
-        ImGui::Text("Sky: %s   colpat %d   moya %d @ %.0f",
+        // colpat is a crossfade, not a state: the game holds an outgoing pattern, an incoming one
+        // and a 0..1 ratio, and every colour above is that lerp. Shown as "prev -> curr @ ratio".
+        // Outside a transition the two are equal and the ratio is 1.00, so anything else on screen
+        // means a weather, room or event change is in progress right now.
+        ImGui::Text("Sky: %s   colpat %d -> %d @ %.2f   moya %d @ %.0f",
                     DusklightEnv::skyHidden() ? "none (interior)" : "present",
-                    DusklightEnv::colpat(), DusklightEnv::moyaMode(), DusklightEnv::moyaCount());
+                    DusklightEnv::colpatPrev(), DusklightEnv::colpat(), DusklightEnv::colpatBlend(),
+                    DusklightEnv::moyaMode(), DusklightEnv::moyaCount());
         ImGui::Text("Sky colour:    %.3f, %.3f, %.3f", skyColor.x, skyColor.y, skyColor.z);
         ImGui::Text("Haze in / out: %.3f, %.3f, %.3f  /  %.3f, %.3f, %.3f",
                     kasumiInner.x, kasumiInner.y, kasumiInner.z,
