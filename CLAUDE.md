@@ -329,6 +329,20 @@ paragraph below is why.
 > regeneration. This is the "merges that succeed and are still wrong" section,
 > happening to the file that documents it.
 
+**The F1 panel only saves because of one line, and it silently did not for
+months.** `ImGUI::showDusklightOverlay` opens with
+`RtxOptionLayerTarget layerTarget(RtxOptionEditTarget::User)`. Without it the
+default edit target is `Derived` — the layer for code-driven changes, which is
+never serialised — so every control wrote a value that took effect, read back
+correctly, and was dropped at save time with nothing logged. Remix's own menus
+set that target themselves; this overlay is drawn from `ImGUI::update`, which
+does not. `NoSave` still overrides it, so `rtx.dusklight.env.*` readouts stay out
+of configs. `documentation/DusklightOverlay.md` §1.2.
+
+`rtx.conf` is written **sorted, with every `rtx.dusklight.*` in a labelled block
+at the end** (`Config::serializeCustomConfig`). Before that it was `unordered_map`
+iteration order, which changed between runs and made config diffs useless.
+
 **Transport rules that are easy to get wrong** (full versions in
 `documentation/DusklightOverlay.md` §1.1):
 

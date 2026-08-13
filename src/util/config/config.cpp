@@ -1470,6 +1470,21 @@ namespace dxvk {
     return Config();
   }
 
+  // NV-DXVK start: sorted output, and the fork's own options kept in their own block
+  //
+  // Two changes to what used to be a single unordered loop, both about being able to read the
+  // result. m_options is an std::unordered_map, so the file's line order was hash order: it moved
+  // between runs for no reason, and diffing two configs showed changes that were not changes.
+  // Sorting fixes that on its own.
+  //
+  // The split is the second half. rtx.dusklight.* are this fork's options, they are not upstream
+  // Remix's, and alphabetically they land in the middle of them - between rtx.di* and rtx.e* -
+  // where there is no way to tell which is which. They now go in a labelled block at the end, after
+  // everything stock, so a config can be read (and hand-edited, and pasted into a bug report)
+  // without knowing the option list by heart.
+  //
+  // '#' is not a valid key character (isValidKeyChar), and parseUserConfigLine bails on a line whose
+  // key is empty, so the banner below is inert to the parser regardless of what it contains.
   void Config::serializeCustomConfig(const Config& config, std::string filePath, std::string filterStr) {
     // Open the file if it exists
     std::ofstream stream(str::tows(filePath.c_str()).c_str());
@@ -1479,12 +1494,54 @@ namespace dxvk {
 
     Logger::info(str::format("Serializing config file: ", filePath));
 
+    constexpr const char* kDusklightPrefix = "rtx.dusklight.";
+
+    std::vector<const std::pair<const std::string, std::string>*> remixOptions;
+    std::vector<const std::pair<const std::string, std::string>*> dusklightOptions;
+
     for (const auto& line : config.m_options) {
       // Write if no filter specified, or if key matches the filter
-      if (filterStr.empty() || line.first.find(filterStr) != std::string::npos)
-        stream << line.first << " = " << line.second << std::endl;
+      if (!filterStr.empty() && line.first.find(filterStr) == std::string::npos)
+        continue;
+
+      const bool isDusklight = line.first.rfind(kDusklightPrefix, 0) == 0;
+
+      (isDusklight ? dusklightOptions : remixOptions).push_back(&line);
+    }
+
+    const auto byKey = [](const std::pair<const std::string, std::string>* a,
+                          const std::pair<const std::string, std::string>* b) {
+      return a->first < b->first;
+    };
+
+    std::sort(remixOptions.begin(), remixOptions.end(), byKey);
+    std::sort(dusklightOptions.begin(), dusklightOptions.end(), byKey);
+
+    for (const auto* line : remixOptions)
+      stream << line->first << " = " << line->second << std::endl;
+
+    if (!dusklightOptions.empty()) {
+      stream << std::endl;
+      stream << "###############################################################################" << std::endl;
+      stream << "##" << std::endl;
+      stream << "##  DUSKLIGHT - fork options" << std::endl;
+      stream << "##" << std::endl;
+      stream << "##  Everything above this banner is stock RTX Remix. Everything below it belongs" << std::endl;
+      stream << "##  to the Dusklight fork and will not be understood by an unmodified runtime," << std::endl;
+      stream << "##  which ignores unknown keys rather than failing on them." << std::endl;
+      stream << "##" << std::endl;
+      stream << "##  rtx.dusklight.game.*       settings the game reads back every frame" << std::endl;
+      stream << "##  rtx.dusklight.atmosphere.* fog, sky and sky light" << std::endl;
+      stream << "##  rtx.dusklight.env.*        readouts the game writes; never saved" << std::endl;
+      stream << "##" << std::endl;
+      stream << "###############################################################################" << std::endl;
+      stream << std::endl;
+
+      for (const auto* line : dusklightOptions)
+        stream << line->first << " = " << line->second << std::endl;
     }
   }
+  // NV-DXVK end
 
   // NV-DXVK start: Extend logOptions function
   void Config::logOptions(const char* configName) const {

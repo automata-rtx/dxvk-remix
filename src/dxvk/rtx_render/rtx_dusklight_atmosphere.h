@@ -95,6 +95,11 @@ namespace dxvk {
       // How far fogAmbient came from the dome rather than the palette, after the sky and validity
       // checks. The composite gets the same number so the near and far halves cannot disagree.
       float   skyAmbientWeight = 0.0f;
+      // What the palette's fog colour was divided by to turn a display colour into a radiance, or
+      // 1.0 when exposureFogMode leaves it alone. This is 1/exposure, so a value below 1 means the
+      // scene is bright and the fog was scaled up to match; above 1 means a dark scene and the fog
+      // was scaled down so it does not lift the blacks.
+      float   exposureCorrection = 1.0f;
 
       // Peak amount, 0..1, by which the medium out-fogs the game's ramp, and the distance it happens
       // at. Zero means the medium is nowhere thicker than the original's fog, which is the condition
@@ -171,6 +176,11 @@ namespace dxvk {
     // Largest extinction whose peak excess stays within the tolerance. Monotone in sigma, so a
     // bisection is exact to within its own resolution and needs no starting guess.
     static float solveSigmaWithinTolerance(float sigmaMatched, float start, float end, float tolerance);
+
+    // 1 / the exposure the tonemapper is about to apply, under the selected mode; 1.0 when the mode
+    // is off or the area is not one it covers. See the exposureFogMode option for why this is the
+    // faithful reading of the game's fog colour rather than a correction bolted onto it.
+    float resolveExposureCorrection(bool outdoor) const;
 
     // One line per distinct fog state, capped. Everything the fog's level and shape depend on, in
     // one place, so a play session settles it without anyone being asked to judge a colour.
@@ -285,6 +295,25 @@ namespace dxvk {
                     "Inert with no sky: indoors, or with rtx.dusklight.atmosphere.skyEnable off, the palette colour is used whatever this says.",
                     args.minValue = 0.0f,
                     args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", int, exposureFogMode, 1,
+                    "Treats the game's fog colour as the display colour it actually is, by dividing it by the exposure the tonemapper is about to apply.\n"
+                    "This is the last of the reasons dark scenes read grey. The game blended fog over a finished, already-exposed image, so fog_col means "
+                    "'what the screen should show there' - it is not a quantity of light. Used raw in a linear frame it is a fixed radiance, which is far too "
+                    "much light for a dark cave and not enough for a sunlit field, and no single value can serve both. Dividing by the exposure makes the fog "
+                    "land at the display colour the original intended, whatever the scene's brightness.\n"
+                    "It cannot run away: the fog's contribution after tonemapping is (colour / exposure) * exposure, so its *display* value is invariant to "
+                    "exposure by construction and adds no gain to the eye adaptation loop.\n"
+                    "Only the palette-derived part of the fog colour is corrected. Anything taken from the sky dome "
+                    "(rtx.dusklight.atmosphere.skyAmbientWeight) is already a real radiance measured in the renderer's own units and must not be rescaled, so "
+                    "outdoors with the dome supplying the colour this does almost nothing either way.\n"
+                    "0: Off. The palette colour is used as a radiance, which is the behaviour before 2026-08-13.\n"
+                    "1: Indoors only. Applied where the game reports no sky - which is exactly where there is no dome to take a real radiance from, and so "
+                    "exactly where the problem still bites. The default.\n"
+                    "2: Always. Also applied outdoors, to whatever share of the fog colour still comes from the palette.\n"
+                    "Reads the auto exposure multiplier only, not rtx.tonemap.exposureBias: a manual bias is a deliberate look adjustment to the whole image "
+                    "and the fog should ride along with it, whereas eye adaptation is an automatic normalisation the original never had.",
+                    args.minValue = 0,
+                    args.maxValue = 2);
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyAmbientScale, 1.0f,
                     "Trim on the dome-derived fog colour, applied before it is blended in by rtx.dusklight.atmosphere.skyAmbientWeight.\n"
                     "The dome average is a measurement rather than a choice, so this exists only for taste - raise it for a hazier, more luminous distance, "

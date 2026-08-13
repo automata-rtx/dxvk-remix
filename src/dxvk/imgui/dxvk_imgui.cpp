@@ -2563,6 +2563,22 @@ namespace dxvk {
   // to this renderer, and keeping them in their own overlay means tuning the game does not require
   // Remix's menu over the top of the thing being tuned - both can be up at once, or either alone.
   void ImGUI::showDusklightOverlay(const Rc<DxvkContext>& ctx) {
+    // THIS LINE IS WHY DUSKLIGHT SETTINGS PERSIST. Do not remove it, and do not assume the panel
+    // works without it.
+    //
+    // An option edit is routed to a layer by the current edit target, and the default is Derived -
+    // the layer for code-driven changes, which is never written to disk. Remix's own menus set the
+    // User target (ImGUI::showMainMenu, ImGUI::switchMenu) so their edits land in the rtx.conf
+    // layer; this overlay is reached from ImGUI::update instead, which does not, so every control
+    // in it was writing to Derived. The values took effect, the panel read back what you set, and
+    // RtxOptionImpl::writeOption then found nothing in the rtx.conf layer to serialise - so the
+    // whole panel silently reset on every launch, with no error anywhere.
+    //
+    // RtxOptionImpl::getTargetLayer is the routing table. Anything flagged NoSave still goes to
+    // Derived regardless, which is correct: rtx.dusklight.env.* are readouts the game pushes every
+    // frame and must never be baked into a config.
+    RtxOptionLayerTarget layerTarget(RtxOptionEditTarget::User);
+
     ImGui::SetNextWindowSize(ImVec2(500, 640), ImGuiCond_FirstUseEver);
 
     if (ImGui::Begin("Dusklight", &m_dusklightWindowOpen)) {
@@ -2570,6 +2586,54 @@ namespace dxvk {
     }
 
     ImGui::End();
+  }
+
+  namespace {
+    // Save / discard for the rtx.conf layer, shown at the top of the Dusklight window.
+    //
+    // The same two buttons exist in the Remix developer menu, several screens away from the
+    // controls they apply to. Everything tuned in this panel is tuned while looking at the game,
+    // and a setting that has to be re-found in another menu before it survives the session is a
+    // setting that gets re-tuned every launch instead.
+    void dusklightSettingsRow() {
+      RtxOptionLayer* rtxConfLayer = RtxOptionLayer::getRtxConfLayer();
+
+      if (rtxConfLayer == nullptr) {
+        return;
+      }
+
+      const bool hasUnsaved = rtxConfLayer->hasUnsavedChanges();
+
+      ImGui::BeginDisabled(!hasUnsaved);
+      if (ImGui::Button("Save Settings##dusklightSave")) {
+        rtxConfLayer->save();
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Write every changed Remix and Dusklight option to %s.\n"
+                          "Dusklight's options are written in their own labelled block at the end of the file.",
+                          rtxConfLayer->getFilePath().c_str());
+      }
+      ImGui::EndDisabled();
+
+      ImGui::SameLine();
+
+      ImGui::BeginDisabled(!hasUnsaved);
+      if (ImGui::Button("Discard##dusklightDiscard")) {
+        rtxConfLayer->reload();
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Reload rtx.conf from disk, throwing away every change made since the last save.");
+      }
+      ImGui::EndDisabled();
+
+      ImGui::SameLine();
+
+      if (hasUnsaved) {
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "unsaved changes");
+      } else {
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "saved");
+      }
+    }
   }
 
   namespace {
@@ -2596,6 +2660,9 @@ namespace dxvk {
     ImGui::PushItemWidth(largeUiMode() ? m_largeWindowWidgetWidth : m_regularWindowWidgetWidth);
 
     auto common = ctx->getCommonObjects();
+
+    dusklightSettingsRow();
+    RemixGui::Separator();
 
     if (ImGui::BeginTabBar("DusklightTabs", ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) {
       if (ImGui::BeginTabItem("Dusklight Remix")) {

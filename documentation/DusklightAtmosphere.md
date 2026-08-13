@@ -588,7 +588,64 @@ Indoors there is no dome and the flat palette colour still stands, so a dark roo
 can still have its blacks lifted by fog. **The exposure-relative treatment is
 deliberately not in this change** — it is the remaining half of C10.
 
-### 5.4 Forward scattering
+### 5.4 The fog's level — treating a display colour as one
+
+**Landed 2026-08-13. Untested in game.** This is the remaining half of ledger
+C10, and it closes it.
+
+`fog_col` is not a radiance. The game blended it over a **finished, already
+exposed image**, so its meaning is *"what the screen should show there"*.
+Decoding it out of gamma (§5.1) fixes its shape; nothing fixes its **level**,
+because a display colour has no level until you say what exposure it was meant
+to be seen at.
+
+Used raw in a linear frame it is a fixed quantity of light — far too much for an
+unlit cave and not enough for a sunlit field — and **no single value can serve
+both**. That is the whole of "dark scenes read grey".
+
+The fix is to say the exposure out loud:
+
+```
+fogRadiance = sRGBToLinear(fog_col) · fogRadianceScale / exposure
+```
+
+`exposure` is what the tonemapper is about to multiply the frame by
+(`tonemapping.slangh`, `getExposure`; applied as `color *= getExposure(...)` in
+`tonemapping_apply_tonemapping.comp.slang`). Its auto-exposure half comes from
+`DxvkAutoExposure::getExposureMultiplier()`, a few frames stale off the same
+non-stalling host ring the Readout panel uses.
+
+**It cannot run away.** After tonemapping the fog contributes
+`(C / exposure) · exposure = C` — its *display* value is invariant to exposure
+by construction, so it adds exactly zero gain to the eye-adaptation loop. The
+fog still attenuates the scene, and that term is exposure-independent.
+
+**Only the palette's share is corrected.** Whatever the fog takes from the sky
+dome (§5.3) is already a real radiance measured in the renderer's own units, and
+rescaling it would be wrong. So outdoors with `skyAmbientWeight` at 1.0 this does
+essentially nothing — which is why the default mode is *Indoors only*.
+
+`rtx.dusklight.atmosphere.exposureFogMode`:
+
+| Mode | Where it applies | Why you would pick it |
+| :-- | :-- | :-- |
+| 0 Off | nowhere | The pre-2026-08-13 behaviour, kept as the A/B baseline |
+| 1 **Indoors only** *(default)* | areas the game reports as having no sky | Exactly where there is no dome to take a real radiance from, so exactly where the problem still bites |
+| 2 Always | everywhere, to the palette's share | If outdoor fog still reads mis-levelled with `skyAmbientWeight` below 1 |
+
+**Deliberately reads the auto-exposure multiplier only, not
+`rtx.tonemap.exposureBias`.** A manual bias is a considered look adjustment to
+the whole image and the fog should ride along with it; eye adaptation is an
+automatic normalisation the original never had, and it is that normalisation
+which breaks the display-colour assumption.
+
+**Two consequences to expect.** A dark room's fog stops lifting the blacks —
+that is the point. And fog brightness now moves *with* eye adaptation rather
+than against it, so walking from sun into a cave should no longer show the fog
+brightening as the scene darkens. The panel prints the live correction
+(`exposure correction: x…`); below 1 means a bright scene, above 1 a dark one.
+
+### 5.5 Forward scattering
 
 `rtx.volumetrics.anisotropy` is **0** upstream — perfectly isotropic — which
 spreads every light's in-scatter evenly in all directions and leaves shafts and
@@ -907,7 +964,7 @@ shows, and the first knob to reach for.
 | :-- | :-- | :-- | :-- |
 | C0 | ~~The calibration pass was never run.~~ **Run 2026-07-28. Phase A/B confirmed good in-game.** One constant was wrong: `skyIntensity` at 1.0 gave a visibly dim sky. The analytic anchor was right but the arithmetic behind it was not — it ignored that the palette colours are decoded out of gamma before they are scaled, which takes a mid blue from 0.5 to about 0.2, so the multiplier needed to be ~6× larger to land the same sky-to-sun ratio. Now 6.0. `zHalfMin` and `froxelRangeScale` were not reported as wrong. | — | — |
 | C11 | ~~**A homogeneous medium cannot be clear near the camera.**~~ **Largely resolved 2026-08-13, untested in game.** The observation stands and the arithmetic was worse than this row said: with `start` halfway to `end` the matched medium is **~37%** opaque where the original is untouched. What changed is that the medium no longer has to reproduce the fog at all (§5.2), so σ is capped until its peak excess over the game's own ramp is within `clearZoneTolerance` (default 0.08) and the ramp supplies the rest. | Residual near-field haze bounded by `clearZoneTolerance`, and reported exactly: "peak excess over the game's ramp" in the panel and the log. | `rtx.dusklight.atmosphere.clearZoneTolerance` — lower for a crisper near field, higher for more shaft presence. This is now the *only* trade in the fog system. |
-| C10 | **Fog is composited in linear HDR, not the game's display space.** The original blended fog over a finished, display-referred image; here it happens pre-tonemap, so the palette's fog colour has no meaningful *level*. **Half addressed 2026-08-13:** outdoors the fog's colour is now measured off the generated dome (§5.3), which is a real radiance in the renderer's units, so it scales with the scene without tuning. Indoors there is no dome and the flat palette colour still stands. | Dark interiors can still have their blacks lifted by fog, which reads as grey and low-contrast. Outdoors this should now be much closer. | `rtx.dusklight.atmosphere.fogRadianceScale` for the indoor case. The structural fix is the remaining half: scale the palette colour by the inverse of the auto-exposure so a display colour is treated as one. `AutoExposureDebugStats` already carries `exposure` and already has a non-stalling host ring, currently gated on the tuning panel being open. **Deliberately deferred**, 2026-08-13. |
+| C10 | ~~**Fog is composited in linear HDR, not the game's display space.**~~ **Resolved 2026-08-13, untested in game, in two halves.** Outdoors the fog's colour is measured off the generated dome (§5.3), a real radiance in the renderer's units. Everywhere the palette is still supplying it — indoors above all — the colour is divided by the exposure the tonemapper is about to apply (§5.4), which is what a display colour means. `rtx.dusklight.atmosphere.exposureFogMode` selects Off / Indoors only / Always. | If it is wrong it will be *level*, not hue: fog too bright or too dim for the scene it sits in. The panel and log both print the live correction factor. | `exposureFogMode` to change where it runs, `fogRadianceScale` for the overall level, `skyAmbientScale` for the dome's share. |
 | C1 | **Dusk saturation.** Physical twilight is more graduated and less saturated than TP's authored dusk. | Sunsets read calmer / less punchy than vanilla. | Lower `physicalWeight`'s `elevationTerm` at low sun; or add a saturation push applied to the *medium's* Rayleigh/Mie tint, not to output pixels. |
 | C2 | **Exponential never fully closes.** | Distant terrain slightly more visible than vanilla at `fog_end_z`. | The §5.2 range split is the fix; if still short, lower the split distance so the vanilla ramp owns more. |
 | C3 | **Clouds have no physical analogue.** `kumo_top/bottom/shadow` (**kumo** = 雲, cloud) describe painted cloud bands. | Skies read emptier than vanilla if the vrbox — the game's skybox dome — is replaced wholesale. | Keep TP's cloud layer as geometry over our sky (Phase D). |
@@ -1203,7 +1260,9 @@ aurora, not against Remix.
 | Fog-avoid tag (kytag08) | **closed 2026-08-11 without code.** It touches no fog; §8.2 and C6 record why, and nothing is owed |
 | colpat 9 bypass | **instrumented 2026-08-11, decision deferred.** `logColpatOnce` added; the literal's source is the wrong index space and whether any stage runs colpat 9 is UNKNOWN. **Untested in game — one play session with the clock freeze off settles it.** §8.6 has the three possible results and what each one triggers |
 | `skyFogMode` = Exempt | **TESTED GOOD 2026-08-13.** The sky no longer picks up the medium; the horizon seam and the dingy sky are gone. Weighted stays as a taste control for foggy weather rather than as a rival candidate, and Off stays as the A/B baseline. This closes the "live defect" below |
-| Fog rework: top-up ramp, density cap, dome-derived ambient, forward scattering | **landed 2026-08-13, UNTESTED IN GAME.** No protocol bump — this is fork-only and reads game state that was already on the wire. §5.2/§5.3/§5.4 carry the design and the derivations; the four causes it addresses are C11, C10 (half), the 4.4× near/far colour mismatch and the isotropic phase function |
+| Fog rework: top-up ramp, density cap, dome-derived ambient, forward scattering | **landed 2026-08-13, UNTESTED IN GAME.** No protocol bump — this is fork-only and reads game state that was already on the wire. §5.2–§5.5 carry the design and the derivations; the causes it addresses are C11, C10, the 4.4× near/far colour mismatch and the isotropic phase function |
+| Exposure-relative fog level | **landed 2026-08-13, UNTESTED IN GAME.** §5.4. Closes the second half of C10. Also made the auto-exposure stats readback unconditional — it used to run only while the Readout panel was open, which would have made the fog's brightness depend on whether anyone was looking at it |
+| Dusklight panel settings persisting | **landed 2026-08-13, UNTESTED IN GAME.** Every control in the F1 overlay was writing to the Derived layer, which is never serialised, so the whole panel silently reset on each launch. `DusklightOverlay.md` §1.2 has the mechanism and the trap |
 | colpat crossfade (`styleTerm`) | **landed 2026-08-11, protocol 13, UNTESTED IN GAME.** The bridge pushed one third of the game's palette blend; `styleTerm` now follows all three and lerps instead of cutting on the incoming index. Default-safe by algebra at `colpatBlend == 1.0`, which is both the option default and the game's steady state. §4.1 has the derivation, the regression signature and why the colpat 9 guard was left alone |
 
 Owner's verdict on A + B after testing: *"a massive, frankly monumental

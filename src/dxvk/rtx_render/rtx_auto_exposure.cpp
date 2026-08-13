@@ -80,11 +80,15 @@ namespace dxvk {
   
   DxvkAutoExposure::~DxvkAutoExposure()  {  }
 
-  void DxvkAutoExposure::showImguiSettings() {
+  float DxvkAutoExposure::getExposureMultiplier() const {
+    if (!enabled() || m_debugStats.valid == 0 || !(m_debugStats.exposure > 0.0f)) {
+      return 1.0f;
+    }
 
-    // Drives whether the reduction pass writes its stats and whether the readback copy is
-    // issued at all, so a closed panel costs nothing.
-    m_debugStatsRequested = false;
+    return m_debugStats.exposure;
+  }
+
+  void DxvkAutoExposure::showImguiSettings() {
 
     RemixGui::Checkbox("Eye Adaptation", &enabledObject());
     if (enabled()) {
@@ -117,7 +121,6 @@ namespace dxvk {
       RemixGui::Separator();
 
       if (ImGui::CollapsingHeader("Readout", ImGuiTreeNodeFlags_DefaultOpen)) {
-        m_debugStatsRequested = true;
         ImGui::Indent();
         if (m_debugStats.valid) {
           ImGui::Text("Current EV100      %8.3f", m_debugStats.currentEV);
@@ -285,7 +288,10 @@ namespace dxvk {
       pushArgs.softLimitRangeEV = std::max(softLimitRangeEV(), 1e-3f);
       pushArgs.deadbandEV = std::max(deadbandEV(), 0.0f);
       pushArgs.cutSnapThresholdEV = std::max(cutSnapThresholdEV(), 0.0f);
-      pushArgs.writeDebugStats = m_debugStatsRequested;
+      // Always. The exposure is no longer only a readout - the Dusklight fog derivation reads it to
+      // place fog at a display-referred level, and gating it on a panel being open would make the
+      // fog's brightness depend on whether anyone was watching.
+      pushArgs.writeDebugStats = true;
 
       {
         ScopedGpuProfileZone(ctx, "Histogram");
@@ -316,10 +322,10 @@ namespace dxvk {
         ctx->dispatch(1, 1, 1);
       }
 
-      if (m_debugStatsRequested) {
+      {
         // Queue this frame's stats into the host ring, then read the oldest slot, which is
-        // guaranteed to have landed. The readout is a few frames stale; for a tuning panel
-        // that is invisible, and it costs no synchronisation.
+        // guaranteed to have landed. The result is a few frames stale; against eye adaptation's
+        // own time constant that is nothing, and it costs no synchronisation.
         const uint32_t frameIdx = device()->getCurrentFrameId();
         const uint32_t writeIdx = frameIdx % kMaxFramesInFlight;
         ctx->copyBuffer(m_debugStatsHost, sizeof(AutoExposureDebugStats) * writeIdx,
@@ -330,6 +336,11 @@ namespace dxvk {
           memcpy(&m_debugStats, mapped, sizeof(AutoExposureDebugStats));
         }
       }
+    } else {
+      // Eye adaptation is off, so the exposure texture has been cleared back to 1 and the last
+      // readback describes a frame that no longer resembles this one. Dropping the flag is what
+      // makes getExposureMultiplier() return 1.0 instead of a stale multiplier.
+      m_debugStats.valid = 0;
     }
   }
 

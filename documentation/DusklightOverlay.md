@@ -97,6 +97,64 @@ These are not obvious from the API and each one cost time:
   `rtx.dusklight.warp.*` and `rtx.dusklight.env.*` is `RtxOptionFlags::NoSave`
   for this reason.
 
+### 1.2 Persistence — the trap that hid for months
+
+**Fixed 2026-08-13. Until then every setting in this panel silently reset on
+every launch, with nothing logged and no error anywhere.**
+
+An option edit is routed to a *layer* by the current **edit target**, and the
+default target is `Derived` — the layer for code-driven changes, which is never
+serialised. Remix's own menus set the `User` target
+(`ImGUI::showMainMenu`, `ImGUI::switchMenu`), so their edits land in the
+`rtx.conf` layer. **This overlay is drawn from `ImGUI::update` instead**
+(§2 — deliberately, so F1 and Alt are independent), and `update` sets no
+target. So every control here wrote to `Derived`.
+
+Nothing about that looks broken while you use it: the value takes effect, the
+widget reads back what you set, and the panel is entirely consistent. It is
+`RtxOptionImpl::writeOption` that then finds no value in the `rtx.conf` layer
+and writes nothing — a save that silently omits what you were saving.
+
+The fix is one line at the top of `ImGUI::showDusklightOverlay`:
+
+```cpp
+RtxOptionLayerTarget layerTarget(RtxOptionEditTarget::User);
+```
+
+`RtxOptionImpl::getTargetLayer` is the routing table. **`NoSave` still wins over
+everything**, which is exactly right: `rtx.dusklight.env.*` are readouts the
+game pushes every frame and must never reach a config file.
+
+**Saving is now reachable from where the settings are.** The window carries a
+Save / Discard row with an unsaved-changes indicator, calling
+`RtxOptionLayer::getRtxConfLayer()->save()` — the same call the Remix developer
+menu makes, several screens away from the controls it applies to. A setting that
+has to be re-found in another menu before it survives the session is a setting
+that gets re-tuned every launch instead.
+
+**`rtx.conf` is now written sorted, and split.** `Config::serializeCustomConfig`
+used to iterate `m_options` — an `std::unordered_map` — so line order was *hash
+order*: it moved between runs for no reason, and diffing two configs showed
+changes that were not changes. Output is now sorted, with everything stock first
+and all `rtx.dusklight.*` in a labelled block at the end:
+
+```
+rtx.zzz = ...
+
+###############################################################################
+##
+##  DUSKLIGHT - fork options
+...
+###############################################################################
+
+rtx.dusklight.atmosphere.fogRampMode = 1
+```
+
+`#` is not a valid key character (`isValidKeyChar`) and `parseUserConfigLine`
+bails on a line with an empty key, so the banner is inert to the parser
+regardless of its contents. An unmodified Remix runtime ignores unknown keys, so
+a config written here still loads there.
+
 ---
 
 ## 2. The overlay is its own window

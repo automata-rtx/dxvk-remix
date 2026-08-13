@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx_context.h"
+#include "rtx_auto_exposure.h"
 #include "rtx_dusklight_atmosphere.h"
 #include "rtx_dusklight_game.h"
 #include "rtx_scene_manager.h"
@@ -27,6 +28,7 @@
 #include "rtx_options.h"
 #include "rtx_types.h"
 #include "dxvk_device.h"
+#include "dxvk_objects.h"
 #include "dxvk_scoped_annotation.h"
 #include "rtx_render/rtx_shader_manager.h"
 #include "rtx/pass/dusklight/dusklight_sky.h"
@@ -280,6 +282,33 @@ namespace dxvk {
     return low;
   }
 
+  float DxvkDusklightAtmosphere::resolveExposureCorrection(bool outdoor) const {
+    const int mode = std::clamp(exposureFogMode(), 0, 2);
+
+    if (mode == 0) {
+      return 1.0f;
+    }
+
+    // Indoors only. "Indoors" is the game's own statement rather than ours - skyHidden, which
+    // resolveIfStale has already folded into Derived::outdoor. It is also the case where there is
+    // no dome to take a real radiance from, so the palette colour is doing all the work and this is
+    // the whole of the correction rather than a share of it.
+    if (mode == 1 && outdoor) {
+      return 1.0f;
+    }
+
+    const float exposure = m_device->getCommon()->metaAutoExposure().getExposureMultiplier();
+
+    // Clamped rather than trusted. The multiplier comes off a GPU readback of a histogram
+    // reduction, and one bad frame scaling the fog by 1e30 would be a white screen rather than a
+    // subtle artifact.
+    if (!isFinite(exposure) || !(exposure > 0.0f)) {
+      return 1.0f;
+    }
+
+    return 1.0f / std::clamp(exposure, 1e-4f, 1e4f);
+  }
+
   DxvkDusklightAtmosphere::Derived DxvkDusklightAtmosphere::resolve() const {
     Derived out = {};
     out.outdoor = DusklightEnv::enable() && !DusklightEnv::skyHidden();
@@ -336,8 +365,15 @@ namespace dxvk {
     // it is a quantity of light in a linear frame that has not been tone mapped yet, so it is
     // decoded rather than used raw. The two halves of the range split share this, which is what
     // keeps the near medium and the far ramp the same colour.
+    //
+    // The exposure correction finishes that thought. Decoding gamma fixes the colour's *shape*; it
+    // does nothing about its *level*, because a display colour has no level until you say what
+    // exposure it was meant to be seen at. Dividing by the exposure the tonemapper is about to
+    // apply says exactly that, and is what stops one number having to serve both a sunlit field and
+    // an unlit cave. exposureFogMode decides where it runs.
+    out.exposureCorrection = resolveExposureCorrection(out.outdoor);
     out.fogRadiance = sRGBGammaToLinear(sanitizeColor(DusklightEnv::fogColor())) *
-                      std::max(fogRadianceScale(), 0.0f);
+                      (std::max(fogRadianceScale(), 0.0f) * out.exposureCorrection);
 
     // Steer that colour towards the sky the scene is actually standing under.
     //
@@ -417,11 +453,19 @@ namespace dxvk {
       key *= 1099511628211ull;
     };
 
+    // Keyed on the game's own state and on nothing that drifts continuously. The resolved ambient
+    // would have been the obvious choice and is the wrong one: it moves with the sun through the
+    // dome average and with eye adaptation through the exposure correction, so keying on it would
+    // burn through the 32-line cap during one sunrise and then go silent for the rest of the
+    // session - a bounded instrument that is bounded in the wrong place. The values printed below
+    // are still live; only what counts as a *distinct state* is restricted to the game's.
+    const Vector3 paletteFog = sanitizeColor(DusklightEnv::fogColor());
+
     mix(bucket(d.rampStart, 16.0f));
     mix(bucket(d.rampEnd, 16.0f));
     mix(bucket(d.sigma * 1e5f, 1.0f));
-    mix(bucket(d.fogAmbient.x + d.fogAmbient.y + d.fogAmbient.z, 0.05f));
-    mix(bucket(d.skyAmbientWeight, 0.1f));
+    mix(bucket(paletteFog.x + paletteFog.y + paletteFog.z, 0.05f));
+    mix(bucket(d.skyAmbientWeight > 0.0f ? 1.0f : 0.0f, 1.0f));
 
     for (const uint64_t seen : m_loggedFogStates) {
       if (seen == key) {
@@ -460,6 +504,9 @@ namespace dxvk {
       " (", round2(d.skyAmbientWeight * 100.0f), "% from the sky dome, the rest from the game's palette colour ",
       round2(d.fogRadiance.x), ",", round2(d.fogRadiance.y), ",", round2(d.fogRadiance.z),
       "), ramp mode ", fogRampMode() == 1 ? "top-up" : "handover",
+      ", exposure correction x", round2(d.exposureCorrection),
+      " (mode ", exposureFogMode() == 0 ? "off" : (exposureFogMode() == 1 ? "indoors only" : "always"),
+      ", sampled once at first report - the panel shows it live)",
       ", anisotropy ", round2(d.fogAnisotropy),
       ". One line per distinct fog state, capped at ", kMaxLoggedFogStates,
       ". See documentation/DusklightAtmosphere.md section 5.2."));
@@ -1004,6 +1051,30 @@ namespace dxvk {
                        "describes it. It matters because Remix's froxel grid samples no dome light, so without it fog "
                        "standing in shadow sees nothing of the sky at all.");
 
+    {
+      static const char* kExposureFogModes[] = { "Off", "Indoors only", "Always" };
+      static int exposureMode;
+      exposureMode = std::clamp(exposureFogMode(), 0, 2);
+      if (RemixGui::Combo("Exposure-Relative##dusklightAtmo", &exposureMode, kExposureFogModes,
+                          IM_ARRAYSIZE(kExposureFogModes))) {
+        exposureFogMode.setDeferred(exposureMode);
+      }
+      switch (exposureMode) {
+      case 0:
+        ImGui::TextWrapped("The palette's fog colour is used as a radiance. It is a display colour, so its level means "
+                           "nothing here: too much light for a dark cave, not enough for a sunlit field.");
+        break;
+      case 1:
+        ImGui::TextWrapped("Applied where the game reports no sky - which is exactly where there is no dome to take a real "
+                           "radiance from. Outdoors the dome already supplies one, so this changes nothing there.");
+        break;
+      default:
+        ImGui::TextWrapped("Also applied outdoors, to whatever share of the fog colour still comes from the palette rather "
+                           "than the dome. With Sky Ambient at 1.0 that share is nothing, so the two upper modes converge.");
+        break;
+      }
+    }
+
     RemixGui::Separator();
     ImGui::TextUnformatted("Froxel grid");
     RemixGui::DragFloat("Range Scale##dusklightAtmo", &froxelRangeScaleObject(), 0.01f, 0.1f, 4.f, "%.2f");
@@ -1104,6 +1175,11 @@ namespace dxvk {
       ImGui::Text("fog ambient (used): %.3f, %.3f, %.3f   %.0f%% from the dome%s",
                   d.fogAmbient.x, d.fogAmbient.y, d.fogAmbient.z, d.skyAmbientWeight * 100.0f,
                   d.skyAmbientWeight > 0.0f ? "" : "  (no sky, or the reduction has not run yet)");
+      // Below 1 means a bright scene and the fog scaled up to sit in it; above 1 means a dark scene
+      // and the fog scaled down so it cannot lift the blacks. Exactly 1 means the mode is off or
+      // this area is not one it covers.
+      ImGui::Text("exposure correction: x%.3f%s", d.exposureCorrection,
+                  d.exposureCorrection == 1.0f ? "  (off here)" : "");
       ImGui::Text("froxel grid reaches %.0f units (%.1f m)",
                   d.froxelMaxDistance, d.froxelMaxDistance / RtxOptions::getMeterToWorldUnitScale());
     }

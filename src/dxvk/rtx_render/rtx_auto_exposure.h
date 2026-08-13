@@ -53,6 +53,20 @@ namespace dxvk {
     void createResources(Rc<DxvkContext> ctx);
     const Resources::Resource& getExposureTexture() const { return m_exposure; }
 
+    // The multiplier the tonemapper will apply to scene radiance on account of eye adaptation, or
+    // 1.0 when eye adaptation is off or no readback has landed yet - which is exactly what the
+    // exposure texture holds in those cases, since it is cleared to exp2(0).
+    //
+    // A few frames stale by construction: the value comes from the same non-stalling host ring the
+    // readout uses. Eye adaptation moves over a second or more, so that is well inside its own
+    // response time.
+    //
+    // The Dusklight atmosphere reads this to place fog at a display-referred level - the game
+    // authored its fog colour to sit over a finished image, so its meaning is "what the screen
+    // should show", not "how much light there is". See rtx_dusklight_atmosphere.h,
+    // exposureFogMode.
+    float getExposureMultiplier() const;
+
   private:
 
     void dispatchAutoExposure(
@@ -70,12 +84,16 @@ namespace dxvk {
     Resources::Resource m_exposure;
     Resources::Resource m_exposureHistogram;
 
-    // Debug stats readback. Written by the reduction pass, copied into a host-visible ring and
-    // read kMaxFramesInFlight frames later, so nothing ever stalls waiting on the GPU.
+    // Stats readback. Written by the reduction pass, copied into a host-visible ring and read
+    // kMaxFramesInFlight frames later, so nothing ever stalls waiting on the GPU.
+    //
+    // Unconditional since 2026-08-13. It used to be gated on the Readout panel being open, which
+    // was right while it only fed that panel; the exposure is now read by the fog derivation, and a
+    // value that exists only while someone is looking at it is a heisenbug waiting to be filed. The
+    // cost is one thread storing 32 bytes and a 32 byte buffer copy per frame.
     Rc<DxvkBuffer> m_debugStatsGpu;
     Rc<DxvkBuffer> m_debugStatsHost;
     AutoExposureDebugStats m_debugStats = {};
-    bool m_debugStatsRequested = false;
 
     bool m_resetState = true;
     bool m_deprecationChecked = false;
