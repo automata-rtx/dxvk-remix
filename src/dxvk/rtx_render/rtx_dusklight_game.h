@@ -527,6 +527,23 @@ namespace dxvk {
                "Give explosions and other one-shot fire their own light.\n"
                "Off because a light that appears and vanishes inside a fifth of a second is a flash, which is sometimes exactly right - a bomb should flash "
                "- and sometimes a flicker artefact. This is the exclusion most likely to be wrong for this game; turn it on and look at a bomb.");
+    RTX_OPTION("rtx.dusklight.game", bool, effectLightSparks, true,
+               "Give the game's spark effects their own light - kirakira glitter, and the Shadow Insect's electric spark.\n"
+               "ON is what the game already did. Every one of the 29 spark effects was lit before this switch existed, so turning it on changes nothing "
+               "and turning it OFF is the visible change. It is here as an undo: the Shadow Insect (闇虫 yami mushi, the twilight bug Wolf Link hunts) "
+               "sparks in short bursts driven by its behaviour rather than on a timer, and if that reads as flicker rather than as a spark this is the "
+               "one checkbox that removes it without a rebuild.\n"
+               "The bug's own spark is ZI_S_ym_elecAt_a..d and the large one's is ZI_S_yb_elec_a..d. Turning this off also removes the 21 kirakira "
+               "glitter effects, which are a different thing that happens to share the class - check rtx.dusklight.env.effLightsSparks before deciding.");
+    RTX_OPTION_ARGS("rtx.dusklight.game", int, effectLightSparkHold, 12,
+                    "Extra frames a spark's light is held after its last particle, on top of the six every light already gets. At the game's 30Hz sim "
+                    "pace 12 frames is 0.4 seconds.\n"
+                    "This is a renderer setting, not a look setting. The Shadow Insect's shortest spark window is 5 to 15 frames - shorter than the base "
+                    "hold - so without this a bug bouncing around a room repeatedly destroys and re-creates its light, and a re-created light is a new "
+                    "hash that has to accumulate its denoising history again from nothing. The hold bridges the gaps INSIDE a burst; it does not keep a "
+                    "light alive after the sparking genuinely stops. Set 0 for the old behaviour.",
+                    args.minValue = 0,
+                    args.maxValue = 120);
     RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMinChroma, 0.50f,
                     "How saturated an effect's colour has to be to read as a glow rather than as smoke or spray.\n"
                     "An effect earns a light when it is being drawn, blends additively, and its colour reads as a glow - saturated OR near white hot. This "

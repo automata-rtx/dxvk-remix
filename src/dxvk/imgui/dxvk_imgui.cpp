@@ -3103,7 +3103,7 @@ namespace dxvk {
     // fine. Both directions are reported now, and both print the two numbers, because
     // "your builds do not match" without saying which side is behind still costs the
     // rebuild-and-see round it exists to prevent.
-    constexpr int kRequiredProtocol = 14;
+    constexpr int kRequiredProtocol = 15;
     const int gameProtocol = DusklightEnv::protocol();
     const bool gameTooOld = feedLive && gameProtocol < kRequiredProtocol;
     const bool remixTooOld = feedLive && gameProtocol > kRequiredProtocol;
@@ -3291,6 +3291,18 @@ namespace dxvk {
       RemixGui::DragFloat("Max Distance##dusklight", &DusklightGame::effectLightMaxDistanceObject(), 50.f, 0.f, 100000.f, "%.0f units");
       RemixGui::Checkbox("Light Explosions and One-Shots", &DusklightGame::effectLightBurstsObject());
 
+      // The Shadow Insect controls. Deliberately a pair - the switch answers "I do not like
+      // this", the hold answers "it flickers" - because they are different complaints with
+      // different fixes and one control could only have served one of them.
+      RemixGui::Checkbox("Light Sparks (Shadow Insect, glitter)", &DusklightGame::effectLightSparksObject());
+      RemixGui::DragInt("Spark Hold (extra frames)##dusklight", &DusklightGame::effectLightSparkHoldObject(), 1.f, 0, 120);
+      ImGui::TextWrapped(
+        "The Shadow Insect - the twilight bug Wolf Link hunts - is invisible in normal view, and its "
+        "electric spark is the only sign of it. ON is what the game already did, so this is here to "
+        "undo it rather than to enable it; turning it OFF also removes the glitter effects that share "
+        "the class. The hold keeps one light alive across the gaps inside a spark burst instead of "
+        "destroying and re-creating it, which is what stops brief sparks flickering.");
+
       RemixGui::Separator();
       RemixGui::DragFloat("Min Chroma##dusklight", &DusklightGame::effectLightMinChromaObject(), 0.01f, 0.f, 1.f, "%.2f");
       RemixGui::DragFloat("Min Luminance##dusklight", &DusklightGame::effectLightMinLumaObject(), 0.01f, 0.f, 1.f, "%.2f");
@@ -3328,6 +3340,9 @@ namespace dxvk {
         // and read a log, which is a slow answer to a question asked constantly while tuning.
         ImGui::Text("solved from authored values: %s", DusklightEnv::effLightsAuthored().c_str());
         ImGui::Text("by class: %s", DusklightEnv::effLightsClasses().c_str());
+        // The Shadow Insect answer, without a log. seen>0 lit==0 is the negative result and is
+        // called out below rather than left to be inferred from two numbers.
+        ImGui::Text("sparks: %s", DusklightEnv::effLightsSparks().c_str());
 
         if (!DusklightEnv::effLightsRunning()) {
           ImGui::TextWrapped(

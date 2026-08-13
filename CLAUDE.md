@@ -215,14 +215,15 @@ implying it was tested.
 **The game and this DLL are a single protocol.** The game pushes
 `rtx.dusklight.env.protocol`; this fork compares it against `kRequiredProtocol`
 in `showDusklightRemixTab` (`src/dxvk/imgui/dxvk_imgui.cpp`).
-**Protocol is at 14.** Build both sides from the same commit point, and bump
+**Protocol is at 15.** Build both sides from the same commit point, and bump
 both in the same commit. Skew in either direction has cost an evening twice.
 The Dusklight tab reports which side is old — read it before debugging
 anything else.
 
 **12 is skipped here and is not free.** It belongs to the unmerged
 `claude/kasumi-naming-correction-w3e204`; 13 was taken beside it rather than on
-top of it, and 14 beside both. The next branch to need a number takes **15** —
+top of it, 14 beside both, and 15 beside all three (the Shadow Insect spark).
+The next branch to need a number takes **16** —
 the ladder in `documentation/DusklightOverlay.md` says why, and no script can
 catch reusing 12 because no script can see an unmerged branch.
 
@@ -242,8 +243,11 @@ the result through the Remix API. Nothing in this repo classifies anything. What
 *is* here is three things, and they are easy to change without realising they
 belong to this system:
 
-- the 27 `rtx.dusklight.game.effectLight*` options and the 13
-  `rtx.dusklight.env.effLights*` readouts. **Reworked at protocol 14
+- the 29 `rtx.dusklight.game.effectLight*` options and the 14
+  `rtx.dusklight.env.effLights*` readouts. **`effectLightSparks`,
+  `effectLightSparkHold` and the `effLightsSparks` readout were added at
+  protocol 15 (2026-08-13)** for the Shadow Insect — see the note below the
+  list. **Reworked at protocol 14
   (2026-08-13):** `effectLightDerivedReach` was **retired** and replaced by
   `effectLightReachScale`, which does the same job for both branches — a config
   setting the old name is now inert. The three global multipliers are

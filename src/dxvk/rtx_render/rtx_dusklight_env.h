@@ -371,6 +371,16 @@ namespace dxvk {
                     "rtx.dusklight.game.effectLightBursts is on.\n"
                     "A lantrn count of 0 while the lamp is lit means the lantern's emitter failed the additive-and-glow rule that frame, not that the "
                     "classification is wrong; the full report names it either way.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, effLightsSparks, "", RtxOptionFlags::NoSave,
+                    "Spark effects this frame, as 'seen N  lit N'. This is the Shadow Insect readout - one glance says whether the twilight bug's spark "
+                    "is being lit.\n"
+                    "seen counts spark emitters the game was actually DRAWING, so a non-zero seen means a bug was sparking in front of the camera. lit "
+                    "counts how many of those the additive-and-glow rule then accepted. The two numbers separate two failures that have opposite fixes: "
+                    "'seen 4  lit 0' means the bug sparked in view and the rule refused it, which is a property of the effect's authored blend mode and "
+                    "colour and cannot be fixed by classification - press Log Full Effect Light Report and read the verdict on ids 0x393-0x396. "
+                    "'seen 0  lit 0' means no spark was ever in view at all, which is a question about where you were standing or about the draw-group "
+                    "filter, not about the rule.\n"
+                    "lit is forced to 0 when rtx.dusklight.game.effectLightSparks is off, by construction.");
 
     // HD texture replacement packs, game side.
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, texrepEnabled, false, RtxOptionFlags::NoSave,
