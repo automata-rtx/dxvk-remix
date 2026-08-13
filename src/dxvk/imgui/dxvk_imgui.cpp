@@ -3103,7 +3103,7 @@ namespace dxvk {
     // fine. Both directions are reported now, and both print the two numbers, because
     // "your builds do not match" without saying which side is behind still costs the
     // rebuild-and-see round it exists to prevent.
-    constexpr int kRequiredProtocol = 13;
+    constexpr int kRequiredProtocol = 14;
     const int gameProtocol = DusklightEnv::protocol();
     const bool gameTooOld = feedLive && gameProtocol < kRequiredProtocol;
     const bool remixTooOld = feedLive && gameProtocol > kRequiredProtocol;
@@ -3201,6 +3201,14 @@ namespace dxvk {
         "which a path tracer shows immediately.");
 
       RemixGui::DragFloat("Master Intensity##dusklight", &DusklightGame::effectLightIntensityObject(), 0.02f, 0.f, 8.f, "%.2f");
+      RemixGui::DragFloat("Master Reach##dusklight", &DusklightGame::effectLightReachScaleObject(), 0.02f, 0.f, 16.f, "%.2fx");
+      RemixGui::DragFloat("Master Radius##dusklight", &DusklightGame::effectLightRadiusScaleObject(), 0.02f, 0.01f, 8.f, "%.2fx");
+      ImGui::TextWrapped(
+        "One multiplier per value this system takes from the game - brightness, how far a light carries, how big its sphere is - "
+        "each starting at 1.00 and each reaching every light at once. They are here for when the game's own numbers come out too "
+        "weak or too strong, without needing a rebuild.\n"
+        "Master Reach replaced the old Derived Reach and does the same job for both halves. Radiance is solved to carry to the same "
+        "distance whatever the radius is, so Master Radius changes softness, not how far light travels.");
 
       RemixGui::Checkbox("Infinite Lantern Oil", &DusklightGame::lanternInfiniteOilObject());
       ImGui::TextWrapped(
@@ -3218,7 +3226,6 @@ namespace dxvk {
 
       ImGui::TextUnformatted("From the game (a light was authored beside the effect)");
       RemixGui::DragFloat("Derived Intensity##dusklight", &DusklightGame::effectLightDerivedIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
-      RemixGui::DragFloat("Derived Reach##dusklight", &DusklightGame::effectLightDerivedReachObject(), 0.02f, 0.f, 16.f, "%.2fx");
       RemixGui::DragFloat("Derived Radius##dusklight", &DusklightGame::effectLightDerivedRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
 
       ImGui::TextUnformatted("Invented (nothing authored - fire arrows, unlit torches)");
@@ -3229,6 +3236,37 @@ namespace dxvk {
         "The two intensities are separate on purpose. The derived one maps the game's units onto "
         "Remix's scale; the invented one picks a size out of nothing. They will not want the same "
         "number, and tying them together means tuning one breaks the other.");
+
+      RemixGui::Separator();
+      ImGui::TextUnformatted("What the effect's own artists authored");
+      RemixGui::Checkbox("Colour From The Effect's Authored Ramp", &DusklightGame::effectLightAuthoredColorObject());
+      RemixGui::Checkbox("Grow The Sphere To The Authored Size", &DusklightGame::effectLightAuthoredRadiusObject());
+      ImGui::TextWrapped(
+        "The .jpa files carry a colour ramp and a size for every effect, and neither can change while you play - unlike the emitter's "
+        "live colour, which carries the time-of-day tint and, on shared torch effects, a colour cycle that has been running since the "
+        "level loaded and has nothing to do with any particular torch.\n"
+        "Colour changes hue only; nothing gets brighter. Size can only make a sphere larger than the configured radius, never smaller, "
+        "and it is off by default because it changes how soft every fire looks.\n"
+        "Neither invents a brightness. Nothing the artists wrote is a brightness - there is no such number anywhere in the effect data - "
+        "so that still comes from the game's own light registry and from the settings above.");
+
+      RemixGui::Separator();
+      ImGui::TextUnformatted("Link's lantern");
+      RemixGui::Checkbox("Give The Lantern Its Own Settings", &DusklightGame::effectLightLanternSeparateObject());
+      {
+        const bool separate = DusklightGame::effectLightLanternSeparate();
+        ImGui::BeginDisabled(!separate);
+        RemixGui::DragFloat("Lantern Intensity##dusklight", &DusklightGame::effectLightLanternIntensityObject(), 0.05f, 0.f, 64.f, "%.2f");
+        RemixGui::DragFloat("Lantern Reach##dusklight", &DusklightGame::effectLightLanternReachObject(), 5.f, 0.f, 8000.f, "%.0f units");
+        RemixGui::DragFloat("Lantern Radius##dusklight", &DusklightGame::effectLightLanternRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
+        ImGui::EndDisabled();
+      }
+      ImGui::TextWrapped(
+        "Off, the lantern is treated as any other fire and every multiplier above reaches it. On, these three replace the shared ones "
+        "outright - the master multipliers do not apply to it, which is the point of separating it.\n"
+        "The lantern is identified by the name the original team gave its flame, which nothing else in the game uses, and both the "
+        "still and the swung flame are covered - the game swaps between them when Link swings the lamp.\n"
+        "Its colour comes from the game's own lamp light either way.");
 
       RemixGui::Separator();
       RemixGui::DragFloat("Fire Height Offset##dusklight", &DusklightGame::effectLightFireOffsetObject(), 0.5f, -200.f, 200.f, "%.1f units");
@@ -3285,6 +3323,11 @@ namespace dxvk {
                     DusklightEnv::effLightsCulled(), DusklightEnv::effLightsExcluded());
         ImGui::Text("game lights available to copy (point/spot): %s",
                     DusklightEnv::effLightsVanilla().c_str());
+        // What each light was made of, and what kind of thing each one is. Without these the
+        // only way to tell whether the authored derivations ran was to press the report button
+        // and read a log, which is a slow answer to a question asked constantly while tuning.
+        ImGui::Text("solved from authored values: %s", DusklightEnv::effLightsAuthored().c_str());
+        ImGui::Text("by class: %s", DusklightEnv::effLightsClasses().c_str());
 
         if (!DusklightEnv::effLightsRunning()) {
           ImGui::TextWrapped(

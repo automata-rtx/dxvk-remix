@@ -338,11 +338,40 @@ namespace dxvk {
                "emitter table instead - the game already decides every frame where fire exists and whether it is on - and keeps only the colour and reach "
                "from whatever light was authored nearby.\n"
                "Not meant to run together with rtx.dusklight.game.localLights: every fire would get two lights, one of them in the wrong place.");
+    // THE THREE GLOBAL MULTIPLIERS - one per value this system derives from the game, all
+    // defaulting to 1.0, all applied at one point to both the derived and the undetermined
+    // branch. They exist so a value the artists authored can be corrected without a rebuild
+    // when it comes out too weak or too strong. The whole chain from an authored value to a
+    // final radiance is written out once, in dusklight-ao/docs/effect-lights.md section 5, and
+    // the classification report prints it back with the live numbers substituted in.
     RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightIntensity, 1.0f,
-                    "Master brightness for every light this system makes, whether or not it took its parameters from the game.\n"
-                    "The two multipliers below scale the derived and undetermined halves separately; this one moves both at once, so it is the knob to "
-                    "reach for when the whole scene is too hot or too dim.",
+                    "Global multiplier on the BRIGHTNESS of every light this system makes, whether or not it took its parameters from the game.\n"
+                    "The derived and undetermined intensities below scale the two halves separately; this one moves both at once, so it is the knob to "
+                    "reach for when the whole scene is too hot or too dim.\n"
+                    "It does NOT reach a lantern that is being solved separately - see rtx.dusklight.game.effectLightLanternSeparate, which is exactly "
+                    "what 'its own settings' has to mean to be useful.",
                     args.minValue = 0.0f,
+                    args.maxValue = 8.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightReachScale, 1.0f,
+                    "Global multiplier on the REACH of every light this system makes - the distance the light is solved to carry to.\n"
+                    "This replaced rtx.dusklight.game.effectLightDerivedReach, which did the same job with the same default for the derived half only. "
+                    "A derived light's reach is the game's own LIGHT_INFLUENCE::mPow, which is the single genuinely photometric number the original "
+                    "artists left anywhere; an undetermined light's is effectLightUndeterminedReach. This scales whichever it was.\n"
+                    "Reach and radius pull in opposite directions and only one of them changes the shape of the light: reach is the distance the light "
+                    "is solved to carry to, radius is the physical size of the sphere. Growing the radius is what makes a light inside a sconce clip "
+                    "through the geometry, so raising this is the way to push light further without that happening.\n"
+                    "Worth knowing before tuning: reach feeds exactly two things, the solved radiance and the budget sort. Radiance goes as the square "
+                    "of it, so 2.0 here is the same brightness as 4.0 on an intensity. The one place they differ is priority - a light with more reach "
+                    "outranks a dimmer one when maxLights is binding, and intensity does not enter that.\n"
+                    "If you set effectLightDerivedReach in an rtx.conf it is now inert; move the value here.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 16.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightRadiusScale, 1.0f,
+                    "Global multiplier on the RADIUS of every light this system makes - the size of the emitting sphere.\n"
+                    "Radiance is solved so that the light still carries to the same distance whatever its radius is, so this changes softness and "
+                    "near-field falloff rather than how far the light travels. Larger spheres inside wall sconces clip through the geometry, which is "
+                    "what bounds it from above.",
+                    args.minValue = 0.01f,
                     args.maxValue = 8.0f);
     RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightDerivedIntensity, 19.0f,
                     "Scales only the lights whose reach and colour came from a light the game itself authored.\n"
@@ -354,18 +383,6 @@ namespace dxvk {
                     "out of nothing, and tying them together guarantees that tuning one breaks the other.",
                     args.minValue = 0.0f,
                     args.maxValue = 64.0f);
-    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightDerivedReach, 1.0f,
-                    "Multiplies the reach a game-authored light came with, before the radiance is solved from it.\n"
-                    "The derived half has no reach of its own to set - it takes LIGHT_INFLUENCE::mPow from whatever light the game registered - so this "
-                    "scales that value rather than replacing it, which is the difference between this and effectLightUndeterminedReach.\n"
-                    "Reach and radius pull in opposite directions and only one of them changes the shape of the light: reach is the distance the light is "
-                    "solved to carry to, radius is the physical size of the sphere. Growing the radius is what makes a light inside a sconce clip through "
-                    "the geometry, so raising this is the way to push light further without that happening.\n"
-                    "Worth knowing before tuning: reach only ever feeds two things, the solved radiance and the budget sort. Radiance goes as the square "
-                    "of it, so 2.0 here is the same brightness as 4.0 on effectLightDerivedIntensity. The one place they differ is priority - a light with "
-                    "more reach outranks a dimmer one when maxLights is binding, and intensity does not enter that.",
-                    args.minValue = 0.0f,
-                    args.maxValue = 16.0f);
     RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightMassExponent, 0.5f,
                     "How much a light grows with the amount of fire actually standing at it.\n"
                     "Every site sums the emitters merged into it, weighted by their alpha, into a mass: a five-emitter bonfire at full alpha "
@@ -397,6 +414,67 @@ namespace dxvk {
                     args.maxValue = 8000.0f);
     RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightUndeterminedRadius, 8.0f,
                     "Emitter radius, in world units, for lights with no game-authored reach.",
+                    args.minValue = 0.5f,
+                    args.maxValue = 64.0f);
+
+    // WHAT THE ARTISTS AUTHORED. Both read the loaded JPA blocks - immutable for the session -
+    // rather than the live emitter fields, which are overwritten every frame by key blocks and
+    // by several hundred actor setter calls. Neither of them invents a brightness: nothing in
+    // the JPA format is photometric, and that is why radiance still comes from the game's own
+    // light registry and from the settings above.
+    RTX_OPTION("rtx.dusklight.game", bool, effectLightAuthoredColor, true,
+               "Take a light's colour from the effect's own authored colour ramp instead of from the registers its emitter happens to be holding.\n"
+               "The authored ramp is written into the .jpa at load and never changes; the live registers do, in three ways that are none of them the "
+               "fire changing colour. A global colour animation walks its key frame every frame. The game multiplies a time-of-day tint into any effect "
+               "whose authored user-work word carries bit 0x20 or 0x40, so a torch's colour drifts from dawn to dusk. And the shared emitter behind every "
+               "'simple' effect - which is most torches and candles - is made continuous when it is created, so its colour cycle free-runs from level "
+               "load and every torch in the world reads the same unrelated phase of it.\n"
+               "This changes HUE ONLY. Radiance is normalised by its brightest channel, so no light gets brighter or dimmer from this.\n"
+               "It also stops a light re-entering Remix's light manager every frame: a colour that moves more than 2% re-creates the light and costs it "
+               "its temporal history, and a fixed hue simply does not move.\n"
+               "A light that adopted one of the game's own lights still takes THAT colour - the artists chose it for the light rather than for the sprite, "
+               "and it wins over both.");
+    RTX_OPTION("rtx.dusklight.game", bool, effectLightAuthoredRadius, false,
+               "Grow a light's sphere to the effect's own authored extent, where the artists made the effect bigger than the configured radius.\n"
+               "The extent is the authored particle size, or the authored spawn volume where that is larger - both immutable, both in the effect's own "
+               "units. It can only ever GROW the sphere: the two configured radii are what all existing tuning was done against, and it is capped at 64 "
+               "units so that switching it on cannot leave that envelope.\n"
+               "Radiance is solved so the light still carries to the same distance whatever its radius is, so this changes softness and near-field "
+               "falloff rather than how far the light travels. Off by default because that is a judgement about how a fire should look rather than a "
+               "correctness fix, and a silent change to the look of every fire is the one thing that cannot be un-seen.");
+
+    // LINK'S LANTERN. The one class that can be given settings of its own, because it is the one
+    // light the player carries and therefore the one whose brightness is a gameplay decision
+    // rather than a scene decision. It is identified by name and the identification is exact:
+    // "kantera" matches five names in the game's whole 3205-entry effect table, two of which are
+    // Link's still and swung lantern flames and three of which have no caller anywhere in the
+    // game. Both of Link's are covered, which matters - the game destroys one emitter and creates
+    // the other every time he swings the lamp.
+    RTX_OPTION("rtx.dusklight.game", bool, effectLightLanternSeparate, false,
+               "Give Link's lantern its own reach, radius and brightness, separately from every other light this system makes.\n"
+               "OFF, the default, is today's behaviour exactly: the lantern is classified, merged, adopted and solved like any other fire, and every "
+               "global multiplier reaches it.\n"
+               "ON, the three settings below replace whatever the shared chain would have produced, RAW - the global intensity, reach and radius "
+               "multipliers do not apply to it, and neither does the mass boost. That is what makes them independent rather than merely additional: a "
+               "lantern you have tuned stays where you put it while you tune the rest of the world around it.\n"
+               "Its COLOUR is not overridden either way. The game registers a real lamp light at the flame point and the lantern adopts that colour, "
+               "which is the artists' own.\n"
+               "The three defaults below are the undetermined branch's own values, so flipping this on and changing nothing else leaves the lantern where "
+               "it was apart from dropping the multipliers.");
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightLanternIntensity, 1.0f,
+                    "Brightness of Link's lantern, when rtx.dusklight.game.effectLightLanternSeparate is on. Ignored entirely when it is off.\n"
+                    "rtx.dusklight.game.effectLightIntensity does NOT multiply this.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 64.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightLanternReach, 400.0f,
+                    "How far Link's lantern carries, in world units, when it is being solved separately. Ignored when it is not.\n"
+                    "For scale: the game gives a dungeon torch an influence radius of 500, and Link stands about 150 units tall. "
+                    "rtx.dusklight.game.effectLightReachScale does NOT multiply this.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 8000.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.game", float, effectLightLanternRadius, 8.0f,
+                    "Emitter radius of Link's lantern, in world units, when it is being solved separately. Ignored when it is not.\n"
+                    "rtx.dusklight.game.effectLightRadiusScale does NOT multiply this.",
                     args.minValue = 0.5f,
                     args.maxValue = 64.0f);
     RTX_OPTION("rtx.dusklight.game", bool, lanternInfiniteOil, false,

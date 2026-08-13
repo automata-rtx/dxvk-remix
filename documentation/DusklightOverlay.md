@@ -48,7 +48,7 @@ readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
 compares it against a `kRequiredProtocol` constant and names the older side in
-the tab. **Currently 13.**
+the tab. **Currently 14.**
 
 **Both directions are reported, as of 2026-08-11; until then only one was.** The
 check was `protocol() < kRequiredProtocol`, so a game *newer* than the DLL fell
@@ -494,7 +494,7 @@ practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 13** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach`, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers`, `colpatPrev`/`colpatBlend`, the three background alphas `bgWaterAlpha`/`bgAuxAlpha`/`bgFakeFogAlpha` **and** the six `roomLights*` readouts). `kRequiredProtocol`
+**Protocol is at 14** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach` - **retired at 14**, see below, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers`, `colpatPrev`/`colpatBlend`, the three background alphas `bgWaterAlpha`/`bgAuxAlpha`/`bgFakeFogAlpha` **and** the six `roomLights*` readouts, 14 = the effect-light vocabulary rework: `effectLightReachScale`, `effectLightRadiusScale`, `effectLightAuthoredColor`, `effectLightAuthoredRadius`, the four `effectLightLantern*` options and the `effLightsAuthored`/`effLightsClasses` readouts). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 > **13 covers everything on its session branch, and was taken once.**
@@ -506,8 +506,19 @@ lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 > `claude/japanese-naming-worklist-nea1rk` and ship as
 > one build, so they share one number rather than taking 13, 14, 15 and 16. A protocol number answers "does the
 > build on the other side have this"; two numbers for one build answers it
-> twice. **A further addition on this branch joins 13 too — it does not take
-> 14.**
+> twice.
+>
+> **That last sentence used to read "a further addition on this branch joins 13
+> too — it does not take 14", and the effect-light rework on 2026-08-13 took 14
+> anyway, at the owner's instruction.** Both readings are defensible and the
+> difference is what a number is for: sharing one number keeps it a statement
+> about a *build*, and taking a new one keeps it a statement about a *feature*
+> the other side can ask for. The precedent the owner cited is the second —
+> `perBladeGrass` took 4→5 and `lanternInfiniteOil` took 9→10, and both are
+> fork-declared options that only the game reads, exactly like this one. So the
+> rule is now: **an addition on a shipped branch takes a new number when the
+> game reads a new option, and joins the existing one when it only adds
+> readouts.** 13's own contents are left as they are; they shipped together.
 >
 > **13 does not include 12's vrbox sky-dome alphas**, which are on the separate
 > unmerged `claude/kasumi-naming-correction-w3e204`. See the note below for the

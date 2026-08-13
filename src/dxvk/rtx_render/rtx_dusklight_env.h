@@ -353,6 +353,24 @@ namespace dxvk {
                     "still being set when the bridge runs, which in turn depends on where the game's environment process falls in the frame - a question we "
                     "could not answer by reading. If the spot count is always zero while you are stood at a lit torch, the answer is 'too late', and those "
                     "torches are falling back to the configured defaults instead of the game's own colour. That is a quality loss, not a misplacement.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, effLightsAuthored, "", RtxOptionFlags::NoSave,
+                    "Which of this frame's lights were solved from values the effect's own artists authored, rather than from the settings, as "
+                    "'colour N  radius N  lantern N'.\n"
+                    "colour counts sites whose hue came from the effect's authored colour ramp. It does NOT count sites that adopted one of the game's "
+                    "own lights - those take that light's colour, which wins over both - so in a room full of registered torches this can legitimately "
+                    "read 0 while the setting is on. radius counts sites whose sphere grew to the authored extent, which is 0 unless "
+                    "rtx.dusklight.game.effectLightAuthoredRadius is on. lantern counts sites solved from the lantern's own settings.\n"
+                    "This is the readout that says whether the authored derivations are running at all. A colour count of 0 with no game lights available "
+                    "means the resources carried no colour, which is a different failure from the setting being off.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, effLightsClasses, "", RtxOptionFlags::NoSave,
+                    "This frame's lights split by what the game's own name says each effect IS, as 'other N  fire N  lantrn N  glow N  spark N  lava N  "
+                    "burst N  excl N'.\n"
+                    "The classes come from the original team's vocabulary rather than from anything we invented: kantera is Link's lantern, kirakira is "
+                    "glitter, yogan is lava, and so on. excl is always 0 here - an effect the name refuses never becomes a site, and "
+                    "rtx.dusklight.env.effLightsExcluded is where those are counted instead. burst is 0 unless "
+                    "rtx.dusklight.game.effectLightBursts is on.\n"
+                    "A lantrn count of 0 while the lamp is lit means the lantern's emitter failed the additive-and-glow rule that frame, not that the "
+                    "classification is wrong; the full report names it either way.");
 
     // HD texture replacement packs, game side.
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, texrepEnabled, false, RtxOptionFlags::NoSave,
