@@ -105,6 +105,23 @@ namespace dxvk {
                     "control needs the game to mark the draw.",
                     args.minValue = 0.0f,
                     args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.emissive", float, pickupBrightness, 2.0f,
+                    "The same dial as rtx.dusklight.emissive.brightness, for dropped pickups only - rupees, hearts, arrows.\n"
+                    "They need their own number because the emissive rule cannot separate them from lava and should not be asked to: full-bright in GX means "
+                    "'do not shade me', which is true of a rupee and of molten rock alike, and it does not mean 'light the room'. The game marks the draw "
+                    "instead, over the per-draw metadata export rather than a repurposed D3DMATERIAL9 field.\n"
+                    "2.0 against the world's 10.0 is a starting point and not a measurement. A pickup still has to read as glowing rather than as a lit object, "
+                    "so the useful range is well above zero.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 50.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.emissive", float, pickupBrightnessLumaWeight, 0.0f,
+                    "The pickup half of rtx.dusklight.emissive.brightnessLumaWeight, 0..1.\n"
+                    "Defaults to 0 - a plain multiplier - where the world defaults to 1. That is the whole point of splitting them: dividing out the colour's "
+                    "own luminance hands the darkest colour the largest boost, which is right for making one dial mean the same thing across lava and fire and "
+                    "wrong for a set of objects whose colours are the game's own colour coding. A green rupee should not out-glow a yellow one for being "
+                    "darker green.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
     RTX_OPTION_ARGS("rtx.dusklight.emissive", float, maxRadiance, 0.0f,
                     "Ceiling on any single emitter's radiance. 0 disables it, which is the default.\n"
                     "Blunt on purpose, and it is the control that can be set from a log rather than by eye: every dusklight.emis line prints the radiance the "
@@ -282,17 +299,34 @@ namespace dxvk {
     // The two dials below make that correctable without a per-draw signal. They are NOT the same
     // thing as knowing a draw is a dropped item - that needs the game to mark it and would need a
     // transport - so they are deliberately default-inert and change nothing until set.
-    inline float radianceFor(const Vector3& color) {
+    // A pickup is not a light source, and the emissive rule cannot see the difference.
+    //
+    // Full-bright in GX means "do not shade me", which is true of a rupee and of lava alike; the
+    // console draws both without reading the lights. It does not mean "light the room", and that is
+    // where the two come apart. Nothing in the material says which is which, so the game says it -
+    // through the per-draw metadata channel, not through a repurposed D3DMATERIAL9 field, because
+    // the channels ran out and the channels were never the real constraint.
+    // rtx_dusklight_drawmeta.h.
+    inline bool isPickup(const LegacyMaterialData& material) {
+      return (material.dusklightDrawMeta.flags & DusklightDrawMeta::kFlagPickup) != 0;
+    }
+
+    inline float radianceFor(const Vector3& color, bool pickup) {
       // At 1.0 this is the original target-brightness behaviour: divide out the colour's own
       // brightness so the dial means the same thing on every surface. At 0.0 it is a flat
       // multiplier, which stops a dark colour being boosted past a bright one. In between is the
       // useful range, because the normalisation is right about pale surfaces and wrong about dark
       // ones.
-      const float weight = std::clamp(DusklightEmissive::brightnessLumaWeight(), 0.0f, 1.0f);
+      // A pickup takes its own pair of dials. Same shape, separate numbers, so the lava can stay
+      // molten while a dropped rupee stops out-glowing it.
+      const float target = pickup ? DusklightEmissive::pickupBrightness() : DusklightEmissive::brightness();
+      const float weight = std::clamp(pickup ? DusklightEmissive::pickupBrightnessLumaWeight()
+                                             : DusklightEmissive::brightnessLumaWeight(),
+                                      0.0f, 1.0f);
       const float luma = std::max(lumaOf(color), kLumaFloor);
       const float divisor = std::max(1.0f + (luma - 1.0f) * weight, kLumaFloor);
 
-      const float radiance = DusklightEmissive::brightness() / divisor;
+      const float radiance = target / divisor;
 
       // A ceiling, off at 0. Blunt on purpose: it is the one control that can be reasoned about
       // from a log line without knowing what the surface is, since every dusklight.emis line prints
@@ -418,7 +452,8 @@ namespace dxvk {
         " glowLuma=", DusklightEmissive::glowLuma(),
         // What this surface will actually emit at, after the per-material
         // derivation - so "why is that one dimmer" is answered by the log.
-        " radiance=", radianceFor(color),
+        " pickup=", isPickup(mat),
+        " radiance=", radianceFor(color, isPickup(mat)),
         " src=", sourceName(DusklightEmissive::colorSource()),
         " verdict=", accepted ? "emissive" : "rejected",
         " applied=", (accepted && DusklightEmissive::enable()) ? 1 : 0));

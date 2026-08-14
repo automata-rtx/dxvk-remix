@@ -52,10 +52,25 @@ something else. The encoding is in the row above; the reasoning is
 `claude/dusklight-remix-transparency-e7l766` has an unmerged claim on it (a
 per-draw transparency class). Nothing automated can see an unmerged branch.
 
-**And after `Ambient.a` there is nothing.** The feature after next has to pack
-into an existing field or move to a different transport — the versioned per-draw
-export that `remix-material-interface.md` §9 calls "still not built" is the
-obvious candidate, and this is the pressure that would justify building it.
+**And after `Ambient.a` there is nothing — but that stopped mattering on
+2026-08-14, when the export was built.**
+
+`remix-material-interface.md` §9 had specified it all along and this file called
+it "the obvious candidate". It is now `dusklightSetDrawMeta`, a versioned export
+on the fork's own `d3d9.dll`, fed by aurora's `GX_AURORA_SET_DUSKLIGHT_DRAW_META`
+(0x0058) and landing in `LegacyMaterialData::dusklightDrawMeta`. Its payload is a
+flags word, so **a new per-draw fact is a new bit, not a new channel.**
+
+**So: do not take `Ambient.a` for a new feature.** Add a flag to
+`rtx_dusklight_drawmeta.h` instead. The scarcity here was never a real
+constraint — `D3DMATERIAL9` is fixed by the D3D9 API, but that boundary is not,
+because aurora is the D3D9 caller and this runtime is the D3D9 implementation
+and both are ours. Treating the table below as a limit rather than a convention
+is the mistake this paragraph exists to stop repeating.
+
+`Ambient.a` remains spare for anything that genuinely has to ride the material
+struct — a value the *capture* path must carry, for instance — and
+`claude/dusklight-remix-transparency-e7l766` still has an unmerged claim on it.
 
 **Take a channel only by adding its row above in the same commit.** That is what
 puts the claim and the write in one diff, which is the only thing that reliably

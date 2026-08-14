@@ -27,6 +27,7 @@
 
 #include "rtx_texture.h"
 #include "rtx_option.h"
+#include "rtx_dusklight_drawmeta.h"
 #include "../../util/util_color.h"
 #include "../../util/util_macro.h"
 #include "rtx/utility/shared_constants.h"
@@ -1939,6 +1940,10 @@ struct LegacyMaterialData {
   DxvkRtTextureOperation textureAlphaOperation = DxvkRtTextureOperation::SelectArg1;
   uint32_t tFactor = 0xffffffff;  // Value for D3DRS_TEXTUREFACTOR, default value of is opaque white
   D3DMATERIAL9 d3dMaterial = {};
+  // What aurora said about this draw on the fork's own per-draw channel. Zeroed when nothing was
+  // sent, which is what an aurora with no knowledge of the export produces and reads everywhere as
+  // "as before". rtx_dusklight_drawmeta.h says why this is not another D3DMATERIAL9 field.
+  DusklightDrawMeta dusklightDrawMeta = { sizeof(DusklightDrawMeta), 0 };
   bool isTextureFactorBlend = false;
   bool isVertexColorBakedLighting = true;
 

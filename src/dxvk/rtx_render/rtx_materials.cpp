@@ -78,6 +78,11 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     float legacySpecularB;
     float legacySpecularA;
     float legacyPower;
+    // Per-draw metadata from aurora's bespoke export, NOT from D3DMATERIAL9 - the first thing
+    // carried on this fork's own channel rather than squeezed into a D3D9 struct. It is in this
+    // hash for exactly the reason the comment above gives about Power: the emissive path reads it,
+    // so two draws differing only in it are different materials.
+    uint32_t dusklightDrawMetaFlags;
     uint8_t alphaTestReferenceValue;
     uint8_t textureColorArg1Source;
     uint8_t textureColorArg2Source;
@@ -87,10 +92,14 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     uint8_t textureAlphaOperation;
     uint8_t isTextureFactorBlend;
     uint8_t isVertexColorBakedLighting;
-    uint8_t padding[3];
+    // Grew from [3] on 2026-08-14 when dusklightDrawMetaFlags was added. hashStructByMemory
+    // requires the listed members to sum to sizeof(T) exactly, and the added uint32_t pushed the
+    // tail off the struct's 8-byte alignment; computed locally rather than discovered in CI.
+    uint8_t padding[7];
   };
 
   LegacyMaterialIdentityHashData data{};
+  data.dusklightDrawMetaFlags = dusklightDrawMeta.flags;
   data.colorTextureHash0 = colorTextures[0].getImageHash();
   data.colorTextureHash1 = colorTextures[1].getImageHash();
   data.samplerHash0 = samplers[0].ptr() != nullptr ? samplers[0]->info().calculateHash() : kEmptyHash;
