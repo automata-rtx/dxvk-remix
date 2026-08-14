@@ -94,7 +94,13 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
     uint8_t isVertexColorBakedLighting;
     // Grew from [3] on 2026-08-14 when dusklightDrawMetaFlags was added. hashStructByMemory
     // requires the listed members to sum to sizeof(T) exactly, and the added uint32_t pushed the
-    // tail off the struct's 8-byte alignment; computed locally rather than discovered in CI.
+    // tail off the struct's 8-byte alignment.
+    //
+    // The padding was the easy half and it was right. The half that broke the build was that the
+    // new field was declared and filled but never added to the member-pointer pack at the call
+    // below - so the checked sum came to 156 against a sizeof of 160, and the error pointed at
+    // the padding rather than at the omission. Adding a field here is TWO edits, and the second
+    // one is now checked by scripts/check_dusklight_invariants.py so it cannot be forgotten again.
     uint8_t padding[7];
   };
 
@@ -173,6 +179,7 @@ XXH64_hash_t LegacyMaterialData::computeIdentityHash() const {
       &LegacyMaterialIdentityHashData::legacySpecularB,
       &LegacyMaterialIdentityHashData::legacySpecularA,
       &LegacyMaterialIdentityHashData::legacyPower,
+      &LegacyMaterialIdentityHashData::dusklightDrawMetaFlags,
       &LegacyMaterialIdentityHashData::alphaTestReferenceValue,
       &LegacyMaterialIdentityHashData::textureColorArg1Source,
       &LegacyMaterialIdentityHashData::textureColorArg2Source,

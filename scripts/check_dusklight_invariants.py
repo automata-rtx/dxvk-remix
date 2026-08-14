@@ -323,6 +323,97 @@ def check_side_channels_hashed() -> None:
             )
 
 
+def check_hash_struct_packs() -> None:
+    """Every member declared in a hashStructByMemory struct must be listed at the call.
+
+    hashStructByMemory<T, &T::a, &T::b, ...> asserts that the listed member sizes sum
+    to sizeof(T) exactly. The pack is a completeness proof, not the hash input - the
+    hash is the whole struct by memory either way - so omitting a member does not
+    change a single hash value. It fails to compile, which is the point, and it fails
+    on MSVC only, with an error that names util_struct_hash.h and blames padding.
+
+    That is what happened on 2026-08-14: dusklightDrawMetaFlags was declared, filled,
+    and left out of the pack. The padding had been worked out correctly by hand and
+    the error still pointed at it. CLAUDE.md calls this tripwire 'checkable locally';
+    it now actually is.
+
+    Deliberately structural rather than a size arithmetic check - reproducing MSVC's
+    alignment offline would be its own source of wrong answers, and the omission is
+    the mistake that actually gets made.
+    """
+    global checks_run
+    checks_run += 1
+
+    call_re = re.compile(
+        r"hashStructByMemory<\s*(?:const\s+)?(\w+)\s*,(.*?)>\s*\(", re.DOTALL
+    )
+
+    for rel in tracked_files():
+        if not rel.endswith((".cpp", ".h")) or rel.endswith("util_struct_hash.h"):
+            continue
+        src = read(rel)
+        if src is None or "hashStructByMemory<" not in src:
+            continue
+
+        for struct, pack in call_re.findall(src):
+            listed = set(re.findall(rf"&\s*{re.escape(struct)}::(\w+)", pack))
+            if not listed:
+                continue
+
+            opener = re.search(
+                rf"struct\s+{re.escape(struct)}\s*(?::[^{{;]*)?{{", src
+            )
+            if opener is None:
+                # Declared in another translation unit; the pack cannot be checked from here.
+                continue
+
+            # Brace-balanced, because member functions have bodies - a non-greedy scan to
+            # the first '};' stops inside operator== and reports every field as unknown.
+            depth, end = 1, opener.end()
+            while end < len(src) and depth:
+                depth += {"{": 1, "}": -1}.get(src[end], 0)
+                end += 1
+            body = src[opener.end():end - 1]
+
+            # Strip comments before looking for declarations, so a member named in prose
+            # is not mistaken for one that exists.
+            text = re.sub(r"//[^\n]*", "", body)
+            text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+            # Then drop nested braces entirely: member function bodies and brace
+            # initializers hold statements that are not member declarations.
+            while re.search(r"{[^{}]*}", text):
+                text = re.sub(r"{[^{}]*}", " ", text)
+
+            declared: list[str] = []
+            for stmt in text.split(";"):
+                stmt = stmt.strip()
+                if not stmt or "(" in stmt or stmt.startswith(("static", "using", "typedef")):
+                    continue
+                # Default member initializers are common and are not part of the name.
+                stmt = stmt.split("=")[0].strip()
+                m = re.match(r"^[\w:<>,\s\*&]+?(\w+)\s*(?:\[[^\]]*\])?$", stmt)
+                if m:
+                    declared.append(m.group(1))
+
+            missing = [d for d in declared if d not in listed]
+            unknown = [l for l in listed if l not in declared]
+
+            for name in missing:
+                fail(
+                    "hash-pack",
+                    f"{rel}: {struct}::{name} is declared but not listed in the "
+                    f"hashStructByMemory<> pack. MSVC will reject this with a "
+                    f"static_assert in util_struct_hash.h that blames padding rather "
+                    f"than naming the field",
+                )
+            for name in unknown:
+                fail(
+                    "hash-pack",
+                    f"{rel}: the hashStructByMemory<> pack lists {struct}::{name}, "
+                    f"which is not a member of {struct}",
+                )
+
+
 def check_water_packing_contract() -> None:
     """The water packing is one contract written in two repositories.
 
@@ -402,6 +493,7 @@ def main() -> int:
     check_protocol()
     check_side_channel_map()
     check_side_channels_hashed()
+    check_hash_struct_packs()
     check_water_packing_contract()
     check_rtx_options_doc()
 

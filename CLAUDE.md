@@ -488,10 +488,18 @@ second needs the exact MSVC layout.
   wholesale, so normally yes), then update the constant to the size named in the
   error — the compiler prints it as `CheckRtInstanceSize<newSize>`.
 - **`hashStructByMemory`** (`rtx_materials.cpp`, `d3d9_rtx_matrep.h`). Requires
-  the listed members to sum to `sizeof(T)` exactly. Adding a field usually needs
-  the trailing `padding[N]` adjusted. **This one is checkable locally** — copy
-  the struct into a standalone file and compile it with a matching
-  `static_assert` before pushing.
+  the listed members to sum to `sizeof(T)` exactly. **Adding a field is two
+  edits** — the declaration (usually with `padding[N]` adjusted) *and* the
+  member-pointer pack at the call. **The second is the one that gets forgotten,
+  and the error does not say so**: on 2026-08-14 `dusklightDrawMetaFlags` was
+  declared and filled but left out of the pack, and MSVC reported a
+  `static_assert` in `util_struct_hash.h` blaming implicit padding — which had
+  in fact been worked out correctly. Do not go re-deriving the padding when you
+  see that error; check the pack first.
+  **`scripts/check_dusklight_invariants.py` now checks the pack against the
+  declaration** for every call site in the tree, so this no longer needs a
+  Windows machine or a standalone compile. It names the missing field, which
+  MSVC does not.
 - **Push constant budget** (`rtx_tone_mapping.cpp`, `rtx_local_tone_mapping.cpp`).
   `MaxPushConstantSize` is 128 and `ToneMappingApplyToneMappingArgs` is now
   **exactly 128**. Three `static_assert`s guard it. If one fires, move the
@@ -502,8 +510,19 @@ second needs the exact MSVC layout.
 
 ## CI
 
-`.github/workflows/build.yml`, three Windows configs. `claude/**` is in the
-push triggers, so a branch gets built without opening a PR.
+`.github/workflows/build.yml`, **one Windows x86_64 config — `release`** since
+2026-08-14, on the owner's instruction that a Remix/DX9 build is Windows x86_64
+only. `debug` and `debugoptimized` were dropped from the matrix; all three were
+already x86_64, so what went was three copies of the same ~15 minute build.
+`release` is the one to keep rather than either of the others, because
+`CheckRtInstanceSize` below does not fire in `debug`. `claude/**` is in the push
+triggers, so a branch gets built without opening a PR.
+
+**`notify-slack-on-failure` used to fail on top of every failure**, because this
+fork has no `SLACK_WEBHOOK_URL` secret — a second red job, on ubuntu, sitting
+beside the real compile error and looking like part of it. It is now guarded on
+the secret being set. If you see one red job, that is the build; there is no
+longer a second.
 
 **A red build is not automatically your code.** On 2026-08-06 two of the three
 configs failed with `Failed to resolve action download info: Service Unavailable`
