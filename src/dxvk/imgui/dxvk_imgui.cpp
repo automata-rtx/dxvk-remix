@@ -3109,6 +3109,15 @@ namespace dxvk {
         "D3D9 op instead, which on the lava is an ADD against red: red pinned, bright end washed to "
         "white. Presented Colour is one flat colour and loses a molten surface's crust entirely.");
       RemixGui::DragFloat("Emissive Brightness", &DusklightEmissive::brightnessObject(), 0.02f, 0.f, 50.f);
+      RemixGui::DragFloat("Normalise By Own Brightness", &DusklightEmissive::brightnessLumaWeightObject(), 0.01f, 0.f, 1.f);
+      RemixGui::DragFloat("Radiance Ceiling", &DusklightEmissive::maxRadianceObject(), 0.5f, 0.f, 256.f, "%.1f");
+      ImGui::TextWrapped(
+        "Dropped items came out brighter than the lava, and the reason is the normalisation rather than the dial above it. "
+        "Dividing by the colour's own luminance hands the darkest colour the biggest multiplier, and a rupee's green is "
+        "darker than molten rock's orange: one session measured a green rupee at radiance 28.1 against the Goron Mines lava "
+        "at 18.3. Lower 'Normalise By Own Brightness' to take dark emitters down without touching pale ones, or set a "
+        "ceiling - every dusklight.emis log line prints the radiance its surface asked for, so a ceiling can be picked "
+        "against real numbers. Neither can tell a rupee from lava; that needs the game to mark the draw.");
       ImGui::TextWrapped(
         "The only dial worth touching, and it is a target brightness rather than a multiplier - a dark "
         "saturated emitter and a pale one reach the same brightness at the same setting. A surface whose "

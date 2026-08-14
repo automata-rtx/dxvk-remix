@@ -94,6 +94,23 @@ namespace dxvk {
                "2026-08-06 to read as properly molten. 1.0 would put an emitter at roughly the brightness of a "
                "fully lit white surface, which is not what a self-lit surface in a dark cave should look like. "
                "Calibrated in one dark interior, so a bright exterior may want less.");
+    RTX_OPTION_ARGS("rtx.dusklight.emissive", float, brightnessLumaWeight, 1.0f,
+                    "How much an emitter's own brightness is divided out of rtx.dusklight.emissive.brightness, 0..1.\n"
+                    "At 1.0 - the original behaviour and still the default - the dial is a target brightness: a dark saturated colour and a pale one reach the "
+                    "same result, because the colour's luminance is divided out. At 0.0 the dial is a plain multiplier and a dark colour stays dark.\n"
+                    "It exists because the normalisation inverts the ordering for pickups. Measured in one session: a green rupee at luma 0.36 was handed "
+                    "radiance 28.1 while the Goron Mines lava at luma 0.55 got 18.3 - the rupee glowing half again as hard as molten rock, purely because its "
+                    "authored green is darker. Lower this and dark emitters come down without touching pale ones.\n"
+                    "This is a shape control, not a classifier. It cannot tell a rupee from lava; it only stops darkness alone earning brightness. Per-object "
+                    "control needs the game to mark the draw.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
+    RTX_OPTION_ARGS("rtx.dusklight.emissive", float, maxRadiance, 0.0f,
+                    "Ceiling on any single emitter's radiance. 0 disables it, which is the default.\n"
+                    "Blunt on purpose, and it is the control that can be set from a log rather than by eye: every dusklight.emis line prints the radiance the "
+                    "surface asked for, so a ceiling can be chosen against the numbers a session actually produced.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 256.0f);
     RTX_OPTION("rtx.dusklight.emissive", DusklightEmissiveSource, colorSource,
                DusklightEmissiveSource::ReconstructedAlbedo,
                "Where an accepted emitter takes the colour it glows.\n"
@@ -250,8 +267,39 @@ namespace dxvk {
     // already requires a colour that is saturated or bright.
     static constexpr float kLumaFloor = 0.20f;
 
+    // MEASURED 2026-08-13, from the owner's session log, and it is the opposite of what the
+    // paragraph above predicts for pickups:
+    //
+    //   green rupee   color 0,0.60,0.03   luma 0.355   radiance 28.14
+    //   Goron lava    color 1,0.42,0      luma 0.545   radiance 18.34
+    //   yellow item   color 1,1,0.20      luma 0.909   radiance 11.00
+    //
+    // The dark saturated pickup comes out **brighter than the lava**, because normalising by luma
+    // hands the darkest colour the largest multiplier and a rupee's green is darker than molten
+    // rock's orange. The overshoot argument above is real but only applies to a colour that sweeps;
+    // it does not stop a flat dark colour being handed 2.8x where the lava gets 1.8x.
+    //
+    // The two dials below make that correctable without a per-draw signal. They are NOT the same
+    // thing as knowing a draw is a dropped item - that needs the game to mark it and would need a
+    // transport - so they are deliberately default-inert and change nothing until set.
     inline float radianceFor(const Vector3& color) {
-      return DusklightEmissive::brightness() / std::max(lumaOf(color), kLumaFloor);
+      // At 1.0 this is the original target-brightness behaviour: divide out the colour's own
+      // brightness so the dial means the same thing on every surface. At 0.0 it is a flat
+      // multiplier, which stops a dark colour being boosted past a bright one. In between is the
+      // useful range, because the normalisation is right about pale surfaces and wrong about dark
+      // ones.
+      const float weight = std::clamp(DusklightEmissive::brightnessLumaWeight(), 0.0f, 1.0f);
+      const float luma = std::max(lumaOf(color), kLumaFloor);
+      const float divisor = std::max(1.0f + (luma - 1.0f) * weight, kLumaFloor);
+
+      const float radiance = DusklightEmissive::brightness() / divisor;
+
+      // A ceiling, off at 0. Blunt on purpose: it is the one control that can be reasoned about
+      // from a log line without knowing what the surface is, since every dusklight.emis line prints
+      // the radiance it asked for.
+      const float ceiling = DusklightEmissive::maxRadiance();
+
+      return ceiling > 0.0f ? std::min(radiance, ceiling) : radiance;
     }
 
     // The rule. Three structural facts and one colour test - no score, no
