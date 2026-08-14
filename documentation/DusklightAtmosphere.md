@@ -575,6 +575,28 @@ irradiance from the environment. The far ramp keeps sampling the dome in the
 **view direction**, which is aerial perspective proper; the two agree on average,
 which is the kind of agreement that matters.
 
+**Corrected 2026-08-13, from the first test session: the dome supplies the fog's
+*hue*, not its *level*.** `skyIntensity` is a **lighting** calibration — it sets
+how strongly the dome lights the world against the sun, and it is 6 because the
+palette colours it scales are small once decoded out of gamma. Handing that
+radiance to the fog as its colour made the fog about **six times** brighter than
+the colour the game authored: the session log measured a palette fog colour of
+`0.12` against a dome-derived ambient of `0.71`. Worse, `multiScatteringEstimate`
+is **not shadowed by anything**, so an interior received full open-sky in-scatter
+inside a sealed room — which is what "washed out and bright indoors" was.
+
+`rtx.dusklight.atmosphere.skyAmbientMode` now selects:
+
+| Mode | The dome supplies | |
+| :-- | :-- | :-- |
+| 0 Off | nothing | palette only; fog in shadow loses the sky's hue |
+| 1 **Hue only** *(default)* | colour, and its variation across the frame | level comes from the palette, after the exposure correction |
+| 2 Full radiance | colour and brightness | physically the better answer for an open sky; try it if terrain reads darker than the sky behind it |
+
+In Hue only mode the dome's radiance is normalised by luminance to the palette's
+own level, and **the same scale is handed to the composite**, so the far ramp's
+view-direction sample lands where the near half's sphere average did.
+
 `skyAmbientWeight` (default 1.0) drives **both halves**. It used to be
 `physicalWeight` on the far half only, on the reasoning that the palette stops
 describing the sky once the sky is simulated — true, but too narrow: the game's
@@ -1261,6 +1283,7 @@ aurora, not against Remix.
 | colpat 9 bypass | **instrumented 2026-08-11, decision deferred.** `logColpatOnce` added; the literal's source is the wrong index space and whether any stage runs colpat 9 is UNKNOWN. **Untested in game — one play session with the clock freeze off settles it.** §8.6 has the three possible results and what each one triggers |
 | `skyFogMode` = Exempt | **TESTED GOOD 2026-08-13.** The sky no longer picks up the medium; the horizon seam and the dingy sky are gone. Weighted stays as a taste control for foggy weather rather than as a rival candidate, and Off stays as the A/B baseline. This closes the "live defect" below |
 | Fog rework: top-up ramp, density cap, dome-derived ambient, forward scattering | **landed 2026-08-13, UNTESTED IN GAME.** No protocol bump — this is fork-only and reads game state that was already on the wire. §5.2–§5.5 carry the design and the derivations; the causes it addresses are C11, C10, the 4.4× near/far colour mismatch and the isotropic phase function |
+| First test-session corrections | **landed 2026-08-13, from the owner's first run of the rework.** Four defects, all found from the session log: the fog's dome-derived ambient was ~6x the palette's colour and unshadowed, so interiors washed out (`skyAmbientMode`, new, defaulting to Hue only); the sky-stats readback served a previous area's sky for `kMaxFramesInFlight` frames on resume; the fog log burned its whole 32-line budget in 450 ms of one transition; and `fogAnisotropy` went back to upstream's 0 as the prime suspect for a reported grid-like look. §5.3 and §5.5 |
 | Exposure-relative fog level | **landed 2026-08-13, UNTESTED IN GAME.** §5.4. Closes the second half of C10. Also made the auto-exposure stats readback unconditional — it used to run only while the Readout panel was open, which would have made the fog's brightness depend on whether anyone was looking at it |
 | Dusklight panel settings persisting | **landed 2026-08-13, UNTESTED IN GAME.** Every control in the F1 overlay was writing to the Derived layer, which is never serialised, so the whole panel silently reset on each launch. `DusklightOverlay.md` §1.2 has the mechanism and the trap |
 | colpat crossfade (`styleTerm`) | **landed 2026-08-11, protocol 13, UNTESTED IN GAME.** The bridge pushed one third of the game's palette blend; `styleTerm` now follows all three and lerps instead of cutting on the incoming index. Default-safe by algebra at `colpatBlend == 1.0`, which is both the option default and the game's steady state. §4.1 has the derivation, the regression signature and why the colpat 9 guard was left alone |

@@ -95,6 +95,12 @@ namespace dxvk {
       // How far fogAmbient came from the dome rather than the palette, after the sky and validity
       // checks. The composite gets the same number so the near and far halves cannot disagree.
       float   skyAmbientWeight = 0.0f;
+      // What the dome's radiance was multiplied by before the fog took its colour from it. 1.0 in
+      // Full radiance mode; in Hue only mode it is the ratio that normalises the dome to the
+      // palette's own level, so a value far from 1 is a direct measure of how far apart the two
+      // descriptions of the same sky had drifted. Also handed to the composite, so the far ramp
+      // normalises its view-direction dome sample by exactly the same amount.
+      float   skyLevelScale = 1.0f;
       // What the palette's fog colour was divided by to turn a display colour into a radiance, or
       // 1.0 when exposureFogMode leaves it alone. This is 1/exposure, so a value below 1 means the
       // scene is bright and the fog was scaled up to match; above 1 means a dark scene and the fog
@@ -219,6 +225,8 @@ namespace dxvk {
     // line per area transition for as long as the session lasts.
     mutable std::vector<uint64_t> m_loggedFogStates;
     mutable bool m_loggedFogStateOverflow = false;
+    // Frame the last fog line was emitted on, so a transition cannot spend the whole budget.
+    mutable uint32_t m_lastFogLogFrame = UINT32_MAX;
 
     // Owned once and kept alive for the process, not rebuilt per frame: the dome light holds a
     // bindless index into it, and dropping the image for even one frame drops the sky back to
@@ -237,6 +245,13 @@ namespace dxvk {
     Rc<DxvkBuffer> m_skyStatsHost;
     Vector3 m_skyAmbient = Vector3(0.0f, 0.0f, 0.0f);
     bool m_skyAmbientValid = false;
+    // Consecutive frames the reduction has been dispatched for. The readback reads a slot written
+    // kMaxFramesInFlight frames ago, so for that many frames after the dome comes back the slot
+    // still holds whatever the ring had from the last time it ran - a different area's sky. That is
+    // not hypothetical: a session log showed a bright outdoor 5.43,3.83,2.24 served for three frames
+    // in a dark interior, twice. Counting is exact and costs nothing; clearing the ring is not, since
+    // copies queued before the dome went away can still land after the memset.
+    uint32_t m_skyStatsFramesActive = 0;
     // What the tables were last built for. A rebuild is triggered by a change here, not by a frame
     // boundary.
     Vector3 m_lutSkyColor = Vector3(-1.0f, -1.0f, -1.0f);
@@ -295,7 +310,7 @@ namespace dxvk {
                     "Inert with no sky: indoors, or with rtx.dusklight.atmosphere.skyEnable off, the palette colour is used whatever this says.",
                     args.minValue = 0.0f,
                     args.maxValue = 1.0f);
-    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", int, exposureFogMode, 1,
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", int, exposureFogMode, 2,
                     "Treats the game's fog colour as the display colour it actually is, by dividing it by the exposure the tonemapper is about to apply.\n"
                     "This is the last of the reasons dark scenes read grey. The game blended fog over a finished, already-exposed image, so fog_col means "
                     "'what the screen should show there' - it is not a quantity of light. Used raw in a linear frame it is a fixed radiance, which is far too "
@@ -307,11 +322,26 @@ namespace dxvk {
                     "(rtx.dusklight.atmosphere.skyAmbientWeight) is already a real radiance measured in the renderer's own units and must not be rescaled, so "
                     "outdoors with the dome supplying the colour this does almost nothing either way.\n"
                     "0: Off. The palette colour is used as a radiance, which is the behaviour before 2026-08-13.\n"
-                    "1: Indoors only. Applied where the game reports no sky - which is exactly where there is no dome to take a real radiance from, and so "
-                    "exactly where the problem still bites. The default.\n"
-                    "2: Always. Also applied outdoors, to whatever share of the fog colour still comes from the palette.\n"
+                    "1: Indoors only. Applied where the game reports no sky.\n"
+                    "2: Always. Applied everywhere. THE DEFAULT since 2026-08-13, and the change followed from skyAmbientMode: in Hue only mode the palette "
+                    "supplies the fog's level everywhere rather than only indoors, so the correction that gives that level a meaning has to run everywhere "
+                    "too. With skyAmbientMode set to Full radiance, Indoors only is the matching choice.\n"
                     "Reads the auto exposure multiplier only, not rtx.tonemap.exposureBias: a manual bias is a deliberate look adjustment to the whole image "
                     "and the fog should ride along with it, whereas eye adaptation is an automatic normalisation the original never had.",
+                    args.minValue = 0,
+                    args.maxValue = 2);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", int, skyAmbientMode, 1,
+                    "What the fog takes from the generated sky dome: its colour, or its colour and its brightness.\n"
+                    "The distinction is not a nicety. rtx.dusklight.atmosphere.skyIntensity is a *lighting* calibration - it sets how strongly the dome lights "
+                    "the world relative to the sun, and it is 6 because the palette colours it scales are small once decoded out of gamma. Handing that same "
+                    "radiance to the fog as its colour makes the fog about six times brighter than the colour the game authored, and the medium's ambient term "
+                    "is not shadowed by anything, so an interior gets full open-sky in-scatter inside a sealed room. That was measured, not guessed: with the "
+                    "palette's fog colour at 0.12 the dome-derived ambient read 0.71.\n"
+                    "0: Off. The palette's colour only. Fog in shadow loses the sky's hue.\n"
+                    "1: Hue only. The dome decides what colour the sky is and how it varies across the frame; the palette, after the exposure correction, "
+                    "decides how bright the fog reads. The default, and the one that cannot wash out an interior.\n"
+                    "2: Full radiance. The dome supplies both. Physically the more correct answer for an open sky - distant fog really should approach the "
+                    "sky's own radiance - and the one to try if terrain now reads darker than the sky behind it.",
                     args.minValue = 0,
                     args.maxValue = 2);
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, skyAmbientScale, 1.0f,
@@ -320,8 +350,16 @@ namespace dxvk {
                     "lower it if outdoor fog reads brighter than the terrain it sits in front of.",
                     args.minValue = 0.0f,
                     args.maxValue = 8.0f);
-    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, fogAnisotropy, 0.6f,
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, fogAnisotropy, 0.0f,
                     "Forward scattering of the fog medium, -1..1. Higher pulls in-scattered light into a tighter glow around whatever is casting it.\n"
+                    "DEFAULTED TO 0.6 ON 2026-08-13 AND BACK TO 0 THE SAME DAY, after the fog was reported reading blocky and inconsistent across the screen. "
+                    "The froxel grid stores each cell's in-scatter as a first-order spherical harmonic, and the composite's raymarch evaluates it through the "
+                    "Henyey-Greenstein phase function with no filtering - upstream's own other consumer of that data applies a Hanning filter first, with a "
+                    "comment saying it was tuned until ringing was minimised. An L1 harmonic cannot represent a sharply forward-scattering lobe, so raising "
+                    "this makes each froxel ring independently, which reads exactly as a grid. UNCONFIRMED as the cause of that report - it is one of two "
+                    "candidates and the other was fog brightness - but it is the one this fork changed, so it goes back to upstream's value.\n"
+                    "Raising it is still the right way to give shafts and torch glow directional shape. Try 0.2-0.3 first and watch for blockiness before "
+                    "going further.\n"
                     "This is what makes a torch in fog read as a torch in fog and a sunbeam read as a beam. Upstream's rtx.volumetrics.anisotropy defaults to "
                     "0 - perfectly isotropic - which spreads every light's contribution evenly in all directions and leaves shafts flat and shapeless. Real "
                     "atmospheric haze is strongly forward scattering.\n"

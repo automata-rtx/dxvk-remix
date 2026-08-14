@@ -170,6 +170,7 @@ namespace dxvk {
     m_skyStatsGpu = nullptr;
     m_skyStatsHost = nullptr;
     m_skyAmbientValid = false;
+    m_skyStatsFramesActive = 0;
   }
 
   bool DxvkDusklightAtmosphere::active() const {
@@ -386,13 +387,34 @@ namespace dxvk {
     //
     // Gated on an actual reduction having run. Until then, and anywhere there is no sky at all, the
     // palette colour stands - which is also exactly the behaviour this had before the change.
-    const bool skyAmbientAvailable = m_skyAmbientValid && skyActive();
+    const bool skyAmbientAvailable = m_skyAmbientValid && skyActive() && skyAmbientMode() != 0;
 
     out.skyAmbientWeight = skyAmbientAvailable ? std::clamp(skyAmbientWeight(), 0.0f, 1.0f) : 0.0f;
     out.fogAmbient = out.fogRadiance;
+    out.skyLevelScale = 1.0f;
 
     if (out.skyAmbientWeight > 0.0f) {
-      const Vector3 domeAmbient = m_skyAmbient * std::max(skyAmbientScale(), 0.0f);
+      // Hue only, and this is the correction for a category error that shipped and was measured in
+      // game the same day. skyIntensity is a *lighting* calibration - it decides how strongly the
+      // dome lights the world against the sun, and it is 6 because the palette colours it scales are
+      // small once decoded out of gamma. Handing that radiance to the fog as its colour made the fog
+      // about six times brighter than the colour the game authored: with the palette's fog colour at
+      // 0.12 the dome-derived ambient measured 0.71. And the medium's ambient term is not shadowed by
+      // anything, so an interior received full open-sky in-scatter inside a sealed room, which is
+      // what "washed out and bright indoors" was.
+      //
+      // Normalising by luminance keeps everything the dome was worth - what colour the sky is, and,
+      // through the composite's own view-direction sample, how that colour varies across the frame -
+      // and takes the level from the palette instead, where the exposure correction has already given
+      // it a meaning. The same scale goes to the composite so the near and far halves stay one fog.
+      if (skyAmbientMode() == 1) {
+        const float domeLuminance = sRGBLuminance(m_skyAmbient);
+        const float paletteLuminance = sRGBLuminance(out.fogRadiance);
+
+        out.skyLevelScale = domeLuminance > 1e-6f ? paletteLuminance / domeLuminance : 0.0f;
+      }
+
+      const Vector3 domeAmbient = m_skyAmbient * (std::max(skyAmbientScale(), 0.0f) * out.skyLevelScale);
 
       out.fogAmbient = out.fogRadiance * (1.0f - out.skyAmbientWeight) + domeAmbient * out.skyAmbientWeight;
     }
@@ -461,17 +483,35 @@ namespace dxvk {
     // are still live; only what counts as a *distinct state* is restricted to the game's.
     const Vector3 paletteFog = sanitizeColor(DusklightEnv::fogColor());
 
-    mix(bucket(d.rampStart, 16.0f));
-    mix(bucket(d.rampEnd, 16.0f));
-    mix(bucket(d.sigma * 1e5f, 1.0f));
-    mix(bucket(paletteFog.x + paletteFog.y + paletteFog.z, 0.05f));
+    // Coarse, and the first revision of this was not coarse enough. A session log spent the whole
+    // 32-line budget in 450 milliseconds of one area transition, because rampStart and rampEnd sweep
+    // continuously through a fade and a 16-unit bucket resolves every frame of it as a new state.
+    // The rate limit below is the other half of the fix; neither alone is enough, because a coarse
+    // key still steps several times across a long fade and a rate limit alone would suppress a
+    // genuinely new area arriving straight after one.
+    mix(bucket(d.rampStart, 256.0f));
+    mix(bucket(d.rampEnd, 2048.0f));
+    mix(bucket(paletteFog.x + paletteFog.y + paletteFog.z, 0.10f));
     mix(bucket(d.skyAmbientWeight > 0.0f ? 1.0f : 0.0f, 1.0f));
+    mix(bucket(d.outdoor ? 1.0f : 0.0f, 1.0f));
 
     for (const uint64_t seen : m_loggedFogStates) {
       if (seen == key) {
         return;
       }
     }
+
+    // At most one line every kFogLogFrameGap frames, whatever the key says. A transition is a
+    // continuum, not a sequence of states, and no bucketing turns it into one.
+    constexpr uint32_t kFogLogFrameGap = 120;
+
+    const uint32_t frameId = m_device->getCurrentFrameId();
+
+    if (m_lastFogLogFrame != UINT32_MAX && frameId - m_lastFogLogFrame < kFogLogFrameGap) {
+      return;
+    }
+
+    m_lastFogLogFrame = frameId;
 
     if (m_loggedFogStates.size() >= kMaxLoggedFogStates) {
       if (!m_loggedFogStateOverflow) {
@@ -501,12 +541,17 @@ namespace dxvk {
       " units, peak excess over the game's ramp ", round2(d.excessPeak),
       " at ", std::llround(d.excessPeakDistance),
       " units, ambient ", round2(d.fogAmbient.x), ",", round2(d.fogAmbient.y), ",", round2(d.fogAmbient.z),
-      " (", round2(d.skyAmbientWeight * 100.0f), "% from the sky dome, the rest from the game's palette colour ",
+      " (", round2(d.skyAmbientWeight * 100.0f), "% from the sky dome at level scale x", round2(d.skyLevelScale),
+      ", the rest from the palette after correction ",
       round2(d.fogRadiance.x), ",", round2(d.fogRadiance.y), ",", round2(d.fogRadiance.z),
-      "), ramp mode ", fogRampMode() == 1 ? "top-up" : "handover",
+      "), area ", d.outdoor ? "has a sky (the game's own hide_vrbox test says visible)"
+                            : "has no sky (the game hides its own dome here)",
+      ", dome ", d.skyAmbientWeight > 0.0f ? "on" : "off",
+      ", ramp mode ", fogRampMode() == 1 ? "top-up" : "handover",
       ", exposure correction x", round2(d.exposureCorrection),
       " (mode ", exposureFogMode() == 0 ? "off" : (exposureFogMode() == 1 ? "indoors only" : "always"),
       ", sampled once at first report - the panel shows it live)",
+      ", sky ambient mode ", skyAmbientMode() == 0 ? "off" : (skyAmbientMode() == 1 ? "hue only" : "full radiance"),
       ", anisotropy ", round2(d.fogAnisotropy),
       ". One line per distinct fog state, capped at ", kMaxLoggedFogStates,
       ". See documentation/DusklightAtmosphere.md section 5.2."));
@@ -766,7 +811,10 @@ namespace dxvk {
     // sky only while the scattering model was running - and left the near half following a palette
     // colour regardless. Both halves now follow the dome whenever there is one.
     args.skyColorWeight = std::clamp(d.skyAmbientWeight, 0.0f, 1.0f);
-    args.skyAmbientScale = std::max(skyAmbientScale(), 0.0f);
+    // Carries the Hue only normalisation as well as the trim, so the far ramp's view-direction dome
+    // sample lands at the same level the near half's sphere average did. Splitting these is how the
+    // fog ends up one brightness close by and another in the distance.
+    args.skyAmbientScale = std::max(skyAmbientScale(), 0.0f) * std::max(d.skyLevelScale, 0.0f);
     args.skyFogMode = static_cast<uint32_t>(std::clamp(skyFogMode(), 0, 2));
     args.skyFogAmount = std::clamp(skyFogAmount(), 0.0f, 1.0f);
     args.fogRampMode = static_cast<uint32_t>(std::clamp(fogRampMode(), 0, 1));
@@ -778,6 +826,7 @@ namespace dxvk {
       // the flag rather than the value sends the fog back to the game's palette colour, which is the
       // right answer indoors and the only answer available there.
       m_skyAmbientValid = false;
+      m_skyStatsFramesActive = 0;
       return;
     }
 
@@ -966,6 +1015,8 @@ namespace dxvk {
         ctx->dispatch(1, 1, 1);
       }
 
+      ++m_skyStatsFramesActive;
+
       const uint32_t frameId = m_device->getCurrentFrameId();
       const uint32_t writeIndex = frameId % kMaxFramesInFlight;
 
@@ -980,9 +1031,11 @@ namespace dxvk {
 
         const Vector3 ambient(stats.ambient.x, stats.ambient.y, stats.ambient.z);
 
-        // Trusted only once it is both flagged valid and finite. The buffer starts zeroed, so the
-        // first few frames of a launch read valid == 0 and the palette colour stands.
-        if (stats.valid != 0 && isFinite(ambient.x) && isFinite(ambient.y) && isFinite(ambient.z)) {
+        // Trusted only once the ring can no longer be serving a slot from before the dome came
+        // back. valid alone is not enough: it stays set in a slot written by a *previous* run of
+        // this pass, so on resume the first kMaxFramesInFlight frames would read another area's sky.
+        if (m_skyStatsFramesActive > kMaxFramesInFlight && stats.valid != 0 &&
+            isFinite(ambient.x) && isFinite(ambient.y) && isFinite(ambient.z)) {
           m_skyAmbient = Vector3(std::max(ambient.x, 0.0f), std::max(ambient.y, 0.0f), std::max(ambient.z, 0.0f));
           m_skyAmbientValid = true;
         }
@@ -1045,11 +1098,37 @@ namespace dxvk {
     RemixGui::DragFloat("Fog Radiance Scale##dusklightAtmo", &fogRadianceScaleObject(), 0.01f, 0.f, 16.f, "%.2f");
     RemixGui::DragFloat("Ambient In-Scatter##dusklightAtmo", &multiScatteringScaleObject(), 0.01f, 0.f, 4.f, "%.2f");
     RemixGui::DragFloat("Forward Scatter##dusklightAtmo", &fogAnisotropyObject(), 0.01f, -0.95f, 0.95f, "%.2f");
+    {
+      static const char* kSkyAmbientModes[] = { "Off", "Hue only", "Full radiance" };
+      static int ambientMode;
+      ambientMode = std::clamp(skyAmbientMode(), 0, 2);
+      if (RemixGui::Combo("Sky Ambient Mode##dusklightAtmo", &ambientMode, kSkyAmbientModes,
+                          IM_ARRAYSIZE(kSkyAmbientModes))) {
+        skyAmbientMode.setDeferred(ambientMode);
+      }
+      switch (ambientMode) {
+      case 0:
+        ImGui::TextWrapped("The palette's colour only. Fog standing in shadow loses the sky's hue, since Remix's froxel "
+                           "grid samples no dome light and so sees nothing of the sky by itself.");
+        break;
+      case 1:
+        ImGui::TextWrapped("The dome decides what colour the sky is; the palette decides how bright the fog reads. Sky "
+                           "Intensity is a lighting calibration, not an appearance one, so letting it set the fog's level "
+                           "made indoor fog about six times too bright - and the medium's ambient term is not shadowed, so "
+                           "a sealed room got open-sky in-scatter.");
+        break;
+      default:
+        ImGui::TextWrapped("The dome supplies colour and brightness. Physically the better answer for an open sky, since "
+                           "distant fog really should approach the sky's own radiance. Try this if terrain now reads darker "
+                           "than the sky behind it.");
+        break;
+      }
+    }
+
+    ImGui::BeginDisabled(skyAmbientMode() == 0);
     RemixGui::DragFloat("Sky Ambient##dusklightAtmo", &skyAmbientWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
     RemixGui::DragFloat("Sky Ambient Scale##dusklightAtmo", &skyAmbientScaleObject(), 0.01f, 0.f, 8.f, "%.2f");
-    ImGui::TextWrapped("Sky Ambient takes the fog's colour from the generated dome rather than from the palette entry that "
-                       "describes it. It matters because Remix's froxel grid samples no dome light, so without it fog "
-                       "standing in shadow sees nothing of the sky at all.");
+    ImGui::EndDisabled();
 
     {
       static const char* kExposureFogModes[] = { "Off", "Indoors only", "Always" };
@@ -1175,6 +1254,12 @@ namespace dxvk {
       ImGui::Text("fog ambient (used): %.3f, %.3f, %.3f   %.0f%% from the dome%s",
                   d.fogAmbient.x, d.fogAmbient.y, d.fogAmbient.z, d.skyAmbientWeight * 100.0f,
                   d.skyAmbientWeight > 0.0f ? "" : "  (no sky, or the reduction has not run yet)");
+      // Far from 1 means the dome and the palette disagreed badly about how bright this sky is. In
+      // Hue only mode that gap is closed here; in Full radiance mode it is shown and left alone.
+      if (d.skyAmbientWeight > 0.0f) {
+        ImGui::Text("dome level scale: x%.3f%s", d.skyLevelScale,
+                    skyAmbientMode() == 1 ? "  (normalised to the palette)" : "  (full radiance, not normalised)");
+      }
       // Below 1 means a bright scene and the fog scaled up to sit in it; above 1 means a dark scene
       // and the fog scaled down so it cannot lift the blacks. Exactly 1 means the mode is off or
       // this area is not one it covers.
