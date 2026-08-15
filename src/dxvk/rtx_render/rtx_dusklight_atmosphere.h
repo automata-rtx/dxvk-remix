@@ -112,6 +112,10 @@ namespace dxvk {
       // the top up ramp needs in order to be exact rather than clamped.
       float   excessPeak = 0.0f;
       float   excessPeakDistance = 0.0f;
+      // The excess budget actually used, after clearZoneVeilTarget weighted clearZoneTolerance by
+      // how bright the medium is. Equal to clearZoneTolerance wherever the weighting is not binding,
+      // which is what makes the pair readable in a log the same way sigma and sigmaMatched are.
+      float   clearZoneToleranceUsed = 0.0f;
 
       // Forward scattering of the fog medium, handed to the volumetrics in place of
       // rtx.volumetrics.anisotropy. Not the same quantity as the sky model's mieAnisotropy, which
@@ -393,6 +397,19 @@ namespace dxvk {
                     "and the medium is what carries light shafts. At 0 the near field is exactly as crisp as the original and there is almost no medium left to "
                     "scatter anything; higher values buy shaft presence with a thin haze over near geometry.\n"
                     "Read only when rtx.dusklight.atmosphere.limitDensityToRamp is on.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 0.5f);
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, clearZoneVeilTarget, 0.01f,
+                    "How bright a near-field veil the clear zone may show, as luminance rather than as coverage. 0 disables the weighting.\n"
+                    "clearZoneTolerance on its own is a coverage number, and coverage is only half of what a viewer sees: the same 8% of a "
+                    "dim grey cave is invisible, and 8% of Goron Mines' lava-lit orange is a haze hanging in front of the player. That is "
+                    "measured, not supposed - in the 2026-08-15 log the outdoor ambient came to luminance 0.085 and the Goron Mines ambient "
+                    "to 0.357, a factor of four, both spending the same budget.\n"
+                    "So the budget is spent in luminance: the effective tolerance is this divided by the medium's own ambient luminance, "
+                    "capped by clearZoneTolerance, which stays the ceiling and keeps its meaning. Bright interiors tighten; dim and outdoor "
+                    "scenes are left exactly where they were, because there the quotient lands above the ceiling anyway.\n"
+                    "The atmosphere panel and the fog log report the tolerance actually used beside the ceiling, so it is visible when this "
+                    "is binding and by how much.",
                     args.minValue = 0.0f,
                     args.maxValue = 0.5f);
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, froxelRangeScale, 0.6f,

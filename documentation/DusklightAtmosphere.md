@@ -492,6 +492,34 @@ it occurs are in the panel and in the log line.
 At 0 the near field is as crisp as the original and there is almost no medium
 left to scatter anything; higher buys shaft presence with a thin near-field haze.
 
+**Since 2026-08-15 that budget is spent in luminance, not in coverage**, and the
+tolerance above is its ceiling. Coverage alone is half the picture: what a viewer
+sees is coverage × brightness, so the same 0.08 is invisible in a dim cave and a
+haze hanging in front of the player in a lava-lit one.
+
+That is measured rather than supposed. One Goron Mines log (2026-08-14) carries
+both cases at the same setting:
+
+| Area | fog ambient | luminance | peak excess | at |
+| :-- | :-- | --: | --: | --: |
+| Death Mountain, outdoors | 0.11, 0.08, 0.06 | 0.085 | 0.04 | 14137 units |
+| Goron Mines, interior | 0.44, 0.36, 0.09 | **0.358** | 0.08 | **500 units** |
+
+Four times the light, the same budget, and indoors the peak sits at the ramp
+start — the closest fogged point to the player. That run was reported as fog far
+too dense near Link.
+
+So the effective tolerance is
+`min(clearZoneTolerance, clearZoneVeilTarget / luminance(fogAmbient))`.
+`clearZoneVeilTarget` (default 0.01) takes Goron Mines to **0.028** and leaves
+both outdoor states untouched at the 0.08 ceiling, because there the quotient
+lands above it. Set it to 0 to restore the pure coverage budget. The panel and
+the log both report the budget actually used beside the ceiling, so it is visible
+when the weighting binds and by how much.
+
+Note this is still a bound on the excess, not a removal of it — see the clamp
+below. **Untested in game.**
+
 The residual clamps at zero rather than going negative, because subtracting
 already-integrated light means dividing it back out, which amplifies the froxel
 grid's noise. The cap is what keeps the clamp from being reached.

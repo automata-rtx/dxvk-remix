@@ -344,23 +344,9 @@ namespace dxvk {
     out.rampStart = start;
     out.rampEnd = end;
 
-    // Hold the medium under the game's own ramp.
-    //
-    // Only in top up mode, and the distinction is not a detail. In handover mode the medium *is* the
-    // fog for everything inside the froxel grid, so thinning it would delete the fog rather than
-    // correct it. In top up mode the ramp supplies whatever opacity the medium falls short of, so
-    // the only thing the medium must not do is overshoot - and the half density match overshoots
-    // badly wherever the original left a clear zone, because the game's ramp is exactly zero before
-    // fogStartZ and an exponential has been extinguishing since the camera. With start halfway to
-    // end, the matched medium is already about 37% opaque at the point the original is untouched.
-    // That haze over the near field is the single largest reason the volumetric path reads greyer
-    // and flatter than the depth ramp it replaced. DusklightAtmosphere.md ledger C11.
-    if (fogRampMode() == 1 && limitDensityToRamp()) {
-      out.sigma = solveSigmaWithinTolerance(out.sigmaMatched, start, end,
-                                            std::clamp(clearZoneTolerance(), 0.0f, 0.5f));
-    }
-
-    out.excessPeak = rampExcessPeak(out.sigma, start, end, out.excessPeakDistance);
+    // sigma stays at the half density match for now. Holding it under the game's own ramp happens
+    // further down, once fogAmbient exists, because how much haze the clear zone can afford depends
+    // on how bright that haze is going to be. See the block below fogAmbient.
 
     // The game authors its fog colour to be blended over a finished, display referred image. Here
     // it is a quantity of light in a linear frame that has not been tone mapped yet, so it is
@@ -418,6 +404,35 @@ namespace dxvk {
 
       out.fogAmbient = out.fogRadiance * (1.0f - out.skyAmbientWeight) + domeAmbient * out.skyAmbientWeight;
     }
+
+    // Hold the medium under the game's own ramp - see the note above where sigmaMatched is set.
+    //
+    // The budget is spent in luminance rather than in coverage, which is the correction made on
+    // 2026-08-15. clearZoneTolerance alone asks "how much of the near field may the medium cover",
+    // and that is only half of what anyone sees: the other half is how bright the thing doing the
+    // covering is. The 2026-08-14 Goron Mines log has both cases in it at the same setting - an
+    // outdoor ambient at luminance 0.085 with its excess peaking 14137 units away, and a lava-lit
+    // interior at 0.357 peaking at 500 units, the second reported as fog far too dense near the
+    // player. Same 0.08, four times the light, and the near field is where it lands.
+    //
+    // Dividing the target by the medium's own luminance makes the *veil* the constant instead, and
+    // clearZoneTolerance stays as the ceiling so nothing dim or outdoor moves: there the quotient
+    // lands above the ceiling and the ceiling wins, exactly as before.
+    const float toleranceCeiling = std::clamp(clearZoneTolerance(), 0.0f, 0.5f);
+    const float veilTarget = std::max(clearZoneVeilTarget(), 0.0f);
+    const float ambientLuminance = sRGBLuminance(out.fogAmbient);
+
+    out.clearZoneToleranceUsed = toleranceCeiling;
+
+    if (veilTarget > 0.0f && ambientLuminance > 1e-6f) {
+      out.clearZoneToleranceUsed = std::min(toleranceCeiling, veilTarget / ambientLuminance);
+    }
+
+    if (fogRampMode() == 1 && limitDensityToRamp()) {
+      out.sigma = solveSigmaWithinTolerance(out.sigmaMatched, start, end, out.clearZoneToleranceUsed);
+    }
+
+    out.excessPeak = rampExcessPeak(out.sigma, start, end, out.excessPeakDistance);
 
     // Size the grid from the game's own fog range, so its fixed slice count lands where the fog
     // actually is. This costs nothing: the slice count does not change, only how far it reaches.
@@ -540,6 +555,13 @@ namespace dxvk {
       " units, grid reach ", std::llround(d.froxelMaxDistance),
       " units, peak excess over the game's ramp ", round2(d.excessPeak),
       " at ", std::llround(d.excessPeakDistance),
+      " units (budget ", d.clearZoneToleranceUsed,
+      d.clearZoneToleranceUsed < std::clamp(clearZoneTolerance(), 0.0f, 0.5f) * 0.999f
+        ? str::format(", tightened from the ", std::clamp(clearZoneTolerance(), 0.0f, 0.5f),
+                      " ceiling because the medium's ambient luminance is ",
+                      round2(sRGBLuminance(d.fogAmbient)), " - a bright haze is allowed less of the clear zone")
+        : std::string(" - the ceiling, the brightness weighting is not binding here"),
+      ")",
       " units, ambient ", round2(d.fogAmbient.x), ",", round2(d.fogAmbient.y), ",", round2(d.fogAmbient.z),
       " (", round2(d.skyAmbientWeight * 100.0f), "% from the sky dome at level scale x", round2(d.skyLevelScale),
       ", the rest from the palette after correction ",
@@ -1094,6 +1116,13 @@ namespace dxvk {
     RemixGui::Checkbox("Hold Density Under The Ramp##dusklightAtmo", &limitDensityToRampObject());
     ImGui::BeginDisabled(!limitDensityToRamp() || fogRampMode() != 1);
     RemixGui::DragFloat("Clear Zone Tolerance##dusklightAtmo", &clearZoneToleranceObject(), 0.005f, 0.f, 0.5f, "%.3f");
+    RemixGui::DragFloat("Clear Zone Veil Target##dusklightAtmo", &clearZoneVeilTargetObject(), 0.002f, 0.f, 0.5f, "%.3f");
+    ImGui::TextWrapped(
+      "The tolerance above is coverage; this is the brightness that coverage is allowed to have. "
+      "The same 8% of a dim cave is invisible and 8% of lava-lit orange hangs in front of the "
+      "player, so the budget is spent in luminance and the tolerance above becomes a ceiling. "
+      "Bright interiors tighten; dim and outdoor scenes do not move. 0 disables the weighting and "
+      "restores the pure coverage budget. The readout above reports the budget actually used.");
     ImGui::EndDisabled();
     RemixGui::DragFloat("Fog Radiance Scale##dusklightAtmo", &fogRadianceScaleObject(), 0.01f, 0.f, 16.f, "%.2f");
     RemixGui::DragFloat("Ambient In-Scatter##dusklightAtmo", &multiScatteringScaleObject(), 0.01f, 0.f, 4.f, "%.2f");
@@ -1248,8 +1277,12 @@ namespace dxvk {
       // The number that decides whether the top up ramp is exact or clamped. Zero means the medium is
       // nowhere thicker than the original's fog and the composite reproduces it exactly; anything
       // above the tolerance means density is being spent where the original was clear.
-      ImGui::Text("peak excess over the game's ramp: %.3f at %.0f units",
-                  d.excessPeak, d.excessPeakDistance);
+      ImGui::Text("peak excess over the game's ramp: %.3f at %.0f units (budget %.3f)",
+                  d.excessPeak, d.excessPeakDistance, d.clearZoneToleranceUsed);
+      if (d.clearZoneToleranceUsed < clearZoneTolerance() * 0.999f) {
+        ImGui::Text("  tightened from the %.3f ceiling: ambient luminance %.3f",
+                    clearZoneTolerance(), sRGBLuminance(d.fogAmbient));
+      }
       ImGui::Text("fog radiance (palette): %.3f, %.3f, %.3f", d.fogRadiance.x, d.fogRadiance.y, d.fogRadiance.z);
       ImGui::Text("fog ambient (used): %.3f, %.3f, %.3f   %.0f%% from the dome%s",
                   d.fogAmbient.x, d.fogAmbient.y, d.fogAmbient.z, d.skyAmbientWeight * 100.0f,

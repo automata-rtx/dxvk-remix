@@ -3730,6 +3730,18 @@ namespace dxvk {
         "boundary goes hard. This leaves the edge pass ('mizugiwa') as the alpha-blended "
         "overlay the game drew, and is the first thing to try for a visible seam between water "
         "and the ground around it.");
+      RemixGui::Checkbox("Waves Keep Their Blend", &DusklightWater::wavesAsBlendObject());
+      ImGui::TextWrapped(
+        "This is what puts a visible water texture back. A translucent material in Remix carries "
+        "exactly three textures - normal, transmittance, emissive - and has no albedo slot at all, "
+        "and the water conversion sets none of the three. So every layer it converts becomes a "
+        "perfectly smooth, uniformly tinted interface with no surface detail whatever, which over a "
+        "lake bed is close to invisible; before this switch the only pass still showing a texture "
+        "was the shoreline, because it alone kept its blend. 'nami' is the game's word for waves "
+        "and its pass carries the ripple art, so it is the right one to keep: the body still "
+        "refracts through its other layers and the waves are drawn over it. Note this is painted "
+        "detail rather than refracted - deriving a normal map from the wave texture is the real "
+        "answer and is not built yet.");
       RemixGui::Checkbox("Apply To Replaced Materials", &DusklightWater::applyToReplacementsObject());
       ImGui::TextWrapped(
         "A capture cannot express water - it writes an albedo texture path and nothing else - so a "
