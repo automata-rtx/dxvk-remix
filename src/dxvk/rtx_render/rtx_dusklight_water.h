@@ -160,7 +160,7 @@ namespace dxvk {
                "becomes a hard glass edge. That pass exists precisely to soften that boundary, so\n"
                "converting it destroys the one thing it does. Off makes it refract like the rest.");
 
-    RTX_OPTION("rtx.dusklight.water", bool, wavesAsBlend, true,
+    RTX_OPTION("rtx.dusklight.water", bool, wavesAsBlend, false,
                "Leave the wave pass ('nami') as the alpha-blended overlay it is, rather than\n"
                "making it a refracting surface. This is what puts a visible water texture back.\n"
                "A translucent material in Remix has NO albedo slot - the type carries exactly three\n"
@@ -172,7 +172,10 @@ namespace dxvk {
                "'nami' is the game's word for waves, and its pass is the one carrying the ripple\n"
                "art, so it is the right one to keep: the body of water still refracts through its\n"
                "other layers and the waves are drawn over it.\n"
-               "Off makes it refract like the rest, which is the behaviour before 2026-08-15.\n"
+               "DEFAULT OFF as of 2026-08-15, reverted the same day it landed: tested in game it did not\n"
+               "read as the wave surface at all - what it produced was a trail of ripples behind Link\n"
+               "as he swims, which is the pass doing something real but not the thing this was for.\n"
+               "Off is the behaviour before that change: waves refract like every other layer.\n"
                "NOTE this is painted detail, not refracted - a real fix derives a normal map from\n"
                "the wave texture's luminance. See DusklightAtmosphere.md and the note in\n"
                "makeMaterial about why feeding the colour texture in raw was reverted.");

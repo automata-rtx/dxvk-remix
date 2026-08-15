@@ -81,8 +81,28 @@ float3 dusklightFogRadiance(float3 worldDirection)
 
   if (cb.dusklightArgs.skyColorWeight > 0.0f && cb.domeLightArgs.active)
   {
+    // Fold the lookup up to the horizon before sampling.
+    //
+    // The generated dome deliberately darkens its lower hemisphere by (1 - groundFraction), because
+    // as a LIGHT it would otherwise light the scene a second time from below and double-count a
+    // ground bounce this game already path traces (dusklight_sky.comp.slang, "if (height < 0)").
+    // That is right for lighting and wrong here, because this samples the same texture as a COLOUR:
+    // fog looked at above the horizon took the sky and fog looked at below it took the darkened
+    // half, which put a horizontal seam across the frame at eye level, reported 2026-08-15 as the
+    // lower half of the volumetrics being a different colour from the upper half.
+    //
+    // max() rather than abs(): collapsing the lower hemisphere onto the horizon ring is continuous
+    // at z = 0 and leaves the fog below eye level the colour of the sky at the horizon, which is
+    // where its light actually comes from. Mirroring would instead paint an upside-down sky into
+    // the ground half and put a second bright band under the camera.
+    //
+    // The polar axis is .z - cartesianDirectionToLatLongSphere takes acos(direction.z), and the sky
+    // shader reads its own height out of the same component.
+    float3 domeDirection = mul(cb.domeLightArgs.worldToLightTransform, float4(worldDirection, 0.0f)).xyz;
+    domeDirection.z = max(domeDirection.z, 0.0f);
+
     const float3 skyRadiance = cb.domeLightArgs.radiance *
-      sampleDomeLightTexture(SkyLight, worldDirection, cb.domeLightArgs.worldToLightTransform) *
+      SkyLight.SampleLevel(cartesianDirectionToLatLongSphere(domeDirection), 0).xyz *
       max(cb.dusklightArgs.skyAmbientScale, 0.0f);
 
     radiance = lerp(radiance, skyRadiance, saturate(cb.dusklightArgs.skyColorWeight));

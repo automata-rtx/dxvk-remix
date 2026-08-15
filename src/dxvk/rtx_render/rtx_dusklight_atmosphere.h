@@ -227,8 +227,14 @@ namespace dxvk {
     // cap is reached. Bounded by construction: a session that wanders through more than
     // kMaxLoggedFogStates distinct ramps gets one line saying so and then silence, rather than a
     // line per area transition for as long as the session lasts.
+    // Two budgets, not one. Outdoor fog states drift continuously with the time of day and interior
+    // ones do not, so a single shared budget is always spent by the sky before anyone reaches a
+    // dungeon - measured on 2026-08-15, where 32 states went in six and a half minutes of Hyrule
+    // Field and Goron Mines and Arbiter's Grounds then logged nothing for the next 36.
     mutable std::vector<uint64_t> m_loggedFogStates;
     mutable bool m_loggedFogStateOverflow = false;
+    mutable std::vector<uint64_t> m_loggedFogStatesIndoor;
+    mutable bool m_loggedFogStateOverflowIndoor = false;
     // Frame the last fog line was emitted on, so a transition cannot spend the whole budget.
     mutable uint32_t m_lastFogLogFrame = UINT32_MAX;
 

@@ -504,13 +504,31 @@ namespace dxvk {
     // The rate limit below is the other half of the fix; neither alone is enough, because a coarse
     // key still steps several times across a long fade and a rate limit alone would suppress a
     // genuinely new area arriving straight after one.
-    mix(bucket(d.rampStart, 256.0f));
-    mix(bucket(d.rampEnd, 2048.0f));
-    mix(bucket(paletteFog.x + paletteFog.y + paletteFog.z, 0.10f));
+    // Coarsened again on 2026-08-15, and the reason is worth keeping. A session that went to Goron
+    // Mines and Arbiter's Grounds reported no fog line from either: the 32 state budget was spent in
+    // the first six and a half minutes, entirely on Hyrule Field, because outdoors the ramp and the
+    // palette *drift continuously with the time of day*. The endpoints crawled -11831 -> -20874 and
+    // the palette with them, and at a 256 unit bucket every step of that sunrise is a new state.
+    // The overflow notice fired correctly and the log was honest; the budget was simply spent
+    // somewhere useless before the areas anyone wanted to see were reached.
+    //
+    // The buckets below are sized against that drift rather than against what is visible: a ramp
+    // start moving nine thousand units over seven minutes should read as a handful of states, not
+    // ten. The separate indoor budget under kMaxLoggedFogStates is the other half, because no
+    // bucketing makes a sunrise finite and an interior must not be starved by one.
+    mix(bucket(d.rampStart, 4096.0f));
+    mix(bucket(d.rampEnd, 16384.0f));
+    mix(bucket(paletteFog.x + paletteFog.y + paletteFog.z, 0.25f));
     mix(bucket(d.skyAmbientWeight > 0.0f ? 1.0f : 0.0f, 1.0f));
     mix(bucket(d.outdoor ? 1.0f : 0.0f, 1.0f));
 
-    for (const uint64_t seen : m_loggedFogStates) {
+    // Indoors and outdoors get separate budgets. Outdoor states drift with the sun and interiors do
+    // not, so one shared budget is always spent by the sky - which is exactly what happened on
+    // 2026-08-15, and it made a truncated log look like an area with no fog at all.
+    auto& seenStates = d.outdoor ? m_loggedFogStates : m_loggedFogStatesIndoor;
+    bool& overflowed = d.outdoor ? m_loggedFogStateOverflow : m_loggedFogStateOverflowIndoor;
+
+    for (const uint64_t seen : seenStates) {
       if (seen == key) {
         return;
       }
@@ -528,17 +546,21 @@ namespace dxvk {
 
     m_lastFogLogFrame = frameId;
 
-    if (m_loggedFogStates.size() >= kMaxLoggedFogStates) {
-      if (!m_loggedFogStateOverflow) {
-        m_loggedFogStateOverflow = true;
+    if (seenStates.size() >= kMaxLoggedFogStates) {
+      if (!overflowed) {
+        overflowed = true;
         Logger::info(str::format(
-          "[Dusklight] fog: ", kMaxLoggedFogStates,
-          " distinct fog states reported; further ones are suppressed for the rest of this run."));
+          "[Dusklight] fog: ", kMaxLoggedFogStates, " distinct ",
+          d.outdoor ? "OUTDOOR" : "INDOOR",
+          " fog states reported; further ", d.outdoor ? "outdoor" : "indoor",
+          " states are suppressed for the rest of this run. The other budget is unaffected - "
+          "indoors and outdoors are counted separately precisely so a drifting sky cannot silence "
+          "an interior."));
       }
       return;
     }
 
-    m_loggedFogStates.push_back(key);
+    seenStates.push_back(key);
 
     const auto round2 = [](float value) {
       return std::round(value * 100.0f) / 100.0f;
