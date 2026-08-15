@@ -2677,6 +2677,10 @@ namespace dxvk {
         showDusklightControlsTab(ctx);
         ImGui::EndTabItem();
       }
+      if (ImGui::BeginTabItem("Mods")) {
+        showDusklightModsTab(ctx);
+        ImGui::EndTabItem();
+      }
       ImGui::EndTabBar();
     }
 
@@ -3028,6 +3032,139 @@ namespace dxvk {
       "reads the device directly for this one purpose.");
   }
 
+  void ImGUI::showDusklightModsTab(const Rc<DxvkContext>& ctx) {
+    // This tab loads nothing and runs nothing. The game owns its mod loader; all that crosses is
+    // an inventory in one direction and a list of ids in the other. That split is deliberate -
+    // a runtime that could activate game code from a config string would be a much larger thing
+    // than a checkbox.
+    //
+    // The game's own mod window is never drawn under the fixed function backend, which is the
+    // whole reason this exists.
+    const bool feedLive = DusklightEnv::enable();
+    if (!feedLive) {
+      ImGui::TextWrapped("Waiting for the game's environment feed. The mod list lives in the game, so there is "
+                         "nothing to show until it connects.");
+      return;
+    }
+
+    if (!DusklightEnv::modsRunning()) {
+      ImGui::TextWrapped("The game has not published a mod inventory. Either its discovery has not run yet - a "
+                         "frame or two after connecting is expected - or this game build predates the mod wire "
+                         "(protocol 16).");
+      return;
+    }
+
+    ImGui::TextWrapped("Mods are ALWAYS off when the game starts, whatever was ticked last session and whatever "
+                       "the game's own config.json says. Nothing here is written to rtx.conf.");
+    RemixGui::Separator();
+
+    if (DusklightEnv::modCount() <= 0) {
+      ImGui::TextWrapped("Discovery ran and found no mods. That is a different state from the one above: the "
+                         "loader is working, the mods directory is empty or nothing in it parsed.");
+      return;
+    }
+
+    // Records are ';' delimited, fields within a record '|' delimited:
+    //   id | display name | native status | active | failed
+    const std::string packed = DusklightEnv::modList();
+
+    // What is currently ticked. The sentinel is "nothing", not the empty string - see
+    // kModsNoneSentinel in rtx_dusklight_game.h for why an empty one could never arrive.
+    std::string enabledPacked = DusklightGame::modsEnabled();
+    if (enabledPacked == kModsNoneSentinel) {
+      enabledPacked.clear();
+    }
+    std::vector<std::string> enabled = splitPipes(enabledPacked);
+
+    const auto isEnabled = [&enabled](const std::string& id) {
+      return std::find(enabled.begin(), enabled.end(), id) != enabled.end();
+    };
+
+    bool changed = false;
+    size_t shown = 0;
+
+    size_t recordStart = 0;
+    while (recordStart <= packed.size()) {
+      const size_t recordEnd = packed.find(';', recordStart);
+      const std::string record =
+        packed.substr(recordStart, recordEnd == std::string::npos ? std::string::npos : recordEnd - recordStart);
+
+      if (!record.empty()) {
+        const std::vector<std::string> fields = splitPipes(record);
+
+        if (fields.size() >= 2) {
+          const std::string& id = fields[0];
+          const std::string& name = fields[1];
+          const std::string nativeStatus = fields.size() > 2 ? fields[2] : std::string("unknown");
+          const bool active = fields.size() > 3 && fields[3] == "1";
+          const bool failed = fields.size() > 4 && fields[4] == "1";
+
+          ++shown;
+          ImGui::PushID(static_cast<int>(shown));
+
+          bool ticked = isEnabled(id);
+          if (ImGui::Checkbox(name.empty() ? id.c_str() : name.c_str(), &ticked)) {
+            changed = true;
+            if (ticked) {
+              enabled.push_back(id);
+            } else {
+              enabled.erase(std::remove(enabled.begin(), enabled.end(), id), enabled.end());
+            }
+          }
+
+          ImGui::Indent();
+          ImGui::TextWrapped("id %s - game reports %s%s", id.c_str(),
+                             failed ? "LOAD FAILED" : (active ? "running" : "not running"),
+                             ticked && !active && !failed ? ", request pending" : "");
+
+          // The reason mods were switched off entirely under this backend, shown next to the mod
+          // it applies to rather than as a banner nobody reads. The D3D9 path never initializes
+          // WebGPU, so a native mod that reaches for the renderer takes the process down as it
+          // loads - and the moment it loads is the moment the box below is ticked.
+          if (nativeStatus != "none") {
+            ImGui::TextWrapped("NATIVE (%s). The fixed function backend never initializes WebGPU, so a native "
+                               "mod that touches the renderer can take the process down the instant it is "
+                               "enabled. Save first.", nativeStatus.c_str());
+          }
+          ImGui::Unindent();
+          ImGui::PopID();
+        }
+      }
+
+      if (recordEnd == std::string::npos) {
+        break;
+      }
+      recordStart = recordEnd + 1;
+    }
+
+    if (shown == 0) {
+      ImGui::TextWrapped("The game reported %d mod(s) but none of the records parsed. That is a wire mismatch "
+                         "rather than a mod problem - the expected shape is id|name|native|active|failed, "
+                         "records separated by ';'.", DusklightEnv::modCount());
+    }
+
+    if (changed) {
+      std::string packedEnabled;
+      for (const std::string& id : enabled) {
+        if (!packedEnabled.empty()) {
+          packedEnabled += '|';
+        }
+        packedEnabled += id;
+      }
+      // Never the empty string: it would not cross, and the last mod would never turn off.
+      DusklightGame::modsEnabled.setDeferred(packedEnabled.empty() ? std::string(kModsNoneSentinel)
+                                                                   : packedEnabled);
+    }
+
+    RemixGui::Separator();
+    if (ImGui::Button("Disable All")) {
+      DusklightGame::modsEnabled.setDeferred(std::string(kModsNoneSentinel));
+    }
+    ImGui::TextWrapped("Turning a mod off asks the game to shut it down and unload it. Some mods cannot be "
+                       "unloaded cleanly once resident - the game reports what actually happened in the line "
+                       "under each one, which is the state to trust rather than the checkbox.");
+  }
+
   void ImGUI::showDusklightRemixTab(const Rc<DxvkContext>& ctx) {
     auto common = ctx->getCommonObjects();
 
@@ -3179,7 +3316,7 @@ namespace dxvk {
     // fine. Both directions are reported now, and both print the two numbers, because
     // "your builds do not match" without saying which side is behind still costs the
     // rebuild-and-see round it exists to prevent.
-    constexpr int kRequiredProtocol = 15;
+    constexpr int kRequiredProtocol = 16;
     const int gameProtocol = DusklightEnv::protocol();
     const bool gameTooOld = feedLive && gameProtocol < kRequiredProtocol;
     const bool remixTooOld = feedLive && gameProtocol > kRequiredProtocol;

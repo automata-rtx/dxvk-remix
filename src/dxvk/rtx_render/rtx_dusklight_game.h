@@ -605,6 +605,33 @@ namespace dxvk {
                     "normal advance, and it deliberately keeps its hands off the wolf's howl-to-dawn skip while that is running.",
                     args.minValue = 0.0f,
                     args.maxValue = 20.0f);
+
+    // ---------------------------------------------------------------------------------------
+    // Mods. Protocol 16.
+    //
+    // Which mod ids should be running, '|' delimited, read back by the game every frame and
+    // diffed into ModLoader::request_enable / request_disable.
+    //
+    // NoSave IS THE FEATURE, not housekeeping. The requirement is that mods are always off at
+    // startup, and a persisted list would silently re-enable one on the next launch - including
+    // one that crashed the process on load, which is the failure this is most likely to produce
+    // and the worst one to make sticky. NoSave means it cannot reach rtx.conf at all, so "off at
+    // startup" is structural rather than something the game has to remember to do. The game
+    // ignores its own config.json for the same reason.
+    //
+    // kModsNoneSentinel rather than "" for "nothing enabled", because an empty string never
+    // crosses: parseOptionValue(const std::string&, std::string&) returns false at size() == 0
+    // (src/util/config/config.cpp), so clearing the last mod would leave the previous list
+    // standing and the mod would never turn off. This bit the warp feature first.
+    // ---------------------------------------------------------------------------------------
+    RTX_OPTION_FLAG("rtx.dusklight.game", std::string, modsEnabled, "-", RtxOptionFlags::NoSave,
+                    "Mod ids that should be running, '|' delimited, or '-' for none.\n"
+                    "Written by the Mods tab, read by the game every frame and turned into enable/disable requests. "
+                    "NoSave on purpose: mods are always off at startup, so this must not survive into rtx.conf - and a "
+                    "mod that takes the process down on load must not be able to make that permanent.");
   };
+
+  // "Nothing enabled". Not the empty string, which cannot cross the config wire at all.
+  static constexpr const char* kModsNoneSentinel = "-";
 
 }

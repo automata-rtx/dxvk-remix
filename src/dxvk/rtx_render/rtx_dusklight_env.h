@@ -257,6 +257,29 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", std::string, warpStage, "", RtxOptionFlags::NoSave,
                     "The stage file the current selection resolves to - the name the warp actually travels on. Written by the game's kankyo bridge.");
 
+    // ---------------------------------------------------------------------------------------
+    // Mods. Protocol 16.
+    //
+    // The game's own mod UI is never drawn under the fixed function backend, so the Mods tab in
+    // this overlay is the only way to reach one. The game publishes its inventory here and reads
+    // rtx.dusklight.game.modsEnabled back; nothing in this runtime loads or executes anything.
+    // ---------------------------------------------------------------------------------------
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, modsRunning, false, RtxOptionFlags::NoSave,
+                    "True once the game's mod loader has run discovery and published its inventory.\n"
+                    "False with modCount 0 is the honest 'this build predates the mod wire, or discovery has not run "
+                    "yet'; true with modCount 0 means discovery ran and found nothing, which is a different problem.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, modCount, 0, RtxOptionFlags::NoSave,
+                    "How many mods the game discovered. Sent separately from the list because an empty string never "
+                    "crosses the wire - see modList.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, modList, "", RtxOptionFlags::NoSave,
+                    "The game's discovered mods, one record per mod, fields separated by '|' and records by ';'.\n"
+                    "Fields are: id, display name, native status, active, failed. The Mods tab parses this and nothing "
+                    "else - the runtime never loads or runs mod code, it only shows what the game reported and sends "
+                    "back which ids should be on.\n"
+                    "Native status matters and is why it is on the wire: the D3D9 backend never initializes WebGPU, so "
+                    "a native mod that touches the renderer takes the process down when it loads. The tab shows that "
+                    "before you tick anything.");
+
     // Action binds, pushed by the game for the Controls tab to display. The game is the only side
     // that can name a bind correctly - the stored value is an SDL scancode on a keyboard driven
     // port and a native gamepad button otherwise - so it sends finished strings rather than raw

@@ -215,15 +215,16 @@ implying it was tested.
 **The game and this DLL are a single protocol.** The game pushes
 `rtx.dusklight.env.protocol`; this fork compares it against `kRequiredProtocol`
 in `showDusklightRemixTab` (`src/dxvk/imgui/dxvk_imgui.cpp`).
-**Protocol is at 15.** Build both sides from the same commit point, and bump
+**Protocol is at 16.** Build both sides from the same commit point, and bump
 both in the same commit. Skew in either direction has cost an evening twice.
 The Dusklight tab reports which side is old — read it before debugging
 anything else.
 
 **12 is skipped here and is not free.** It belongs to the unmerged
 `claude/kasumi-naming-correction-w3e204`; 13 was taken beside it rather than on
-top of it, 14 beside both, and 15 beside all three (the Shadow Insect spark).
-The next branch to need a number takes **16** —
+top of it, 14 beside both, 15 beside all three (the Shadow Insect spark), and
+**16 beside all four (the Mods tab, 2026-08-15)**.
+The next branch to need a number takes **17** —
 the ladder in `documentation/DusklightOverlay.md` says why, and no script can
 catch reusing 12 because no script can see an unmerged branch.
 
