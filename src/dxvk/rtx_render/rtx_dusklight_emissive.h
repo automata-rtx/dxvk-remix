@@ -56,6 +56,8 @@
 #include "../../util/util_string.h"
 
 #include <algorithm>
+// std::atomic for the log's re-arm flag - see dusklightEmissiveLogResetRequested below.
+#include <atomic>
 #include <unordered_set>
 
 namespace dxvk {
@@ -77,13 +79,42 @@ namespace dxvk {
     PresentedColor = 2,
   };
 
+  // Set when the emissive log's memory of what it has already reported should be thrown
+  // away. Lives out here rather than inside logOnce because the one event that most needs
+  // to clear it - `enable` going false -> true - happens while logOnce is unreachable, so
+  // logOnce cannot observe it itself. An inline function wrapping a static gives one
+  // instance across every translation unit that includes this header.
+  //
+  // Relaxed ordering is enough: both sides are a single bool with no other state ordered
+  // against it, and the worst a reorder can cost is one frame's delay in re-arming a log.
+  inline std::atomic<bool>& dusklightEmissiveLogResetRequested() {
+    static std::atomic<bool> s_requested { false };
+    return s_requested;
+  }
+
   struct DusklightEmissive {
-    RTX_OPTION("rtx.dusklight.emissive", bool, enable, true,
+    // Re-arm the candidate log whenever the feature is switched, in either direction.
+    //
+    // Without this, the 2026-08-16 change that made enable() gate the whole path would have
+    // made the log un-re-armable: off stops logOnce running, and on cannot wipe s_seen
+    // because `enable` is no longer in the settings hash (it could only ever hash as 1 from
+    // inside a function the gate makes unreachable). Toggling would then produce silence for
+    // every material already reported this session, which is the same failure the settings
+    // hash exists to prevent.
+    static void enableOnChange(DxvkDevice* device) {
+      dusklightEmissiveLogResetRequested().store(true, std::memory_order_relaxed);
+    }
+    RTX_OPTION_ARGS("rtx.dusklight.emissive", bool, enable, true,
                "Let self-illuminated GameCube surfaces emit light.\n"
                "A surface qualifies when its GX colour program never reads the lit channel, it carries a colour "
                "authored in GX constants rather than a plain texture, and that colour reads as a glow. Nothing "
-               "here needs tuning. Turn it off to compare against the non-emissive rendering - the dusklight.emis "
-               "log lines are still written either way, so a test session is not wasted.");
+               "here needs tuning. Turn it off to compare against the non-emissive rendering - and note that off "
+               "means off. Since 2026-08-16 this gates the whole classification path rather than just the patch, "
+               "so with it off no dusklight.emis line is written either. That is deliberate - a switch that leaves "
+               "its own work running made a crash bisect lie - so a session gathering candidate evidence needs "
+               "this on. Switching this in either direction re-arms the candidate log, so turning it off and "
+               "back on re-reports every material rather than going quiet.",
+               args.onChangeCallback = &enableOnChange);
     RTX_OPTION("rtx.dusklight.emissive", float, brightness, 10.0f,
                "How brightly an emissive surface glows - a target brightness, not a multiplier.\n"
                "A flat multiplier made a dark saturated colour glow dimly and a pale one glow fiercely, purely "
@@ -151,8 +182,11 @@ namespace dxvk {
                "Log one line per distinct emissive candidate, accepted or rejected, with the numbers that decided it.\n"
                "Candidates rejected on colour alone are counted rather than enumerated - see the dusklight.emis.grey "
                "line - because on 2026-08-04 ninety of them spent the whole cap before the player reached the lava. "
-               "Moving any control on this page makes every candidate report again, so what a setting did is "
-               "recoverable from the log instead of having to be described.");
+               "Moving any setting that decides a verdict or a radiance - the two glow thresholds, the emitted "
+               "colour, and all four brightness dials plus the ceiling - makes every candidate report again, so "
+               "what a setting did is recoverable from the log instead of having to be described. The re-report "
+               "fires once the setting has been still for 15 frames rather than on every frame of a drag, so what "
+               "it describes is the value that was landed on.");
 
     // Covers the candidates worth enumerating; colourless ones are counted
     // separately and do not consume it.
@@ -185,8 +219,16 @@ namespace dxvk {
     // aurora-ao/docs/dx9/remix-material-interface.md §2, mirrored in
     // documentation/DusklightSideChannels.md - and any new claim on this struct
     // must be added there in the same commit rather than only in a comment.
+    //
+    // The material test comes first on purpose. Both operands are pure reads, so `&&`
+    // is free to short-circuit either way - but RtxOption<T>::getValue() takes the
+    // process-wide RtxOptionImpl::getUpdateMutex() (rtx_option.h) while Diffuse.a is a
+    // float already in cache, and almost nothing this runtime draws is a ramp. Removes
+    // one uncontended lock acquisition per non-ramp draw; not measured as a frame-time
+    // win, and this runtime's measured per-draw cost is BLAS rebuild rather than CPU
+    // bookkeeping (CLAUDE.md, "This runtime charges per draw").
     inline bool isRamp(const LegacyMaterialData& mat) {
-      return DusklightRamp::rampMaterials() && mat.getLegacyMaterial().Diffuse.a >= 0.5f;
+      return mat.getLegacyMaterial().Diffuse.a >= 0.5f && DusklightRamp::rampMaterials();
     }
 
     inline bool tFactorIsHigh(const LegacyMaterialData& mat) {
@@ -351,6 +393,21 @@ namespace dxvk {
               || lumaOf(color) >= DusklightEmissive::glowLuma());
     }
 
+    // How long a setting has to hold still before logOnce wipes its memory and
+    // re-reports every candidate.
+    //
+    // An ImGui DragFloat writes its option on EVERY frame the mouse moves
+    // (IMGUI_RTXOPTION_WIDGET, rtx_imgui.h), and five of the settings logOnce hashes are
+    // drag widgets on the F1 panel. Wiping on the raw value therefore re-reported every
+    // candidate in the scene once per frame for the whole length of a drag - cap,
+    // truncation notice and grey ladder included. The two obvious repairs are both worse:
+    // quantising the value swallows the small deliberate nudge the wipe exists to answer,
+    // and rate-limiting the wipe drops the value the user actually stopped on, which is
+    // the only one they wanted evidence for. Waiting for the value to hold still does
+    // neither. 15 frames is about a quarter of a second at 60Hz; nothing depends on the
+    // exact number.
+    static constexpr uint32_t kSettingsSettleFrames = 15;
+
     // Bounded, one line per distinct material hash, accepted or not. Rejections
     // are logged too: an emitter that failed by 0.02 of chroma is a constant to
     // move, and that is invisible if only acceptances are printed.
@@ -365,8 +422,13 @@ namespace dxvk {
     //  - once-per-material meant changing a setting mid-session produced no new
     //    lines, so what it actually did was unrecoverable. The memory is
     //    cleared whenever a setting that decides a verdict changes.
+    //
+    // frameId is the caller's DxvkDevice::getCurrentFrameId(). It is what lets the settings
+    // check run once a frame instead of once per candidate draw, and what the debounce
+    // above is measured in.
     inline void logOnce(XXH64_hash_t materialHash, const Vector3& color, bool accepted,
-                        XXH64_hash_t textureHash, float score, const LegacyMaterialData& mat) {
+                        XXH64_hash_t textureHash, float score, const LegacyMaterialData& mat,
+                        uint32_t frameId) {
       if (!DusklightEmissive::log()) {
         return;
       }
@@ -378,27 +440,87 @@ namespace dxvk {
       static size_t s_colourless = 0;
       static size_t s_colourlessNextReport = 8;
 
-      // Re-report everything when the rule itself moves, so a slider drag is
-      // followed by evidence rather than silence.
-      static XXH64_hash_t s_settings = 0;
-      const struct {
-        float glowChroma;
-        float glowLuma;
-        float brightness;
-        uint32_t source;
-        uint32_t enabled;
-      } settings = { DusklightEmissive::glowChroma(), DusklightEmissive::glowLuma(),
-                     DusklightEmissive::brightness(),
-                     static_cast<uint32_t>(DusklightEmissive::colorSource()),
-                     DusklightEmissive::enable() ? 1u : 0u };
-      const XXH64_hash_t settingsHash = XXH3_64bits(&settings, sizeof(settings));
-      if (settingsHash != s_settings) {
-        s_settings = settingsHash;
+      // Re-arm requested from outside - today only by `enable` changing (see
+      // DusklightEmissive::enableOnChange). exchange() so the request is consumed exactly
+      // once however many candidates this frame has. This is separate from the settings
+      // hash below because it has to survive a period in which logOnce never ran at all.
+      if (dusklightEmissiveLogResetRequested().exchange(false, std::memory_order_relaxed)) {
         s_seen.clear();
         s_logged = 0;
         s_truncated = false;
         s_colourless = 0;
         s_colourlessNextReport = 8;
+      }
+
+      // Re-report everything when the rule itself moves, so a slider drag is
+      // followed by evidence rather than silence.
+      //
+      // Sampled once per FRAME rather than once per candidate draw. Every member below is
+      // an RtxOption read, and RtxOption<T>::getValue() takes the process-wide
+      // RtxOptionImpl::getUpdateMutex() (rtx_option.h) - so building this struct took five
+      // lock acquisitions and an XXH3 hash for every emissive candidate in the scene,
+      // every frame, in the default configuration (log defaults true). Nothing can change
+      // an option mid-frame except the ImGui thread, so once a frame is all the
+      // information there is; a setting change is now noticed on the first candidate draw
+      // of the next frame at worst. What is still paid per draw is the log() read above
+      // (it is the on/off switch and has to stay live) and one hash-set probe below.
+      // Not measured as a frame-time win: this runtime's measured per-draw cost is BLAS
+      // rebuild and surface upload (CLAUDE.md, "This runtime charges per draw").
+      //
+      // `enable` is deliberately NOT hashed any more: since 2026-08-16 it gates the whole
+      // path (rtx_instance_manager.cpp), so logOnce is unreachable with it false and the
+      // member could only ever hash as 1.
+      static bool s_settingsLatched = false;
+      static uint32_t s_settingsFrame = 0;
+      static XXH64_hash_t s_settings = 0;
+      static XXH64_hash_t s_pendingSettings = 0;
+      static uint32_t s_pendingSinceFrame = 0;
+
+      if (!s_settingsLatched || frameId != s_settingsFrame) {
+        s_settingsFrame = frameId;
+
+        // Everything that decides a verdict or changes a printed radiance. The four
+        // brightness dials and the ceiling are here because radianceFor() reads them and
+        // the line prints what it returns; hashing only `brightness` meant moving the
+        // ceiling silently changed what the log would say and re-reported nothing.
+        // All members are 4 bytes, so the struct has no padding to hash uninitialised.
+        const struct {
+          float glowChroma;
+          float glowLuma;
+          float brightness;
+          float brightnessLumaWeight;
+          float pickupBrightness;
+          float pickupBrightnessLumaWeight;
+          float maxRadiance;
+          uint32_t source;
+        } settings = { DusklightEmissive::glowChroma(), DusklightEmissive::glowLuma(),
+                       DusklightEmissive::brightness(), DusklightEmissive::brightnessLumaWeight(),
+                       DusklightEmissive::pickupBrightness(),
+                       DusklightEmissive::pickupBrightnessLumaWeight(),
+                       DusklightEmissive::maxRadiance(),
+                       static_cast<uint32_t>(DusklightEmissive::colorSource()) };
+        const XXH64_hash_t settingsHash = XXH3_64bits(&settings, sizeof(settings));
+
+        if (!s_settingsLatched) {
+          // Latch the first value seen without acting on it - the same rule the overlay's
+          // commit counters follow (DusklightOverlay.md §1.1). Wiping here would re-report
+          // every material found during the first few frames for no reason.
+          s_settingsLatched = true;
+          s_settings = settingsHash;
+          s_pendingSettings = settingsHash;
+          s_pendingSinceFrame = frameId;
+        } else if (settingsHash != s_pendingSettings) {
+          s_pendingSettings = settingsHash;
+          s_pendingSinceFrame = frameId;
+        } else if (settingsHash != s_settings &&
+                   frameId - s_pendingSinceFrame >= kSettingsSettleFrames) {
+          s_settings = settingsHash;
+          s_seen.clear();
+          s_logged = 0;
+          s_truncated = false;
+          s_colourless = 0;
+          s_colourlessNextReport = 8;
+        }
       }
 
       if (!s_seen.insert(materialHash).second) {
@@ -455,8 +577,14 @@ namespace dxvk {
         " pickup=", isPickup(mat),
         " radiance=", radianceFor(color, isPickup(mat)),
         " src=", sourceName(DusklightEmissive::colorSource()),
-        " verdict=", accepted ? "emissive" : "rejected",
-        " applied=", (accepted && DusklightEmissive::enable()) ? 1 : 0));
+        // `applied=` used to sit here and meant "the rule accepted this surface but the
+        // feature is switched off". Since 2026-08-16 enable() gates the whole path
+        // (rtx_instance_manager.cpp), so this line cannot be written with the feature off
+        // and the field was identically equal to verdict=. Removed rather than left
+        // printing a constant. aurora-ao/docs/dx9/material-report.md was corrected in
+        // the same pass - its "Reading dusklight.emis" section now says why the field
+        // is absent, so a reader looking for it does not conclude the log is broken.
+        " verdict=", accepted ? "emissive" : "rejected"));
     }
 
   } // namespace dusklightEmissive

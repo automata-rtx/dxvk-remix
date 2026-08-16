@@ -172,7 +172,11 @@ namespace dxvk {
 
   private:
     virtual bool isEnabled() const override;
-    virtual void releaseTargetResource() override;
+    // Everything this pass owns is released here rather than from releaseTargetResource(), which
+    // RtxPass also calls on every target resize. Nothing here has an extent to resize to: the sky
+    // image is a fixed kSkyWidth x kSkyHeight and both lookup tables are compile-time sized. Moved
+    // 2026-08-16 - see the note on the definition for what the old placement cost.
+    virtual void onDeactivation() override;
 
     void resolveIfStale() const;
     Derived resolve() const;
@@ -238,9 +242,9 @@ namespace dxvk {
     // Frame the last fog line was emitted on, so a transition cannot spend the whole budget.
     mutable uint32_t m_lastFogLogFrame = UINT32_MAX;
 
-    // Owned once and kept alive for the process, not rebuilt per frame: the dome light holds a
+    // Owned across frames and across target resizes, not rebuilt per frame: the dome light holds a
     // bindless index into it, and dropping the image for even one frame drops the sky back to
-    // Remix's own probe.
+    // Remix's own probe. Released when the pass deactivates, and with the object at device teardown.
     Resources::Resource m_skyTexture;
     uint32_t m_skyTextureIndex = UINT32_MAX;
 

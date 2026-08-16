@@ -269,15 +269,23 @@ namespace dxvk {
     // Note this is deliberately not a texture hash test. The same water texture
     // appears on non-water draws in this game, and the same water appears with
     // different textures as the level's water rises.
+    //
+    // The Power test comes first on purpose. Both operands are pure reads, so `&&` may
+    // short-circuit on either - but RtxOption<T>::getValue() takes the process-wide
+    // RtxOptionImpl::getUpdateMutex() (rtx_option.h) while Power is a float already in
+    // cache, and almost nothing this game draws is water. Removes one uncontended lock
+    // acquisition per non-water draw; not measured as a frame-time win, and this
+    // runtime's measured per-draw cost is BLAS rebuild rather than CPU bookkeeping.
     inline bool isWater(const LegacyMaterialData& mat) {
-      return DusklightWater::enable() && waterRole(mat) == WaterRole::Surface;
+      return waterRole(mat) == WaterRole::Surface && DusklightWater::enable();
     }
 
     // The camera-projected overlay drawn over a water surface - MA02/MA10, which
     // dKy_bg_MAxx_proc (d_kankyo.cpp:11479) hands a C_MTXLightPerspective built from the
     // live camera fovy and aspect. Not the surface, and not something to refract through.
+    // Same operand order as isWater above, for the same reason.
     inline bool isProjectedOverlay(const LegacyMaterialData& mat) {
-      return DusklightWater::enable() && waterRole(mat) == WaterRole::Projected;
+      return waterRole(mat) == WaterRole::Projected && DusklightWater::enable();
     }
 
     // Which MAxx tag this draw's material carried, or 0. Aurora ships the number

@@ -55,7 +55,14 @@ namespace dxvk {
                     "Pairs with aurora's matrep.* lines to show what a GameCube material became on the way through "
                     "D3D9 fixed-function. Off by default; NoSave so it never persists into a config. "
                     "Bounded at 1024 distinct materials per run.");
-    // Matches aurora's own cap so the two logs truncate at comparable points.
+    // Deliberately NOT aurora's cap, which is 512 (kMatrepMaxMaterials, dx9_internal.hpp).
+    // Corrected 2026-08-16: the comment here used to claim the two matched, which has never been
+    // true - and matching integers would not have made the two halves truncate together anyway,
+    // because they count different populations. Aurora caps distinct *material identities*; this
+    // half caps distinct reconstruction *shapes* (shapeKey below), which excludes tFactor's value
+    // precisely because including it burned 1024 entries on a few dozen materials in 14 seconds
+    // (d3d9_rtx.cpp, the note above the shapeKey call). Each half prints its own .trunc line
+    // naming its own cap, so a truncated log always says which side truncated and at what.
     static constexpr size_t kMaxMaterials = 1024;
   };
 

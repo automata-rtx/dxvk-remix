@@ -3316,7 +3316,7 @@ namespace dxvk {
     // fine. Both directions are reported now, and both print the two numbers, because
     // "your builds do not match" without saying which side is behind still costs the
     // rebuild-and-see round it exists to prevent.
-    constexpr int kRequiredProtocol = 16;
+    constexpr int kRequiredProtocol = 17;
     const int gameProtocol = DusklightEnv::protocol();
     const bool gameTooOld = feedLive && gameProtocol < kRequiredProtocol;
     const bool remixTooOld = feedLive && gameProtocol > kRequiredProtocol;
@@ -3523,18 +3523,6 @@ namespace dxvk {
         "An effect earns a light when it is being drawn, blends additively, and its colour reads as a "
         "glow - saturated OR near white hot. These are the two halves of that last test.");
 
-      if (DusklightGame::effectLights() && DusklightGame::localLights()) {
-        // Both on is a legitimate comparison to make deliberately. Inheriting it is not: anyone
-        // who tuned the old mirror has localLights = True saved in their rtx.conf, and the first
-        // launch after this landed gives every fire two lights - one of them in the old, wrong
-        // place. That reads as the new placement being broken, which is the one conclusion the
-        // screenshot cannot distinguish.
-        ImGui::TextWrapped(
-          "Both light systems are on, so every fire has two lights and one of them is in the "
-          "position this system exists to stop using. If you did not mean to compare them, turn "
-          "off Local Point Lights below - it stays enabled from a saved config.");
-      }
-
       if (feedLive) {
         // The chain, in the order a light can be lost: alive -> drawn in a world pass -> passed the
         // rule -> merged into a site -> reached Remix. Printing all of it means the step something
@@ -3596,46 +3584,6 @@ namespace dxvk {
         "so this is what shows a short-lived effect stealing a torch's light.\n"
         "TRACE: a rolling window of how each light changed over the last few seconds. It is "
         "RETROSPECTIVE - do the thing you want to look at first, THEN press this.");
-      ImGui::Unindent();
-    }
-
-    if (RemixGui::CollapsingHeader("Local Point Lights (comparison)", collapsingHeaderClosedFlags)) {
-      ImGui::Indent();
-      ImGui::TextWrapped(
-        "The previous system: the game's registered lights, mirrored where the game put them. Kept as "
-        "the comparison path - turning this on and Effect Lights off reproduces the old behaviour, "
-        "which is the only way to judge whether a placement improved. Running both gives every fire "
-        "two lights, one of them in the wrong place.");
-      RemixGui::Checkbox("Local Lights Enabled", &DusklightGame::localLightsObject());
-      RemixGui::DragFloat("Local Intensity##dusklight", &DusklightGame::localLightIntensityObject(), 0.05f, 0.f, 32.f, "%.2f");
-      RemixGui::DragFloat("Local Radius##dusklight", &DusklightGame::localLightRadiusObject(), 0.1f, 0.5f, 64.f, "%.1f units");
-
-      if (feedLive) {
-        ImGui::Text("Registered by the game: %d   drawn this frame: %d   tracked: %d",
-                    DusklightEnv::localLightsFound(), DusklightEnv::localLightsDrawn(),
-                    DusklightEnv::localLightsTracked());
-
-        // Zero drawn has three quite different causes and they are indistinguishable from the
-        // count alone, so the two states that separate them are spelled out rather than left to
-        // be inferred.
-        if (!DusklightEnv::localLightsRunning()) {
-          ImGui::TextWrapped(
-            "The game is not running its light submission at all, so nothing here can reach Remix. "
-            "Either this switch is not reaching the game, or its D3D9 device never registered - the "
-            "Bridge section above says which.");
-        } else if (DusklightEnv::localLightsFound() == 0) {
-          ImGui::TextWrapped(
-            "The game has no lights registered here at all, so there is nothing to submit. "
-            "Expected in a room lit only by its palette; suspicious if you are stood at a torch.");
-        } else if (DusklightEnv::localLightsDrawn() == 0) {
-          ImGui::TextWrapped(
-            "The game has lights here but none reached Remix, so they are being rejected on the "
-            "way through - by the brightness and reach test, or by CreateLight itself.");
-        }
-      }
-      ImGui::TextWrapped(
-        "Radius changes brightness as well as softness: the radiance is solved so the light still "
-        "reaches the same distance, so a larger emitter needs less of it.");
       ImGui::Unindent();
     }
 

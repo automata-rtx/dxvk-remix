@@ -1153,20 +1153,22 @@ namespace dxvk {
             tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
             tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(RtxOptions::emissiveBlendOverrideEmissiveIntensity());
             tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
-          // enable() gates the WHOLE path, not just the patch at the bottom.
-          //
+          } else if (DusklightEmissive::enable() &&
+                     dusklightEmissive::isCandidate(drawCall.getMaterialData())) {
+            // enable() gates the WHOLE path, not just the patch at the bottom.
+            //
             // It used to gate only the application, so turning emissive off still ran isCandidate,
             // candidateColor, accepts and logOnce on every draw - the feature was off and all of
-            // its work still happened, dusklight.emis lines and all. On 2026-08-16 that made a
-            // crash bisect lie: emissive was switched off in the panel, the crash survived, the
-            // log still showed dusklight.emis as the last line before the fault, and the path was
-            // wrongly ruled out on the strength of a switch that had not switched anything off.
+            // its work still happened, dusklight.emis lines and all. On 2026-08-16 that cost a
+            // round of the Kakariko crash bisect: emissive was switched off in the panel, the
+            // crash survived, and the path was ruled out on the strength of a switch that had not
+            // switched anything off. (What the log's tail actually shows is recorded in
+            // dusklight-ao/docs/remix-open-issues.md, and it is not a dusklight.emis line - the
+            // point here is that the switch was inert, not that the log accused this path.)
             //
             // An option named enable must decide whether the code runs. The cost is that candidate
             // logging no longer happens while the feature is off, which was the reason it was
             // written this way; that is worth losing to make the switch mean what it says.
-          } else if (DusklightEmissive::enable() &&
-                     dusklightEmissive::isCandidate(drawCall.getMaterialData())) {
             // Dusklight: aurora scored what GX says about this surface. Where to
             // cut is a judgement, so it lives in rtx_dusklight_emissive.h - one
             // place, dialable live from the F1 overlay.
@@ -1174,11 +1176,16 @@ namespace dxvk {
             const Vector3 emissiveColor = dusklightEmissive::candidateColor(legacy);
             const bool accepted = dusklightEmissive::accepts(legacy, emissiveColor);
 
+            // The frame id lets logOnce sample its settings once a frame instead of once
+            // per candidate draw, and debounce the re-report a slider drag triggers.
             dusklightEmissive::logOnce(currentInstance.m_materialDataHash, emissiveColor, accepted,
                                        legacy.getColorTexture().getImageHash(),
-                                       dusklightEmissive::evidenceScore(legacy), legacy);
+                                       dusklightEmissive::evidenceScore(legacy), legacy,
+                                       m_device->getCurrentFrameId());
 
-            if (accepted && DusklightEmissive::enable()) {
+            // enable() is already required by the else-if above; re-reading it here was a
+            // second lock acquisition for a value that cannot be false at this point.
+            if (accepted) {
               tmpMaterialData = *materialData;
               materialData = &tmpMaterialData;
               tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
@@ -1273,8 +1280,20 @@ namespace dxvk {
           Matrix4 waterTransform;
           waterTransform[0][0] = tiling;
           waterTransform[1][1] = tiling;
-          waterTransform[3][0] = std::fmod(scroll.x, 1.0f) * tiling;
-          waterTransform[3][1] = std::fmod(scroll.y, 1.0f) * tiling;
+          // The wrap is mod 1 in TEXTURE space, so it has to be taken after the tiling
+          // multiply: the mapping is (u + scroll) * tiling, whose translation term is
+          // scroll * tiling, and the texture's period is 1 there. Wrapping before the
+          // multiply - which this did until 2026-08-16 - wraps in pre-tiling space, so
+          // every time scroll crossed an integer the texture-space offset jumped by
+          // `tiling`, invisible only while uvTiling is a whole number (its default is 1).
+          // Bounded rather than unbounded on purpose: it keeps the translation in (-1, 1)
+          // instead of growing with the session, and it assumes wrap addressing, which is
+          // the assumption the original expression already made by wrapping at all.
+          // NOT fixed here: timeSeconds itself resets at the 2^24 ms mask above, and
+          // 16777.216 * 0.02 is not an integer, so the phase still snaps once every
+          // ~4.66 hours under either expression.
+          waterTransform[3][0] = std::fmod(scroll.x * tiling, 1.0f);
+          waterTransform[3][1] = std::fmod(scroll.y * tiling, 1.0f);
 
           currentInstance.surface.textureTransform = waterTransform;
           currentInstance.surface.texcoordElementCount = 2;

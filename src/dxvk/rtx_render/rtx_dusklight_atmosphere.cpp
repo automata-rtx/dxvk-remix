@@ -157,7 +157,23 @@ namespace dxvk {
     return enable() && DusklightEnv::enable();
   }
 
-  void DxvkDusklightAtmosphere::releaseTargetResource() {
+  // Released on a genuine enable/disable transition only. This was releaseTargetResource() until
+  // 2026-08-16, and RtxPass calls that hook from onTargetResize() as well
+  // (`if (m_isActive) { releaseTargetResource(); createTargetResource(...); }`), while this class
+  // overrides no createTargetResource - so any change of target extent threw away the sky image,
+  // both lookup tables and the stats ring, none of which depend on the target extent. prepareSceneData
+  // rebuilds them, but it also forces a lookup table regeneration (m_lutSkyColor is reset below) and
+  // restarts the readback ring, so the fog fell back to the game's palette colour after every
+  // resolution or upscaler change - for the first kMaxFramesInFlight frames on which the stats pass
+  // then ran. That count is the gate `m_skyStatsFramesActive > kMaxFramesInFlight` read against a
+  // counter this function resets to 0 and the pass pre-increments on each frame it runs, so the
+  // frames on which it holds are counter values 1..kMaxFramesInFlight. Stated as the mechanism
+  // rather than as a bare number because a reader checking it has to know which end the increment is
+  // on. Read from the code and from rtx_resources.cpp; not measured, and not tested in game.
+  //
+  // Regression signature if this ends up on the wrong hook: not anything visible in the image, but a
+  // live image view surviving into shutdown and a validation-layer complaint at device destroy.
+  void DxvkDusklightAtmosphere::onDeactivation() {
     m_skyTexture.reset();
     m_skyTextureIndex = UINT32_MAX;
     m_transmittanceLut.reset();
@@ -882,8 +898,10 @@ namespace dxvk {
 
     Rc<DxvkContext> baseCtx = ctx;
 
-    // Created once and kept for the life of the device: the dome light holds a bindless index into
-    // this image, and losing it for even a single frame drops the sky back to Remix's own probe.
+    // Created on demand and then kept until the pass deactivates - in particular it survives a
+    // target resize, which is what onDeactivation above is for. The dome light holds a bindless
+    // index into this image, and losing it for even a single frame drops the sky back to Remix's
+    // own probe.
     if (m_skyTexture.image == nullptr) {
       m_skyTexture = Resources::createImageResource(
         baseCtx, "dusklight sky", VkExtent3D { kSkyWidth, kSkyHeight, 1 },

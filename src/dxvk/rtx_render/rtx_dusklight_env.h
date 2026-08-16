@@ -295,20 +295,12 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, bindKeyboard, false, RtxOptionFlags::NoSave,
                     "True when the selected port is driven by a keyboard, which is what decides whether a bind is a scancode or a gamepad button.");
 
-    RTX_OPTION_FLAG("rtx.dusklight.env", bool, localLightsRunning, false, RtxOptionFlags::NoSave,
-                    "True when the game got past every gate and actually ran its light submission loop. Written by the game's kankyo bridge.\n"
-                    "Without this an option that reads false and an area with no lights in it are indistinguishable from the other side, since both report zero.");
-    RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsFound, 0, RtxOptionFlags::NoSave,
-                    "How many point lights the game itself had registered this frame, before any filtering on our side. Written by the game's kankyo bridge.\n"
-                    "This is what tells a room with no lights in it apart from a bridge that is failing to submit them - two states that otherwise both read as "
-                    "zero drawn, which is what made the first attempt at this hard to diagnose.");
-    RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsDrawn, 0, RtxOptionFlags::NoSave,
-                    "How many of the game's own point lights were submitted to Remix this frame. Written by the game's kankyo bridge.");
-    RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsTracked, 0, RtxOptionFlags::NoSave,
-                    "How many of the game's own point lights currently hold a live Remix light. Written by the game's kankyo bridge.");
+    // The four localLights* readouts were removed at protocol 17 (2026-08-16) along with the
+    // mirror itself. They reported a system superseded on 2026-08-06 whose A/B had been run
+    // and decided; see rtx_dusklight_game.h's effectLights for what replaced it.
 
-    // Room lights - the room's own authored lights. found vs drawn is the same separation the
-    // mirror above needed; shaped vs unshapeable is the pair that answers the cone question,
+    // Room lights - the room's own authored lights. found vs drawn is the separation the
+    // retired mirror also needed; shaped vs unshapeable is the pair that answers the cone question,
     // which nothing in this project has ever been able to answer by reading, because the data
     // lives in the game's stage files rather than in its source.
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, roomLightsRunning, false, RtxOptionFlags::NoSave,

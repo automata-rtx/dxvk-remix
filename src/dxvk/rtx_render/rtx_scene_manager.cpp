@@ -48,6 +48,9 @@
 #include "dxvk_scoped_annotation.h"
 #include "rtx_lights_data.h"
 #include "rtx_dusklight_water.h"
+// matrep::blendName - the same named blend classification the matrep.rmx line carries, so
+// dusklight.water's blend= field reads as a word and joins against it for the same draw.
+#include "../../d3d9/d3d9_rtx_matrep.h"
 #include "rtx_light_utils.h"
 
 #include "../util/util_global_time.h"
@@ -61,6 +64,29 @@ namespace {
     const uintptr_t meshId = reinterpret_cast<uintptr_t>(mesh);
     return XXH3_64bits(&meshId, sizeof(meshId));
   }
+
+  // State for the two camera-cut diagnostic lines in SceneManager::prepareSceneData
+  // ([Dusklight] ommSeed and [Dusklight] postCut). They exist because the 2026-08-16
+  // Kakariko fault happens ~1.5 s after a warp and every question asked about it is a count
+  // that nothing prints, which by this project's rule 2 is a defect in the logging rather
+  // than a question for the owner.
+  //
+  // A warp is rare, so 16 of each covers an ordinary session; both say so when they stop
+  // rather than falling silent. Single-writer, like every other bounded Dusklight log here:
+  // prepareSceneData runs on the CS thread.
+  constexpr uint32_t kMaxCutReports = 16;
+  // How long after a cut the post-cut line samples. The cut frame's own counts describe the
+  // area being torn down (the frame ends in clear(ctx, true)), so this waits for the new one
+  // to have been built. 60 frames is about a second; nothing depends on the exact number.
+  constexpr uint32_t kPostCutReportDelayFrames = 60;
+
+  uint32_t s_ommSeedReports = 0;
+  bool s_ommSeedReportsTruncated = false;
+  uint32_t s_postCutReports = 0;
+  bool s_postCutReportsTruncated = false;
+  bool s_postCutPending = false;
+  uint32_t s_postCutCutFrame = 0;
+  uint32_t s_postCutTargetFrame = 0;
 } // namespace
 
 namespace dxvk {
@@ -900,9 +926,18 @@ namespace dxvk {
           // The size Remix actually got. Aurora uploads at the GX texture's native size, so
           // a small number here is the game's own art, not a loss in the pipeline.
           " tex=", texWidth, "x", texHeight,
-          " blend=", input.getMaterialData().blendMode.enableBlending,
-          " blendSrcDst=", static_cast<uint32_t>(input.getMaterialData().blendMode.colorSrcFactor),
+          // Named first, raw second. blend= is matrep::blendName, the same classification
+          // the matrep.rmx line prints for the draw, so the two logs join on one word
+          // instead of on a pair of VkBlendFactor integers nobody can read without
+          // vulkan_core.h open - and "off" already carries enableBlending, which is why
+          // that field is gone rather than duplicated. blendRaw= keeps src,dst,op so a
+          // pass that classifies as "other" still says exactly what it was, which is what
+          // the open MA06 question above needs; the op is in it because additive and
+          // reverse-subtract differ only there and it was not printed at all before.
+          " blend=", matrep::blendName(input.getMaterialData().blendMode),
+          " blendRaw=", static_cast<uint32_t>(input.getMaterialData().blendMode.colorSrcFactor),
           ",", static_cast<uint32_t>(input.getMaterialData().blendMode.colorDstFactor),
+          ",", static_cast<uint32_t>(input.getMaterialData().blendMode.colorBlendOp),
           " alphaTest=", input.getMaterialData().alphaTestEnabled));
       }
 
@@ -2266,11 +2301,13 @@ namespace dxvk {
       m_lastResolvedStartInMediumMaterialIndexInCache = m_startInMediumMaterialIndex_inCache;
     }
 
+    bool cameraCutThisFrame = false;
     if (m_cameraManager.isCameraCutThisFrame()) {
       // Ignore camera cut events on teleportation so we don't flush the caches
       if (!didTeleport) {
         Logger::info(str::format("Camera cut detected on frame ", m_device->getCurrentFrameId()));
         m_enqueueDelayedClear = true;
+        cameraCutThisFrame = true;
       }
     }
 
@@ -2279,14 +2316,88 @@ namespace dxvk {
       if (!m_opacityMicromapManager.get() || 
           // Reset the manager on camera cuts
           m_enqueueDelayedClear) {
-        if (m_opacityMicromapManager.get())
+        // Distinguishes the camera-cut recreate from the ordinary first enable. Only the
+        // first has an old manager to tear down, and m_enqueueDelayedClear is set in
+        // exactly one place - the camera cut above.
+        const bool recreatingExistingManager = m_opacityMicromapManager.get() != nullptr;
+
+        if (recreatingExistingManager) {
+          // Do what the disable branch below does, for the same reason: destroying the
+          // manager destroys every micromap the accel manager's cached buckets and pooled
+          // BLASes are bound to. invalidateOpacityMicromapBindings() sets m_ommBindPending,
+          // which is the only thing that forces every bucket dirty
+          // (rtx_accel_manager.cpp), and notifySceneChanged() bumps the generation the
+          // full-skip fast path compares. Without them, mergeInstancesIntoBlas - called
+          // from this same prepareSceneData, a few lines below - is free to restore clean
+          // cached buckets whose BLASes still reference the manager just destroyed.
+          //
+          // The frame AFTER a cut is already covered: onFrameEnd runs clear(ctx, true),
+          // which resets the accel manager's generation and drops its bucket cache. This is
+          // a one-frame hazard, which makes it hard to reproduce rather than less real.
+          //
+          // INFERENCE, NOT FINDING: this asymmetry is consistent with the 2026-08-16
+          // Kakariko camera-cut fault, and consistency is not evidence. No fault was traced
+          // to it. What is verified is only that the two branches did different cleanup for
+          // the same destruction. For what the crash log's tail actually contains - the warp
+          // itself, "Camera cut detected", "Opacity Micromap: enabled", "NRC Context
+          // initialized", the "[Dusklight] fog:" state, then the fault - see
+          // dusklight-ao/docs/remix-open-issues.md. Two lines follow the OMM one, so "the log
+          // ends here" would be false; what is true is that the fault is inside the window
+          // this branch opens.
+          m_accelManager.invalidateOpacityMicromapBindings();
+          m_instanceManager.notifySceneChanged();
           m_instanceManager.removeEventHandler(m_opacityMicromapManager.get());
+        }
 
         m_opacityMicromapManager = std::make_unique<OpacityMicromapManager>(m_device);
         m_instanceManager.addEventHandler(m_opacityMicromapManager->getInstanceEventHandler());
         // Seed candidates with instances that were added before the event handler was registered
         m_opacityMicromapManager->seedCandidates(m_instanceManager.getInstanceTable());
-        Logger::info("[RTX] Opacity Micromap: enabled");
+
+        // What the new manager was seeded from. Only two of the questions the camera-cut
+        // investigation asks can be answered at this instant - whether the table it seeded
+        // from held instances with no BLAS, and how many were renderer-created - and
+        // neither is observable otherwise. Everything else that was proposed for this line
+        // (light counts, draw counts) describes the OUTGOING area: the cut frame ends in
+        // clear(ctx, true), so the scene these instances belong to is about to be dropped.
+        // The post-cut line further down is the one that measures the new area.
+        //
+        // The walk is O(instances) on a frame that is already rebuilding the whole OMM
+        // manager, and it is capped, so it does not need an option of its own to hide
+        // behind.
+        if (s_ommSeedReports < kMaxCutReports) {
+          ++s_ommSeedReports;
+          size_t instancesWithoutBlas = 0;
+          size_t instancesFromRenderer = 0;
+          for (const RtInstance* instance : m_instanceManager.getInstanceTable()) {
+            if (instance->getBlas() == nullptr) {
+              ++instancesWithoutBlas;
+            }
+            if (instance->isCreatedByRenderer()) {
+              ++instancesFromRenderer;
+            }
+          }
+          Logger::info(str::format(
+            "[Dusklight] ommSeed frame=", m_device->getCurrentFrameId(),
+            " cameraCut=", recreatingExistingManager ? 1 : 0,
+            " instances=", m_instanceManager.getInstanceTable().size(),
+            " noBlas=", instancesWithoutBlas,
+            " rendererMade=", instancesFromRenderer,
+            " - the scene being torn down, not the one after the cut"));
+        } else if (!s_ommSeedReportsTruncated) {
+          s_ommSeedReportsTruncated = true;
+          Logger::info(str::format("[Dusklight] ommSeed.trunc cap=", kMaxCutReports,
+                                   " - further seed reports not printed"));
+        }
+
+        // Two calls rather than one with a ternary format argument: the two states are
+        // indistinguishable in a log otherwise, and this block is the last thing the
+        // 2026-08-16 crash log printed before the fault.
+        if (recreatingExistingManager) {
+          Logger::info("[RTX] Opacity Micromap: recreated on camera cut, OMM bindings invalidated");
+        } else {
+          Logger::info("[RTX] Opacity Micromap: enabled");
+        }
       }
     } else if (m_opacityMicromapManager.get()) {
       m_accelManager.invalidateOpacityMicromapBindings();
@@ -2294,6 +2405,62 @@ namespace dxvk {
       m_instanceManager.removeEventHandler(m_opacityMicromapManager.get());
       m_opacityMicromapManager = nullptr;
       Logger::info("[RTX] Opacity Micromap: disabled");
+    }
+
+    // One line per camera cut, sampled kPostCutReportDelayFrames later, describing the area
+    // the cut brought IN. Deliberately outside the opacity micromap block above: the standing
+    // recommendation for the 2026-08-16 Kakariko fault is to re-run with
+    // rtx.opacityMicromap.enable off, and a diagnostic that vanishes under the test it exists
+    // to be compared against answers nothing. omm= says which run this line came from.
+    //
+    // A second cut inside the window re-arms the latch, so a rapid pair of warps reports once,
+    // for the later one. The instance walk lands on an ordinary frame rather than one already
+    // rebuilding the OMM manager, so unlike the ommSeed walk above it is not free - a few
+    // thousand pointer tests, once, on at most kMaxCutReports frames of a session.
+    //
+    // WHAT THIS CANNOT DO, stated so the next session does not over-read it: that these counts
+    // will in fact separate the leading hypotheses is INFERENCE. What is verified is only that
+    // they are not observable today and that they describe the area that faults rather than the
+    // one that was left. The API light count is not here because LightManager exposes no
+    // accessor for m_externalLights; adding one is a separate change to rtx_light_manager.h.
+    //
+    // The light count is a frame behind, and the field name says so. m_lightManager
+    // .prepareSceneData is called further down this same function and is what zeroes and
+    // rebuilds m_currentActiveLightCount (rtx_light_manager.cpp:336), so getActiveCount()
+    // here returns the value that frame N-1 finished with. That is harmless for a line
+    // sampled kPostCutReportDelayFrames after a cut - by then it is the settled count either
+    // way - but "activeLights=" reading as this frame's state is the kind of quiet
+    // approximation the ommSeed note above went to some length to avoid.
+    {
+      const uint32_t currentFrameId = m_device->getCurrentFrameId();
+      if (cameraCutThisFrame) {
+        s_postCutPending = true;
+        s_postCutCutFrame = currentFrameId;
+        s_postCutTargetFrame = currentFrameId + kPostCutReportDelayFrames;
+      } else if (s_postCutPending && currentFrameId >= s_postCutTargetFrame) {
+        s_postCutPending = false;
+
+        if (s_postCutReports < kMaxCutReports) {
+          ++s_postCutReports;
+          size_t instancesWithoutBlas = 0;
+          for (const RtInstance* instance : m_instanceManager.getInstanceTable()) {
+            if (instance->getBlas() == nullptr) {
+              ++instancesWithoutBlas;
+            }
+          }
+          Logger::info(str::format(
+            "[Dusklight] postCut frame=", currentFrameId,
+            " sinceCut=", currentFrameId - s_postCutCutFrame,
+            " instances=", m_instanceManager.getInstanceTable().size(),
+            " noBlas=", instancesWithoutBlas,
+            " activeLightsPrevFrame=", m_lightManager.getActiveCount(),
+            " omm=", m_opacityMicromapManager.get() != nullptr ? "on" : "off"));
+        } else if (!s_postCutReportsTruncated) {
+          s_postCutReportsTruncated = true;
+          Logger::info(str::format("[Dusklight] postCut.trunc cap=", kMaxCutReports,
+                                   " - further post-cut reports not printed"));
+        }
+      }
     }
 
     RtxParticleSystemManager& particles = m_device->getCommon()->metaParticleSystem();

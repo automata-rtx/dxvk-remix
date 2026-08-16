@@ -142,33 +142,12 @@ namespace dxvk {
                "game has a word for the projected class and calls it \"riaru kage\" (real shadow) in its own debug "
                "labels, but it has no name at all for the simple class - \"blob shadow\" is this project's coinage.");
 
-    // Local point lights - superseded 2026-08-06 by rtx.dusklight.game.effectLights, kept as
-    // the comparison path. Its description has to say so: this option's tooltip and its row in
-    // RtxOptions.md are where somebody setting the game up will read about it, and until
-    // 2026-08-07 both still told them to turn it on.
-    RTX_OPTION("rtx.dusklight.game", bool, localLights, false,
-               "Mirrors the point lights the game's ACTORS register - torches, braziers, lanterns, campfires, Midna, bomb flashes - into Remix as sphere "
-               "lights, at the positions the game gave them.\n"
-               "It does not cover the lights a room is authored with; those are a separate registry with its own switch, rtx.dusklight.game.roomLights. "
-               "(This description used to say it covered \"the dungeon lights\", which read as if it did.)\n"
-               "SUPERSEDED by rtx.dusklight.game.effectLights, which is on by default. Those positions are the problem: a GameCube point light casts no "
-               "shadow, so the artists could put one wherever the shading looked best - offset from the flame, sunk into geometry, one light standing in "
-               "for three - and none of it reads as wrong until a path tracer casts a real shadow from the exact point it occupies. The replacement puts "
-               "the light at the origin of the effect that draws the fire and keeps only the game's colour and reach.\n"
-               "Kept so the two can be compared. Running both gives every fire two lights, one of them in the old place - which looks exactly like the new "
-               "placement being broken, so the Dusklight tab warns when both are on.");
-    RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightIntensity, 19.0f,
-                    "Scales the game's local lights. Applies to the superseded mirror only - the equivalent for effect lights is "
-                    "rtx.dusklight.game.effectLightDerivedIntensity, which starts from this same 19 and for the same reason.\n"
-                    "At 1.0 each light is as bright as Remix's own conversion would make a legacy light that reached exactly as far as the game's "
-                    "influence radius. That reading is too conservative, because the radius is not where the light ends: the game loads its attenuation "
-                    "so that the radius is where brightness falls to about a ninth of peak, and the curve carries roughly four times further. Applying "
-                    "Remix's own end threshold to that curve instead gives about 19, and testing picked the same number independently as the least that "
-                    "lights a room usefully.\n"
-                    "Set together with rtx.dusklight.game.localLightRadius: the radiance is solved so the light still reaches the same distance, so a "
-                    "larger emitter needs less of it and changing one alone moves brightness as well as softness.",
-                    args.minValue = 0.0f,
-                    args.maxValue = 32.0f);
+    // The local point-light mirror (localLights, localLightIntensity, localLightRadius) was
+    // REMOVED at protocol 17, 2026-08-16. It was superseded on 2026-08-06 by effectLights
+    // below, kept only so the two could be A/B'd, and that comparison has been run and
+    // decided - effect lights were tested in game on 2026-08-07 and merged. Keeping it cost a
+    // whole submission path in the game's bridge, four env readouts, an overlay section, and
+    // one of the two option combinations a test session had to remember to avoid.
     RTX_OPTION("rtx.dusklight.game", bool, disableFrustumCulling, false,
                "Stops the game discarding geometry that falls outside the camera's view.\n"
                "The game culls aggressively because a rasterizer has no use for what it cannot see. A path tracer does: a wall dropped because the camera "
@@ -278,21 +257,13 @@ namespace dxvk {
                "It is a game setting rather than a Remix one, and the game's settings screen is not drawn in the fixed function D3D9 mode, so without this it "
                "can only be changed by editing config.json and restarting - and only in one direction, since a value set there could not be turned back off "
                "while running.");
-    RTX_OPTION_ARGS("rtx.dusklight.game", float, localLightRadius, 10.0f,
-                    "Emitter radius of the game's local lights in world units.\n"
-                    "This changes brightness as well as softness: the radiance is solved so the light still reaches the same distance, so a larger "
-                    "emitter needs less of it. Large radii on lights sitting inside wall sconces will clip through the geometry, which is what bounds "
-                    "this from above - 10 was tested against the Forest Temple light posts and clears them.",
-                    args.minValue = 0.5f,
-                    args.maxValue = 64.0f);
-
-    // Room lights - the room's OWN authored lights, a third registry from either of the two
-    // above and the only one in the game that carries a cone. Off by default until one log says
+    // Room lights - the room's OWN authored lights, a separate registry from the actor lights
+    // the effect system reads, and the only one in the game that carries a cone. Off by default until one log says
     // whether they double-count with the effect lights. dusklight-ao/docs/effect-lights.md 8.1.
     RTX_OPTION("rtx.dusklight.game", bool, roomLights, false,
                "Forwards the lights the room itself was built with - the ones in its stage file, placed by whoever laid the room out - into Remix as sphere "
                "lights, with their cones.\n"
-               "These are NOT the torches and lanterns rtx.dusklight.game.localLights mirrors. Those are registered by actors; these are authored per room, "
+               "These are NOT the torches and lanterns the effect lights cover. Those come from actors and from the effects that draw them; these are authored per room, "
                "are what lights a dungeon corridor with no fire in it, and are the only lights in the game with a direction and a cutoff angle at all. "
                "Nothing in this project read them until now.\n"
                "OFF BY DEFAULT, and the reason is the same one that turned the local light mirror off: these are authored positions, and a GameCube light "
@@ -302,8 +273,8 @@ namespace dxvk {
                "sensible then the placements do not survive the path tracer and the honest answer is to leave this off.");
     RTX_OPTION_ARGS("rtx.dusklight.game", float, roomLightIntensity, 19.0f,
                     "Scales the room's authored lights.\n"
-                    "Starts at the same 19 as rtx.dusklight.game.localLightIntensity, but for a weaker reason. That one converts a radius the game really "
-                    "does treat as a reach. This one starts from the room light's authored radius, which the game loads into its hardware with a reference "
+                    "Starts at the same 19 as rtx.dusklight.game.effectLightDerivedIntensity, but for a weaker reason. That one converts a radius the game "
+                    "really does treat as a reach. This one starts from the room light's authored radius, which the game loads into its hardware with a reference "
                     "brightness of 0.99999 - so the light is still at full strength AT that radius and would need thousands of times it to fade out. In "
                     "other words the original room lights barely fall off at all, and the number here is a nominal size being used as a reach because it is "
                     "the only distance the authors wrote down.\n"
@@ -313,7 +284,7 @@ namespace dxvk {
                     args.maxValue = 64.0f);
     RTX_OPTION_ARGS("rtx.dusklight.game", float, roomLightRadius, 10.0f,
                     "Emitter radius of the room's authored lights in world units.\n"
-                    "Changes brightness as well as softness, the same way rtx.dusklight.game.localLightRadius does: the radiance is solved so the light "
+                    "Changes brightness as well as softness, the same way rtx.dusklight.game.effectLightRadiusScale does: the radiance is solved so the light "
                     "still reaches the same distance, so a larger emitter needs less of it.",
                     args.minValue = 0.5f,
                     args.maxValue = 64.0f);
@@ -337,7 +308,8 @@ namespace dxvk {
                "no shadow. Under a path tracer the same placement is visibly wrong: the shadow comes from a point that is not the fire. This reads the "
                "emitter table instead - the game already decides every frame where fire exists and whether it is on - and keeps only the colour and reach "
                "from whatever light was authored nearby.\n"
-               "Not meant to run together with rtx.dusklight.game.localLights: every fire would get two lights, one of them in the wrong place.");
+               "The mirror this replaced (localLights) was removed at protocol 17; running both used to give every fire two lights, one of them in the "
+               "wrong place, which looked exactly like this system being broken.");
     // THE THREE GLOBAL MULTIPLIERS - one per value this system derives from the game, all
     // defaulting to 1.0, all applied at one point to both the derived and the undetermined
     // branch. They exist so a value the artists authored can be corrected without a rebuild

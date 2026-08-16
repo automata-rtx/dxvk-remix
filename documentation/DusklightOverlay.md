@@ -48,7 +48,7 @@ readout that never changes is *not* evidence the push is dead.
 
 **Protocol version.** The game pushes `rtx.dusklight.env.protocol`. Remix
 compares it against a `kRequiredProtocol` constant and names the older side in
-the tab. **Currently 16.**
+the tab. **Currently 17.**
 
 **Both directions are reported, as of 2026-08-11; until then only one was.** The
 check was `protocol() < kRequiredProtocol`, so a game *newer* than the DLL fell
@@ -554,7 +554,7 @@ practice: the **commit counter** (a preset pressed twice works the second time)
 and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
-**Protocol is at 16** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach` - **retired at 14**, see below, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers`, `colpatPrev`/`colpatBlend`, the three background alphas `bgWaterAlpha`/`bgAuxAlpha`/`bgFakeFogAlpha` **and** the six `roomLights*` readouts, 14 = the effect-light vocabulary rework: `effectLightReachScale`, `effectLightRadiusScale`, `effectLightAuthoredColor`, `effectLightAuthoredRadius`, the four `effectLightLantern*` options and the `effLightsAuthored`/`effLightsClasses` readouts, 15 = the Shadow Insect spark: `effectLightSparks`, `effectLightSparkHold` and the `effLightsSparks` readout, 16 = the Mods tab: `modsRunning`, `modCount` and `modList` outbound, `modsEnabled` inbound). `kRequiredProtocol`
+**Protocol is at 17** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach` - **retired at 14**, see below, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers`, `colpatPrev`/`colpatBlend`, the three background alphas `bgWaterAlpha`/`bgAuxAlpha`/`bgFakeFogAlpha` **and** the six `roomLights*` readouts, 14 = the effect-light vocabulary rework: `effectLightReachScale`, `effectLightRadiusScale`, `effectLightAuthoredColor`, `effectLightAuthoredRadius`, the four `effectLightLantern*` options and the `effLightsAuthored`/`effLightsClasses` readouts, 15 = the Shadow Insect spark: `effectLightSparks`, `effectLightSparkHold` and the `effLightsSparks` readout, 16 = the Mods tab: `modsRunning`, `modCount` and `modList` outbound, `modsEnabled` inbound, 17 = the local-light mirror **removed** - the four `localLights*` readouts go, and `hideStarBillboards` becomes live after being an inert checkbox since it was added). `kRequiredProtocol`
 lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
 
 > **13 covers everything on its session branch, and was taken once.**

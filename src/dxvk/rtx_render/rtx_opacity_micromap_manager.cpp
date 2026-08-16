@@ -695,8 +695,33 @@ namespace dxvk {
   }
 
   void OpacityMicromapManager::seedCandidates(const std::vector<RtInstance*>& instances) {
+    // Fork change, 2026-08-16: also filter isCreatedByRenderer(), which is the filter
+    // processOmmCandidates applies when it walks the instance table. This is the only one of the
+    // three insertion points into m_ommCandidates that was not already downstream of it - the other
+    // two (keepCandidateForRetry, and the retryCandidates loop at the end of processOmmCandidates)
+    // draw from a list that was built after that filter had run.
+    //
+    // It matters because a renderer-created instance - the view model and player model copies
+    // createInstanceCopy makes - is exactly the kind whose death is never announced:
+    // InstanceManager::removeInstance returns before invoking the onInstanceDestroyed handlers for
+    // them, by design and with a comment saying so. Nothing then erases such an entry, so the set
+    // could hold a pointer to a freed instance.
+    //
+    // What this is and is not: it closes a real lifetime hole in the set's invariant. It is NOT
+    // established as fixing any observed fault, and must not be written up as one. On the ordinary
+    // path processOmmCandidates sweeps those same entries out later in the SAME prepareSceneData
+    // call, while the instances are still alive, so the window only opens when that pass is skipped
+    // for the seeding frame. Both of its call sites are in AccelManager::mergeInstancesIntoBlas and
+    // they do not agree, so the window is narrower than "whenever OMMs are inactive": the main path
+    // guards it on isActive(), i.e. a nonzero OMM memory budget, while the scene-unchanged fast-skip
+    // path earlier in the same function ("Process deferred OMM candidates even when the scene is
+    // static") calls it unguarded whenever the manager exists. A frame taking the fast path
+    // therefore sweeps regardless. The
+    // entries are only ever used as hash keys and are never dereferenced, so the stale pointer is
+    // defined behaviour with one observable consequence: a new instance landing on a freed address
+    // is mistaken for an existing candidate. Read from the code; not measured, not tested in game.
     for (RtInstance* inst : instances) {
-      if (inst && !inst->isMarkedForGC()) {
+      if (inst && !inst->isMarkedForGC() && !inst->isCreatedByRenderer()) {
         m_ommCandidates.insert(inst);
       }
     }

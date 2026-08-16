@@ -75,6 +75,18 @@ namespace dxvk {
   // to represent something such as a new light index.
   static_assert(LIGHT_INDEX_INVALID == kNewLightIdx, "New light index must match invalid light sentinel value");
 
+  namespace {
+    // Diagnostic state for the external-light index retirement sweep at the end of
+    // prepareSceneData. File scope rather than members, the same way rtx_scene_manager.cpp's
+    // cut reports are: it keeps this fork change off LightManager's declaration and therefore
+    // out of the rebase surface. One device in practice; a second would share the cap, which
+    // for a frequency question is acceptable and is said here rather than left to be found.
+    constexpr uint32_t kMaxExternalRetireReports = 4;
+    uint32_t s_externalRetireFrames = 0;
+    uint32_t s_externalRetireReports = 0;
+    bool s_externalRetireTruncated = false;
+  }
+
   LightManager::LightManager(DxvkDevice* device)
     : CommonDeviceObject(device) {
   }
@@ -431,10 +443,25 @@ namespace dxvk {
         //
         // The else branch below resets any light that reached this loop and was skipped, but a
         // light that leaves m_linearizedLights entirely is never reset at all - and an API light
-        // does exactly that whenever DrawLightInstance is not called for it, which for a light
-        // standing in for an effect is an ordinary frame, not an error. Trusting a stale index
-        // writes past the end of the mapping buffer, or maps this light's temporal history onto an
-        // unrelated one.
+        // does exactly that on any frame DrawLightInstance is not called for it.
+        //
+        // Corrected 2026-08-16: this used to add "which for a light standing in for an effect is
+        // an ordinary frame, not an error", which overstates it and contradicts the sweep's own
+        // note at the end of this function. The game's bridge redraws every light it still tracks
+        // every frame, so on the reading of that code the case is rare rather than ordinary - but
+        // it is reachable (the CreateLight-failure path named there), and how often is unmeasured.
+        // The guard is needed either way; only the frequency claim was wrong.
+        //
+        // Two different failures follow from trusting such an index, and they need two guards.
+        // Corrected 2026-08-16: this comment used to claim the range test below covered both. It
+        // covers the first - it is what stops the write past the end of the mapping buffer. It
+        // cannot distinguish an index assigned last frame from an older one that happens to fall in
+        // range, so on its own it does nothing about two lights claiming the same previousBufferIdx,
+        // where the second overwrites the first's mapping entry and then resamples from a reservoir
+        // belonging to whichever light really held the slot. What closes that is the sweep beside
+        // m_externalActiveLightList.clear() at the end of this function, which makes "carries an
+        // index" mean "was written last frame" for external lights by construction rather than by
+        // inference.
         const uint32_t previousBufferIdx =
           (light.getBufferIdx() != kNewLightIdx && light.getBufferIdx() < previousLightActiveCount)
             ? light.getBufferIdx()
@@ -512,6 +539,58 @@ namespace dxvk {
           m_gpuDomeLightArgs.radiance = activeDomeLight.radiance;
           m_gpuDomeLightArgs.worldToLightTransform = activeDomeLight.worldToLight;
         }
+      }
+    }
+
+    // Fork change, 2026-08-16. An external light that was not drawn this frame never entered
+    // m_linearizedLights - that list is gathered from m_externalActiveLightList near the top of this
+    // function - so neither branch of the write loop above touched it, and it still carries the
+    // buffer index it was given on whatever frame it was last drawn. Retiring the index here, while
+    // the list of what was drawn is still available, is what lets the loop above treat "has an index"
+    // as "was written last frame"; see the comment on previousBufferIdx for the aliasing that
+    // otherwise follows. The walk is over a map holding tens of entries and costs nothing measurable.
+    //
+    // How often this fires is NOT known, and the log is built to answer that rather than to
+    // assert it. Reading the game's bridge (dusklight-ao src/dusk/remix_bridge.cpp, the effect
+    // and local light submission loops): each tracked light is redrawn every frame -
+    // DrawLightInstance is called unconditionally after the change test, not only when the light
+    // changed - and a light whose actor is gone is destroyed in the same pass, which removes it
+    // from m_externalLights here. On that reading the sweep should be idle on an ordinary frame.
+    // One exception is visible in the same loops and is not hypothetical: when CreateLight fails
+    // the bridge sets the tracked handle to nullptr and `continue`s past DrawLightInstance, while
+    // the light it created earlier - keyed here by the same stable hash - is still in
+    // m_externalLights and is still marked seen game-side, so it is neither drawn nor destroyed.
+    //
+    // That is read-from-code, not measured, which is why the report below counts FRAMES rather
+    // than latching once: a single ONCE line prints the count from whatever frame it first fired
+    // on and can never say whether that was frame 1 or frame 9000.
+    uint32_t numRetiredExternalLightIndices = 0;
+    for (auto& pair : m_externalLights) {
+      if (pair.second.getBufferIdx() != kNewLightIdx &&
+          m_externalActiveLightList.find(pair.first) == m_externalActiveLightList.end()) {
+        pair.second.setBufferIdx(kNewLightIdx);
+        ++numRetiredExternalLightIndices;
+      }
+    }
+
+    if (numRetiredExternalLightIndices > 0) {
+      // First kMaxExternalRetireReports frames it happens on, then a truncation notice - the same
+      // bounded shape the fog state and cut reports use. frames= is the running total, so the last
+      // line printed still says whether this is a startup artefact or an every-frame path.
+      ++s_externalRetireFrames;
+      if (s_externalRetireReports < kMaxExternalRetireReports) {
+        ++s_externalRetireReports;
+        Logger::info(str::format(
+          "[Dusklight] LightManager retired the buffer indices of ", numRetiredExternalLightIndices,
+          " external API light(s) not drawn this frame, so a stale index cannot be read as last "
+          "frame's and alias another light's RTXDI reservoir. frame=", m_device->getCurrentFrameId(),
+          " framesSoFar=", s_externalRetireFrames));
+      } else if (!s_externalRetireTruncated) {
+        s_externalRetireTruncated = true;
+        Logger::info(str::format(
+          "[Dusklight] LightManager external index retirement reported ", kMaxExternalRetireReports,
+          " times - further frames not reported. A path expected to be idle is not; the count is "
+          "the finding, and the frames above say when it started."));
       }
     }
 

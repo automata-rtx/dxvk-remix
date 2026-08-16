@@ -215,7 +215,7 @@ implying it was tested.
 **The game and this DLL are a single protocol.** The game pushes
 `rtx.dusklight.env.protocol`; this fork compares it against `kRequiredProtocol`
 in `showDusklightRemixTab` (`src/dxvk/imgui/dxvk_imgui.cpp`).
-**Protocol is at 16.** Build both sides from the same commit point, and bump
+**Protocol is at 17.** Build both sides from the same commit point, and bump
 both in the same commit. Skew in either direction has cost an evening twice.
 The Dusklight tab reports which side is old — read it before debugging
 anything else.
@@ -223,8 +223,9 @@ anything else.
 **12 is skipped here and is not free.** It belongs to the unmerged
 `claude/kasumi-naming-correction-w3e204`; 13 was taken beside it rather than on
 top of it, 14 beside both, 15 beside all three (the Shadow Insect spark), and
-**16 beside all four (the Mods tab, 2026-08-15)**.
-The next branch to need a number takes **17** —
+**16 beside all four (the Mods tab, 2026-08-15)**, and **17 beside all four
+again (the local-light mirror removed, 2026-08-16)**.
+The next branch to need a number takes **18** —
 the ladder in `documentation/DusklightOverlay.md` says why, and no script can
 catch reusing 12 because no script can see an unmerged branch.
 
@@ -235,8 +236,11 @@ at the **origin of the JPA effect that draws them** rather than at the position
 of whatever point light the game registered. That distinction is the whole
 system: a GameCube point light casts no shadow, so its position was free to be
 wrong, and a path tracer casts a real shadow from exactly where the light is.
-The old mirror (`rtx.dusklight.game.localLights`) still exists, now defaulting
-**off**, purely so the two can be A/B'd.
+The old mirror (`rtx.dusklight.game.localLights`) was **removed at protocol 17
+on 2026-08-16**: the A/B it was kept for had been run and decided on 2026-08-07,
+and keeping it cost a whole submission path in the game's bridge, four env
+readouts, an overlay section, and one of the two option combinations a test
+session had to remember to avoid.
 
 **The decision layer is in the game** — `dusklight-ao/src/dusk/effect_lights.cpp`
 reads the emitter table and the game's light registries, and the bridge submits
@@ -256,8 +260,7 @@ belong to this system:
   system derives from the game, all defaulting to 1.0. `Class::Lantern` and
   `Class::Spark` joined the game-side vocabulary, and `effectLightLanternSeparate`
   is the one class that can be given settings of its own;
-- the **Effect Lights** section of the Game tab in `dxvk_imgui.cpp`, including
-  the warning shown when both light systems are on;
+- the **Effect Lights** section of the Dusklight Remix tab in `dxvk_imgui.cpp`;
 - both `rtx_light_manager.cpp` fork changes below — they exist *for* this system
   and upstream has no reason to want them.
 
@@ -281,7 +284,7 @@ tab. Grepping this repo for `effectLight` hits both.
 | `src/dxvk/rtx_render/rtx_dusklight_water.h` | `rtx.dusklight.water.*` — water. The game recognises its own water by J3D material name (`dKy_bg_MAxx_proc`), which GX never carries, and marks each draw; aurora packs **all three facts into `D3DMATERIAL9::Power`** as `tag * 100 + layer * 10 + role`, and this decodes them. A `SURFACE` draw becomes a `TranslucentMaterialData` instead of falling through to `as<OpaqueMaterialData>()` — that fall-through is what made every water layer an opaque white sheet. A `PROJECTED` draw (MA02/MA10, a camera-projected fake reflection) is hidden. **One field for three facts on purpose**: the side band had two left and taking both would have left nothing. **The transport was rebased on 2026-08-11** — it was in `Ambient.g`/`.b`/`.a`, which HD texture packs already owned, and merging that as written would have deleted texture packs silently. Decimal packing, not bit fields, because `power=921` is legible in a log as MA09 / waves / surface. **Untested in game on this transport** |
 | `src/dxvk/rtx_render/rtx_agx.{h,cpp}` | AgX look presets, the shared `TonemapOperator` enum, and the `finalizeWithACES` → operator migration. **Not Dusklight-specific** |
 | `src/dxvk/rtx_render/rtx_gt7.{h,cpp}` | GT7 setup, a transcription of Polyphony's `initializeAsSDR()`. The reference `.cpp` is kept verbatim at `shaders/rtx/pass/tonemap/reference/` — fix the port, never the reference. **Not Dusklight-specific** |
-| `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the three tabs |
+| `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the tabs. **There is no "Game tab"** — Effect Lights, Room Lights, HD Texture Pack, Geometry and Game are all collapsing headers *inside* the single Dusklight Remix tab |
 | `src/d3d9/d3d9_rtx_matrep.h` | the material translation report (`rtx.dusklight.matrep`), one guarded call at the tail of `D3D9Rtx::processTextures` |
 
 **API-submitted assets are capturable and replaceable** as of 2026-08-04, which
@@ -448,12 +451,19 @@ it is inconvenient.
   or protocol number — nothing can see an unmerged branch, so **check the other
   live `claude/*` branches before taking either**
 
-**As of 2026-08-11 exactly one side channel is left: `Ambient.a`.** Water took
-`Power` — all three of its facts packed into that one field
-(`tag * 100 + layer * 10 + role`), specifically so `Ambient.a` would survive for
-something else. `claude/dusklight-remix-transparency-e7l766` has an unmerged
-claim on it, and after that there is nothing: the feature after next has to pack
-into an existing field or move to a different transport.
+**`D3DMATERIAL9` is closed for new features, and that stopped being a problem on
+2026-08-14.** One channel is nominally left — `Ambient.a`, with an unmerged claim
+on it from `claude/dusklight-remix-transparency-e7l766` — but **do not take it.**
+The transport for a new per-draw fact is a flag in `rtx_dusklight_drawmeta.h`:
+`dusklightSetDrawMeta` is a versioned export on this fork's own `d3d9.dll`, fed
+by aurora's `GX_AURORA_SET_DUSKLIGHT_DRAW_META` (`0x0058`), and its payload is a
+flags word — **so a new per-draw fact is a new bit, not a new channel.** Keep
+`Ambient.a` for something that genuinely has to ride the material struct through
+the *capture* path. The scarcity was never a real constraint: `D3DMATERIAL9` is
+fixed by the D3D9 API, but that boundary is not, because aurora is the D3D9
+caller and this runtime is the D3D9 implementation and both are ours.
+`documentation/DusklightSideChannels.md` is the authority and says this at
+length; this paragraph asserted the opposite until 2026-08-16.
 
 The allocation table is `documentation/DusklightSideChannels.md` and it is
 CI-checked **both ways** — a channel read with no row fails, and a row nothing
