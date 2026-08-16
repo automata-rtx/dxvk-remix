@@ -1153,7 +1153,20 @@ namespace dxvk {
             tmpMaterialData.getOpaqueMaterialData().setEnableEmission(true);
             tmpMaterialData.getOpaqueMaterialData().setEmissiveIntensity(RtxOptions::emissiveBlendOverrideEmissiveIntensity());
             tmpMaterialData.getOpaqueMaterialData().setEmissiveColorTexture(tmpMaterialData.getOpaqueMaterialData().getAlbedoOpacityTexture());
-          } else if (dusklightEmissive::isCandidate(drawCall.getMaterialData())) {
+          // enable() gates the WHOLE path, not just the patch at the bottom.
+          //
+            // It used to gate only the application, so turning emissive off still ran isCandidate,
+            // candidateColor, accepts and logOnce on every draw - the feature was off and all of
+            // its work still happened, dusklight.emis lines and all. On 2026-08-16 that made a
+            // crash bisect lie: emissive was switched off in the panel, the crash survived, the
+            // log still showed dusklight.emis as the last line before the fault, and the path was
+            // wrongly ruled out on the strength of a switch that had not switched anything off.
+            //
+            // An option named enable must decide whether the code runs. The cost is that candidate
+            // logging no longer happens while the feature is off, which was the reason it was
+            // written this way; that is worth losing to make the switch mean what it says.
+          } else if (DusklightEmissive::enable() &&
+                     dusklightEmissive::isCandidate(drawCall.getMaterialData())) {
             // Dusklight: aurora scored what GX says about this surface. Where to
             // cut is a judgement, so it lives in rtx_dusklight_emissive.h - one
             // place, dialable live from the F1 overlay.
