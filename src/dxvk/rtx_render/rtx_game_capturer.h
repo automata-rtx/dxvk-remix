@@ -309,6 +309,16 @@ private:
     // Instance ids in a deterministic order - see buildMergedGroups for why that matters to the
     // merged mesh's hash being the same from one capture to the next.
     std::vector<XXH64_hash_t> memberInstanceIds;
+    // Filled in by mergeGroup, reported per group. A member with no blend stream is a rigid packet
+    // whose vertices J3D stores in its joint's local space; a member with one is an envelope packet
+    // whose vertices are in model space. A group holding BOTH is the mixed-space case: it deforms
+    // correctly but its rest pose is wrong, which is what a DCC tool shows when the mesh is opened
+    // unposed. Counting them is what turns "the model looks busted" into a number.
+    uint32_t rigidMembers = 0;
+    uint32_t envelopeMembers = 0;
+    // Joints that vertices reference but that no member supplied a matrix for. Non-zero means that
+    // many pieces of the body are pinned to the capture origin rather than to the character.
+    uint32_t unplacedJoints = 0;
   };
   static std::vector<MergedGroup> buildMergedGroups(const Capture& cap);
   // Returns false when the group cannot be merged safely: a member whose transform disagrees with

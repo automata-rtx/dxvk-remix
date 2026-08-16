@@ -1254,7 +1254,10 @@ namespace dxvk {
     uint32_t rejected = 0;
     uint32_t drawsReplaced = 0;
     uint32_t largestGroup = 0;
+    uint32_t mixedSpaceGroups = 0;
+    uint32_t unplacedJointGroups = 0;
     std::string firstRejectReason;
+    std::vector<std::string> groupNotes;
 
     for (MergedGroup& group : groups) {
       std::vector<XXH64_hash_t> signature;
@@ -1262,10 +1265,19 @@ namespace dxvk {
       for (const XXH64_hash_t instanceId : group.memberInstanceIds) {
         signature.push_back(cap.instances.at(instanceId).meshHash);
       }
+      const auto groupLabel = [&group]() {
+        return str::format("model=0x", std::hex, group.modelKey,
+                           " groupHash=0x", group.mergedMeshHash, std::dec,
+                           " members=", group.memberInstanceIds.size());
+      };
+
       const auto seen = signatureByModel.find(group.modelKey);
       if (seen != signatureByModel.end()) {
         if (seen->second != signature) {
           ++rejected;
+          groupNotes.push_back(str::format(
+            groupLabel(), " REJECTED reason=\"a second instance of this model drew a different set"
+            " of packets\""));
           if (firstRejectReason.empty()) {
             firstRejectReason = "a second instance of this model drew a different set of packets";
           }
@@ -1280,11 +1292,30 @@ namespace dxvk {
       std::string rejectReason;
       if (!mergeGroup(cap, group, mergedMesh, rejectReason)) {
         ++rejected;
+        groupNotes.push_back(str::format(groupLabel(), " REJECTED reason=\"", rejectReason, "\""));
         if (firstRejectReason.empty()) {
           firstRejectReason = rejectReason;
         }
         continue;
       }
+
+      const bool mixedSpace = group.rigidMembers > 0 && group.envelopeMembers > 0;
+      if (mixedSpace) {
+        ++mixedSpaceGroups;
+      }
+      if (group.unplacedJoints > 0) {
+        ++unplacedJointGroups;
+      }
+      groupNotes.push_back(str::format(
+        groupLabel(), " MERGED joints=", mergedMesh.numBones,
+        " verts=", mergedMesh.numVertices,
+        " materials=", mergedMesh.materialRanges.size(),
+        " rigidMembers=", group.rigidMembers,
+        " envelopeMembers=", group.envelopeMembers,
+        " unplacedJoints=", group.unplacedJoints,
+        group.unplacedJoints > 0 ? "  <- BROKEN: that many joints have no matrix, so their"
+                                   " geometry sits at the capture origin" : "",
+        mixedSpace ? "  <- MIXED SPACE: deforms correctly, rest pose wrong" : ""));
 
       // The merged instance inherits the group's transform and time span from its first member,
       // which every other member had to agree with for the merge to be accepted at all.
@@ -1338,8 +1369,26 @@ namespace dxvk {
       " rejected=", rejected,
       " drawsReplaced=", drawsReplaced,
       " largestGroup=", largestGroup,
+      " mixedSpaceGroups=", mixedSpaceGroups,
+      " unplacedJointGroups=", unplacedJointGroups,
       rejected > 0 ? str::format(" firstReject=\"", firstRejectReason, "\"") : std::string(),
-      "  (a rejected group keeps its original per-draw meshes; nothing is merged approximately)"));
+      "  (a rejected group keeps its original per-draw meshes; nothing is merged approximately."
+      " mixedSpaceGroups counts bodies holding both rigid and envelope packets - those deform"
+      " correctly but their REST pose is wrong, which is what a DCC tool shows when opened unposed)"));
+
+    // One line per group, capped. The summary above cannot say which character failed or why when
+    // several fail differently, and "the model looks busted" is not something anyone should have to
+    // describe by eye - rigid/envelope counts say which of the two known failure shapes this is.
+    uint32_t printed = 0;
+    for (const auto& note : groupNotes) {
+      if (printed >= 16) {
+        Logger::info(str::format("capture.merge   ... ", groupNotes.size() - printed,
+                                 " more group(s) not listed"));
+        break;
+      }
+      Logger::info(str::format("capture.merge   ", note));
+      ++printed;
+    }
   }
 
   std::vector<GameCapturer::MergedGroup> GameCapturer::buildMergedGroups(const Capture& cap) {
@@ -1409,19 +1458,69 @@ namespace dxvk {
     // a different transform would land in the wrong place. Rejecting is the right answer rather
     // than rebasing, because a character whose packets disagree here means the model identity is
     // wrong and a scattered body is a far worse outcome than an unmerged one.
-    const lss::Instance& first = cap.instances.at(group.memberInstanceIds.front()).lssData;
+    // The group's frame of reference comes from a member that HAS bones.
+    //
+    // Revision 1 took the first member's and required every other member to match it, which
+    // rejected most real characters. A skinned packet's objectToWorld is its bone-0 matrix - the
+    // same for every packet of a model now that they share a global joint numbering - but a rigid
+    // packet has no bones at all, and its objectToWorld is *its own joint's* world matrix. Those
+    // legitimately differ, so demanding they agree refuses exactly the characters this exists for.
+    auto hasBones = [&cap](XXH64_hash_t instanceId) {
+      const auto meshIt = cap.meshes.find(cap.instances.at(instanceId).meshHash);
+      return meshIt != cap.meshes.end() && meshIt->second != nullptr &&
+             !meshIt->second->lssData.boneXForms.empty();
+    };
+
+    const XXH64_hash_t anchorId = [&]() {
+      for (const XXH64_hash_t instanceId : group.memberInstanceIds) {
+        if (hasBones(instanceId)) {
+          return instanceId;
+        }
+      }
+      return group.memberInstanceIds.front();
+    }();
+
+    const lss::Instance& first = cap.instances.at(anchorId).lssData;
     if (first.xforms.empty()) {
       rejectReasonOut = "no transform";
       return false;
     }
     const pxr::GfMatrix4d& groupXform = first.xforms.front().xform;
 
+    // pxr::GfIsClose on a matrix is an element-wise ABSOLUTE comparison, and these are world
+    // transforms. This game's translations run to tens of thousands of units, where the 1e-4 the
+    // first revision used demands more significant digits than the float32 these matrices were
+    // built from can carry - so two packets of one character that agree perfectly in every way that
+    // matters still "disagree", and the whole body refuses to merge. Scale the tolerance to the
+    // magnitude being compared: 1e-5 relative is 0.1 units at a translation of 10000, far below
+    // anything that could place a packet visibly wrong, and stays 1e-5 absolute on the rotation
+    // and scale part where the elements are around unit magnitude.
+    const auto transformsAgree = [](const pxr::GfMatrix4d& a, const pxr::GfMatrix4d& b) {
+      for (uint32_t row = 0; row < 4; ++row) {
+        for (uint32_t col = 0; col < 4; ++col) {
+          const double lhs = a[row][col];
+          const double rhs = b[row][col];
+          const double scale = std::max(1.0, std::max(std::abs(lhs), std::abs(rhs)));
+          if (std::abs(lhs - rhs) > 1e-5 * scale) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+
     uint32_t jointCount = 0;
     for (const XXH64_hash_t instanceId : group.memberInstanceIds) {
       const auto& instance = cap.instances.at(instanceId);
-      if (instance.lssData.xforms.empty() ||
-          !pxr::GfIsClose(instance.lssData.xforms.front().xform, groupXform, 1e-4)) {
-        rejectReasonOut = "members disagree on the model transform";
+      if (instance.lssData.xforms.empty()) {
+        rejectReasonOut = "a member has no transform";
+        return false;
+      }
+      // Only bone-carrying members have to agree. A rigid member's transform IS its joint's
+      // placement and is supposed to differ; it is consumed below rather than compared here.
+      if (hasBones(instanceId) &&
+          !transformsAgree(instance.lssData.xforms.front().xform, groupXform)) {
+        rejectReasonOut = "skinned members disagree on the model transform";
         return false;
       }
       jointCount = std::max(jointCount, static_cast<uint32_t>(instance.skeletonBinding.jointCount));
@@ -1527,6 +1626,17 @@ namespace dxvk {
       const bool hasBlend = !src.buffers.blendIndicesBufs.empty() &&
                             !src.buffers.blendWeightBufs.empty() &&
                             src.numBones > 0;
+
+      // Which space this member's vertices are in - see MergedGroup. J3D stores a rigid draw
+      // matrix's vertices in that joint's local space (calcDrawMtx copies the joint's matrix
+      // straight through, with no inverse bind in it) and an envelope's in model space (its draw
+      // matrix carries the inverse bind). Concatenating both is what produces a body that deforms
+      // correctly and still sits wrong when a DCC tool shows it unposed.
+      if (hasBlend) {
+        ++group.envelopeMembers;
+      } else {
+        ++group.rigidMembers;
+      }
       const pxr::VtArray<lss::BlendIdx>* srcBlendIndices =
         hasBlend ? &src.buffers.blendIndicesBufs.begin()->second : nullptr;
       const pxr::VtArray<lss::BlendWeight>* srcWeights =
@@ -1572,16 +1682,57 @@ namespace dxvk {
 
       // Scatter this member's bone matrices into the model's joint space. Members between them
       // cover the joints the character actually uses; the rest keep the identity set above.
+      //
+      // A RIGID MEMBER CARRIES NO BONE MATRICES AT ALL, and revision 1 silently skipped it here.
+      // captureMesh only fills lssData.boneXForms when skinData.numBones > 0, and a packet welded
+      // to one joint with no PNMTXIDX attribute is not skinned as far as Remix is concerned - so
+      // its joint kept the identity matrix initialised above, and every vertex bound to it landed
+      // at the capture origin while the bone-carrying parts landed correctly. That is the
+      // "character stuck at the origin, equipment where it should be" shape, and the stretching
+      // that goes with a mesh torn between two placements.
+      //
+      // What such a member does have is its own objectToWorld, which for a rigid draw IS that
+      // joint's world matrix - aurora loads the joint into WORLDMATRIX(0) and nothing else. Its
+      // vertices are in that joint's local space, so joint matrix and vertices agree exactly as
+      // they do for a bone-carrying member.
       const auto& memberBones = src.boneXForms;
-      for (uint32_t local = 0; local < binding.blendIndexCount && local < memberBones.size(); ++local) {
-        const uint16_t mapped = binding.blendIndexToJoint[local];
+      if (memberBones.empty()) {
+        const uint16_t mapped = binding.blendIndexCount > 0 ? binding.blendIndexToJoint[0]
+                                                            : dusklightSkeleton::kNoJoint;
         if (mapped != dusklightSkeleton::kNoJoint && mapped < jointCount && !boneWritten[mapped]) {
-          boneXForms[mapped] = memberBones[local];
+          boneXForms[mapped] = instance.lssData.xforms.front().xform;
           boneWritten[mapped] = true;
+        }
+      } else {
+        for (uint32_t local = 0; local < binding.blendIndexCount && local < memberBones.size(); ++local) {
+          const uint16_t mapped = binding.blendIndexToJoint[local];
+          if (mapped != dusklightSkeleton::kNoJoint && mapped < jointCount && !boneWritten[mapped]) {
+            boneXForms[mapped] = memberBones[local];
+            boneWritten[mapped] = true;
+          }
         }
       }
 
       vertexBase += vertexCount;
+    }
+
+    // Joints that vertices are weighted to but that no member ever placed. Every one of them is a
+    // piece of the body pinned to the capture origin instead of to the character, so this number
+    // being non-zero is the difference between a mesh someone can work with and one that looks
+    // shattered. Reported per group rather than inferred from a screenshot.
+    {
+      std::vector<bool> jointUsed(jointCount, false);
+      for (size_t i = 0; i < blendIndices.size(); ++i) {
+        const int32_t joint = blendIndices[i];
+        if (weights[i] > 0.f && joint >= 0 && static_cast<uint32_t>(joint) < jointCount) {
+          jointUsed[joint] = true;
+        }
+      }
+      for (uint32_t j = 0; j < jointCount; ++j) {
+        if (jointUsed[j] && !boneWritten[j]) {
+          ++group.unplacedJoints;
+        }
+      }
     }
 
     meshOut.numVertices = static_cast<uint32_t>(positions.size());
