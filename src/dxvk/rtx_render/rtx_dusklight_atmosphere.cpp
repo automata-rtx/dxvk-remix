@@ -1119,20 +1119,63 @@ namespace dxvk {
     lightManager.addExternalLightInstance(reinterpret_cast<remixapi_LightHandle>(kDomeLightHandle));
   }
 
-  void DxvkDusklightAtmosphere::showImguiSettings() {
-    ImGui::Indent();
-    RemixGui::Checkbox("Atmosphere Enabled", &enableObject());
+  namespace {
+    // The mode combos below drive their option through a clamped static int rather than binding
+    // the widget to the option, so they get none of RtxOptionUxWrapper's per-row UX - including
+    // its automatic tooltip. This puts the option's own description back, which for every one of
+    // these combos enumerates ALL of the modes rather than only the one selected. That is why the
+    // per-mode paragraphs that used to sit under each combo are gone: reading what a mode does no
+    // longer requires selecting it first.
+    template <typename T>
+    void dusklightOptionTip(dxvk::RtxOption<T>& option) {
+      if (ImGui::IsItemHovered()) {
+        RemixGui::SetTooltipUnformatted(RemixGui::BuildRtxOptionTooltip(&option).c_str());
+      }
+    }
+  }
 
-    ImGui::Indent();
-
+  // This panel is drawn by the overlay's Sky tab as one flat row of hot controls plus four
+  // collapsing groups. The headers, the indentation and the volumetrics BeginDisabled pairs all
+  // belong to the overlay - see the declarations in the header for why - so nothing here indents
+  // and nothing here draws a header.
+  //
+  // Atmosphere Enabled and Generate Sky are deliberately absent: they are on the window's master
+  // switch row, and drawing either in both places would give one RtxOption two widgets with the
+  // same ImGui ID, because RtxOptionUxWrapper keys its ID off the option's address.
+  void DxvkDusklightAtmosphere::showImguiHot() {
     if (!DusklightEnv::enable()) {
       ImGui::TextWrapped("Waiting for the game's environment feed (rtx.dusklight.env.enable). "
                          "Nothing here does anything until the game's bridge is running.");
     }
 
-    RemixGui::Separator();
-    ImGui::TextUnformatted("Fog");
+    RemixGui::DragFloat("Sky Intensity##dusklightAtmo", &skyIntensityObject(), 0.05f, 0.f, 32.f, "%.2f");
 
+    // Two candidate fixes for one defect, built side by side so the choice could be made by
+    // looking. It was: Exempt was run in game on 2026-08-13 and confirmed good, and is the
+    // default. Weighted is kept as a taste control for foggy weather rather than as a rival.
+    {
+      static const char* kSkyFogModes[] = { "Off (untreated)", "Exempt", "Weighted" };
+      static int mode;
+      mode = std::clamp(skyFogMode(), 0, 2);
+      if (RemixGui::Combo("Fog On Sky##dusklightAtmo", &mode, kSkyFogModes, IM_ARRAYSIZE(kSkyFogModes))) {
+        skyFogMode.setDeferred(mode);
+      }
+      dusklightOptionTip(skyFogModeObject());
+      if (mode == 2) {
+        RemixGui::DragFloat("Sky Fog Amount##dusklightAtmo", &skyFogAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
+      } else if (mode == 0) {
+        // A state that is currently wrong rather than a description of a control, so it stays on
+        // screen instead of moving into the tooltip with the rest.
+        ImGui::TextWrapped("Fog On Sky is on its untreated setting - the defect kept for comparison. "
+                           "The sky is dimmed by the whole depth of the froxel grid and tinted "
+                           "towards the fog colour.");
+      }
+    }
+
+    RemixGui::Checkbox("Simulate Scattering##dusklightAtmo", &physicalSkyObject());
+  }
+
+  void DxvkDusklightAtmosphere::showImguiFog() {
     {
       static const char* kFogRampModes[] = { "Handover (legacy)", "Top up" };
       static int rampMode;
@@ -1140,33 +1183,27 @@ namespace dxvk {
       if (RemixGui::Combo("Ramp Owns##dusklightAtmo", &rampMode, kFogRampModes, IM_ARRAYSIZE(kFogRampModes))) {
         fogRampMode.setDeferred(rampMode);
       }
+      dusklightOptionTip(fogRampModeObject());
       if (rampMode == 0) {
-        ImGui::TextWrapped("The medium reproduces the fog out to the froxel grid's edge and the ramp takes over past it. A "
-                           "homogeneous medium cannot be clear where the original is clear, so the near field hazes over. "
-                           "Here to be compared against.");
-      } else {
-        ImGui::TextWrapped("The ramp reaches the game's exact opacity at every distance and the medium only has to carry "
-                           "light. Density then costs nothing but shaft quality, so it can be held under the original's "
-                           "own fog curve.");
+        ImGui::TextWrapped("Ramp Owns is on its legacy setting, kept to be compared against: a "
+                           "homogeneous medium cannot be clear where the original is clear, so the "
+                           "near field hazes over.");
       }
     }
 
     RemixGui::DragFloat("Half Density Floor##dusklightAtmo", &zHalfMinObject(), 1.0f, 1.f, 10000.f, "%.0f units");
     RemixGui::DragFloat("Density Scale##dusklightAtmo", &densityScaleObject(), 0.01f, 0.f, 8.f, "%.2f");
     RemixGui::Checkbox("Hold Density Under The Ramp##dusklightAtmo", &limitDensityToRampObject());
+    // Both halves of this pair sit inside one header on purpose: splitting a BeginDisabled from
+    // its EndDisabled across a header boundary unbalances the stack.
     ImGui::BeginDisabled(!limitDensityToRamp() || fogRampMode() != 1);
     RemixGui::DragFloat("Clear Zone Tolerance##dusklightAtmo", &clearZoneToleranceObject(), 0.005f, 0.f, 0.5f, "%.3f");
     RemixGui::DragFloat("Clear Zone Veil Target##dusklightAtmo", &clearZoneVeilTargetObject(), 0.002f, 0.f, 0.5f, "%.3f");
-    ImGui::TextWrapped(
-      "The tolerance above is coverage; this is the brightness that coverage is allowed to have. "
-      "The same 8% of a dim cave is invisible and 8% of lava-lit orange hangs in front of the "
-      "player, so the budget is spent in luminance and the tolerance above becomes a ceiling. "
-      "Bright interiors tighten; dim and outdoor scenes do not move. 0 disables the weighting and "
-      "restores the pure coverage budget. The readout above reports the budget actually used.");
     ImGui::EndDisabled();
     RemixGui::DragFloat("Fog Radiance Scale##dusklightAtmo", &fogRadianceScaleObject(), 0.01f, 0.f, 16.f, "%.2f");
     RemixGui::DragFloat("Ambient In-Scatter##dusklightAtmo", &multiScatteringScaleObject(), 0.01f, 0.f, 4.f, "%.2f");
     RemixGui::DragFloat("Forward Scatter##dusklightAtmo", &fogAnisotropyObject(), 0.01f, -0.95f, 0.95f, "%.2f");
+
     {
       static const char* kSkyAmbientModes[] = { "Off", "Hue only", "Full radiance" };
       static int ambientMode;
@@ -1175,23 +1212,7 @@ namespace dxvk {
                           IM_ARRAYSIZE(kSkyAmbientModes))) {
         skyAmbientMode.setDeferred(ambientMode);
       }
-      switch (ambientMode) {
-      case 0:
-        ImGui::TextWrapped("The palette's colour only. Fog standing in shadow loses the sky's hue, since Remix's froxel "
-                           "grid samples no dome light and so sees nothing of the sky by itself.");
-        break;
-      case 1:
-        ImGui::TextWrapped("The dome decides what colour the sky is; the palette decides how bright the fog reads. Sky "
-                           "Intensity is a lighting calibration, not an appearance one, so letting it set the fog's level "
-                           "made indoor fog about six times too bright - and the medium's ambient term is not shadowed, so "
-                           "a sealed room got open-sky in-scatter.");
-        break;
-      default:
-        ImGui::TextWrapped("The dome supplies colour and brightness. Physically the better answer for an open sky, since "
-                           "distant fog really should approach the sky's own radiance. Try this if terrain now reads darker "
-                           "than the sky behind it.");
-        break;
-      }
+      dusklightOptionTip(skyAmbientModeObject());
     }
 
     ImGui::BeginDisabled(skyAmbientMode() == 0);
@@ -1207,81 +1228,29 @@ namespace dxvk {
                           IM_ARRAYSIZE(kExposureFogModes))) {
         exposureFogMode.setDeferred(exposureMode);
       }
-      switch (exposureMode) {
-      case 0:
-        ImGui::TextWrapped("The palette's fog colour is used as a radiance. It is a display colour, so its level means "
-                           "nothing here: too much light for a dark cave, not enough for a sunlit field.");
-        break;
-      case 1:
-        ImGui::TextWrapped("Applied where the game reports no sky - which is exactly where there is no dome to take a real "
-                           "radiance from. Outdoors the dome already supplies one, so this changes nothing there.");
-        break;
-      default:
-        ImGui::TextWrapped("Also applied outdoors, to whatever share of the fog colour still comes from the palette rather "
-                           "than the dome. With Sky Ambient at 1.0 that share is nothing, so the two upper modes converge.");
-        break;
-      }
+      dusklightOptionTip(exposureFogModeObject());
     }
+  }
 
-    RemixGui::Separator();
-    ImGui::TextUnformatted("Froxel grid");
+  void DxvkDusklightAtmosphere::showImguiFroxelGrid() {
     RemixGui::DragFloat("Range Scale##dusklightAtmo", &froxelRangeScaleObject(), 0.01f, 0.1f, 4.f, "%.2f");
     RemixGui::DragFloat("Range Min##dusklightAtmo", &froxelMaxDistanceMinMetersObject(), 0.5f, 0.5f, 100.f, "%.1f m");
     RemixGui::DragFloat("Range Max##dusklightAtmo", &froxelMaxDistanceMaxMetersObject(), 1.0f, 5.f, 1000.f, "%.0f m");
     RemixGui::DragFloat("Smoothing Rate##dusklightAtmo", &froxelSmoothingRateObject(), 0.005f, 0.005f, 1.f, "%.3f");
+  }
 
-    RemixGui::Separator();
-    ImGui::TextUnformatted("Sky");
-    RemixGui::Checkbox("Generate Sky##dusklightAtmo", &skyEnableObject());
-    RemixGui::DragFloat("Sky Intensity##dusklightAtmo", &skyIntensityObject(), 0.05f, 0.f, 32.f, "%.2f");
+  void DxvkDusklightAtmosphere::showImguiSkyShape() {
     RemixGui::DragFloat("Horizon Sharpness##dusklightAtmo", &skyHorizonSharpnessObject(), 0.05f, 0.25f, 16.f, "%.2f");
     RemixGui::DragFloat("Ground Fraction##dusklightAtmo", &skyGroundFractionObject(), 0.01f, 0.f, 1.f, "%.2f");
-
     RemixGui::Checkbox("Paint Moon##dusklightAtmo", &skyMoonEnableObject());
-    if (skyMoonEnable()) {
-      RemixGui::DragFloat("Moon Size##dusklightAtmo", &skyMoonAngularDiameterDegreesObject(), 0.1f, 0.1f, 30.f, "%.1f deg");
-      RemixGui::DragFloat("Moon Brightness##dusklightAtmo", &skyMoonIntensityObject(), 0.1f, 0.f, 64.f, "%.2f");
-      RemixGui::DragFloat("Moon Edge##dusklightAtmo", &skyMoonEdgeSoftnessObject(), 0.01f, 0.f, 1.f, "%.2f");
-      ImGui::TextWrapped("Gives back the moon that Hide Sky Billboards removes, without the camera-anchored quad that "
-                         "made shadows wander at night. Appearance only - the moonlight comes from the distant light, so "
-                         "this does not change how bright the night is to stand in.");
-    }
+    ImGui::BeginDisabled(!skyMoonEnable());
+    RemixGui::DragFloat("Moon Size##dusklightAtmo", &skyMoonAngularDiameterDegreesObject(), 0.1f, 0.1f, 30.f, "%.1f deg");
+    RemixGui::DragFloat("Moon Brightness##dusklightAtmo", &skyMoonIntensityObject(), 0.1f, 0.f, 64.f, "%.2f");
+    RemixGui::DragFloat("Moon Edge##dusklightAtmo", &skyMoonEdgeSoftnessObject(), 0.01f, 0.f, 1.f, "%.2f");
+    ImGui::EndDisabled();
+  }
 
-    // Two candidate fixes for one defect, built side by side so the choice could be made by looking.
-    // It was: Exempt was run in game on 2026-08-13 and confirmed good, and is the default. Weighted
-    // is kept as a taste control for foggy weather rather than as a rival candidate.
-    {
-      static const char* kSkyFogModes[] = { "Off (untreated)", "Exempt", "Weighted" };
-      static int mode;
-      mode = std::clamp(skyFogMode(), 0, 2);
-      if (RemixGui::Combo("Fog On Sky##dusklightAtmo", &mode, kSkyFogModes, IM_ARRAYSIZE(kSkyFogModes))) {
-        skyFogMode.setDeferred(mode);
-      }
-      if (mode == 2) {
-        RemixGui::DragFloat("Sky Fog Amount##dusklightAtmo", &skyFogAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
-      }
-      switch (mode) {
-      case 0:
-        ImGui::TextWrapped("The defect, on purpose: the sky is dimmed by the whole depth of the froxel grid and tinted "
-                           "towards the fog colour, so it reads dingy against terrain that fades towards the sky's own "
-                           "colour. Here to be compared against, not to be used.");
-        break;
-      case 1:
-        ImGui::TextWrapped("Faithful to the original, which drew its sky with fog switched off at any density. Costs any "
-                           "light shaft that would have been visible against the sky - that is the same in-scatter. "
-                           "Tested in game 2026-08-13 and confirmed good; this is the default.");
-        break;
-      default:
-        ImGui::TextWrapped("A foggy day still veils the sky, and shafts against it survive in proportion, but the sky is "
-                           "not erased by a medium calibrated to close in tens of metres. Raise until weather reads, and "
-                           "stop before the horizon seam comes back.");
-        break;
-      }
-    }
-
-    RemixGui::Separator();
-    ImGui::TextUnformatted("Physical sky");
-    RemixGui::Checkbox("Simulate Scattering##dusklightAtmo", &physicalSkyObject());
+  void DxvkDusklightAtmosphere::showImguiPhysicalSky() {
     RemixGui::DragFloat("Max Weight##dusklightAtmo", &physicalMaxWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
     RemixGui::DragFloat("Blend From##dusklightAtmo", &physicalElevationLowDegreesObject(), 0.5f, -10.f, 45.f, "%.1f deg");
     RemixGui::DragFloat("Blend To##dusklightAtmo", &physicalElevationHighDegreesObject(), 0.5f, 0.f, 90.f, "%.1f deg");
@@ -1289,19 +1258,11 @@ namespace dxvk {
     RemixGui::DragFloat("Palette Influence##dusklightAtmo", &paletteInfluenceObject(), 0.01f, 0.f, 1.f, "%.2f");
     RemixGui::DragFloat("Haze Forward Scatter##dusklightAtmo", &mieAnisotropyObject(), 0.01f, 0.f, 0.95f, "%.2f");
     RemixGui::DragFloat("Multi Scatter##dusklightAtmo", &multiScatterScaleObject(), 0.01f, 0.f, 4.f, "%.2f");
-    ImGui::TextWrapped(
-      "The blend follows the sun's height because that is where the two skies actually disagree. At midday both are a "
-      "plain blue gradient and the change is nearly invisible, while everything it brings - sky fill in shadow, haze "
-      "with distance - is not. At dusk the game's version is deliberately more saturated than physics produces, so it "
-      "keeps the bottom of the arc. Night and the Twilight Realm are the game's outright.");
+  }
 
-    if (skyEnable() && RtxOptions::skyAutoDetect() != SkyAutoDetectMode::None) {
-      ImGui::TextWrapped("rtx.skyAutoDetect is not None: the game's own dome is still being captured behind "
-                         "the generated sky. Set it to None.");
-    }
-
-    RemixGui::Separator();
-    ImGui::TextUnformatted("Resolved");
+  // Resolved state. No controls, so the overlay draws this on its Readouts tab rather than beside
+  // the settings it is derived from.
+  void DxvkDusklightAtmosphere::showImguiReadouts() {
     // peek, not derived: this runs on the presenting thread and must not drive the per-frame latch.
     const Derived& d = peek();
     if (!d.fogValid) {
@@ -1341,14 +1302,11 @@ namespace dxvk {
       ImGui::Text("froxel grid reaches %.0f units (%.1f m)",
                   d.froxelMaxDistance, d.froxelMaxDistance / RtxOptions::getMeterToWorldUnitScale());
     }
-    // The colour pattern printed as the crossfade it actually is. Reading these three beside the
-    // physical weight below is what tells a gradual handover from a broken one: during a weather
-    // change the blend should sweep 0 -> 1 once and stop, and the weight should move with it. A
-    // blend that jitters, or that sits away from 1.0 with the two patterns equal, means the value
-    // is being read at the wrong point in the frame rather than that the fade looks wrong.
-    ImGui::Text("area: %s   colpat %d -> %d @ %.2f   sun %.1f deg %s",
+    // The colpat crossfade this line used to carry as well is printed once, by the Environment
+    // response group a few lines above it on the same tab. It was printed twice in two different
+    // sections until 2026-08-17, and the two disagreed about which fields were worth showing.
+    ImGui::Text("area: %s   sun %.1f deg %s",
                 d.outdoor ? "outdoor" : "no sky",
-                DusklightEnv::colpatPrev(), DusklightEnv::colpat(), DusklightEnv::colpatBlend(),
                 DusklightEnv::sunElevation(), DusklightEnv::sunIsDay() ? "(day)" : "(night)");
     ImGui::Text("physical weight: %.3f%s", d.physicalWeight,
                 d.physicalWeight <= 0.0f ? "  (the game's own sky)" : "");
@@ -1357,8 +1315,5 @@ namespace dxvk {
                        "wrong can be diagnosed from a session log rather than from a description. Read 'peak excess' "
                        "first: above zero means the medium is thicker than the original's fog somewhere, which the ramp "
                        "cannot undo, and lowering Clear Zone Tolerance is the answer.");
-
-    ImGui::Unindent();
-    ImGui::Unindent();
   }
 }

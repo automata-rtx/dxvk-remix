@@ -213,8 +213,10 @@ implying it was tested.
 ## The one coupling that has cost evenings
 
 **The game and this DLL are a single protocol.** The game pushes
-`rtx.dusklight.env.protocol`; this fork compares it against `kRequiredProtocol`
-in `showDusklightRemixTab` (`src/dxvk/imgui/dxvk_imgui.cpp`).
+`rtx.dusklight.env.protocol`; this fork compares it against `kRequiredProtocol`,
+which since the 2026-08-16 overlay rework lives at file scope in
+`src/dxvk/imgui/dxvk_imgui.cpp` and is read by the status strip drawn above the
+tab bar — so the agreement is visible from every tab, not just one.
 **Protocol is at 17.** Build both sides from the same commit point, and bump
 both in the same commit. Skew in either direction has cost an evening twice.
 The Dusklight tab reports which side is old — read it before debugging
@@ -284,7 +286,7 @@ tab. Grepping this repo for `effectLight` hits both.
 | `src/dxvk/rtx_render/rtx_dusklight_water.h` | `rtx.dusklight.water.*` — water. The game recognises its own water by J3D material name (`dKy_bg_MAxx_proc`), which GX never carries, and marks each draw; aurora packs **all three facts into `D3DMATERIAL9::Power`** as `tag * 100 + layer * 10 + role`, and this decodes them. A `SURFACE` draw becomes a `TranslucentMaterialData` instead of falling through to `as<OpaqueMaterialData>()` — that fall-through is what made every water layer an opaque white sheet. A `PROJECTED` draw (MA02/MA10, a camera-projected fake reflection) is hidden. **One field for three facts on purpose**: the side band had two left and taking both would have left nothing. **The transport was rebased on 2026-08-11** — it was in `Ambient.g`/`.b`/`.a`, which HD texture packs already owned, and merging that as written would have deleted texture packs silently. Decimal packing, not bit fields, because `power=921` is legible in a log as MA09 / waves / surface. **Untested in game on this transport** |
 | `src/dxvk/rtx_render/rtx_agx.{h,cpp}` | AgX look presets, the shared `TonemapOperator` enum, and the `finalizeWithACES` → operator migration. **Not Dusklight-specific** |
 | `src/dxvk/rtx_render/rtx_gt7.{h,cpp}` | GT7 setup, a transcription of Polyphony's `initializeAsSDR()`. The reference `.cpp` is kept verbatim at `shaders/rtx/pass/tonemap/reference/` — fix the port, never the reference. **Not Dusklight-specific** |
-| `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the tabs. **There is no "Game tab"** — Effect Lights, Room Lights, HD Texture Pack, Geometry and Game are all collapsing headers *inside* the single Dusklight Remix tab |
+| `src/dxvk/imgui/dxvk_imgui.cpp` | the F1 Dusklight overlay: `showDusklightOverlay` → `showDusklightWindow` → the tabs. **Restructured 2026-08-16.** A permanent status strip (connection, protocol agreement, device registered) and a master-switch row sit *above* the tab bar, so both are visible from every tab; an alert lane below them renders nothing when nothing is wrong. Eight topic tabs — Go, Lights, Sky, Surfaces, Scene, Input, Mods, **Readouts** — each flat for its hot controls with at most one level of closed headers for cold ones, and **nothing `DefaultOpen`**. Every `rtx.dusklight.env.*` diagnostic block lives on Readouts, which has zero controls. Always-on prose went from 32,031 characters to 4,835 (−85%) by letting `RtxOptionUxWrapper`'s existing hover tooltip carry what it was duplicating; **no control was deleted** |
 | `src/d3d9/d3d9_rtx_matrep.h` | the material translation report (`rtx.dusklight.matrep`), one guarded call at the tail of `D3D9Rtx::processTextures` |
 
 **API-submitted assets are capturable and replaceable** as of 2026-08-04, which

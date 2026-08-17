@@ -168,7 +168,22 @@ namespace dxvk {
     // manager clears the active dome light at the top of each one.
     void prepareSceneData(Rc<RtxContext> ctx, SceneManager& sceneManager);
 
-    void showImguiSettings();
+    // The overlay draws this panel as one flat row of hot controls plus four collapsing groups on
+    // its Sky tab, so the groups are separate calls rather than one function with labels in it.
+    // The headers and the volumetrics BeginDisabled/EndDisabled pairs are the overlay's, which is
+    // what lets a group be expanded while volumetrics are off - one function wrapped in
+    // BeginDisabled cannot be, because a disabled CollapsingHeader refuses the click that opens it.
+    //
+    // Atmosphere Enabled and Generate Sky are NOT drawn here: they are on the window's master
+    // switch row. Drawing them in both places would give one RtxOption two widgets with the same
+    // ImGui ID, since RtxOptionUxWrapper keys its ID off the option's address.
+    void showImguiHot();
+    void showImguiFog();
+    void showImguiFroxelGrid();
+    void showImguiSkyShape();
+    void showImguiPhysicalSky();
+    // Twelve lines of resolved state and no controls, so it lives on the overlay's Readouts tab.
+    void showImguiReadouts();
 
   private:
     virtual bool isEnabled() const override;
@@ -276,7 +291,15 @@ namespace dxvk {
                "The game authors its fog colour and its sky colours in the same palette entry and blends them in the same call, so they are one system in the "
                "original and splitting them here is what makes fog and sky disagree. Off by default, and inert unless the game's bridge is running "
                "(rtx.dusklight.env.enable). The fog half additionally waits on rtx.dusklight.env.fogActive; the sky half does not, since an area can have a "
-               "sky and no haze in it.");
+               "sky and no haze in it.\n"
+               "WHAT THIS OVERRIDES IN REMIX, moved here from the overlay's own section 2026-08-17 because it is reference rather than state, and "
+               "'I changed it and nothing happened' is the most expensive kind of bug here. While this is on it takes over "
+               "rtx.volumetrics.froxelMaxDistanceMeters (sized from the game's fog range instead), rtx.volumetrics.transmittanceColor and "
+               "transmittanceMeasurementDistanceMeters, rtx.volumetrics.singleScatteringAlbedo (use the atmosphere's own instead), "
+               "rtx.volumetrics.enableFogRemap and enableFogColorRemap (bypassed entirely, so a value there is a false lead), and "
+               "rtx.volumetrics.enableAtmosphere (forced on outdoors, since infinite lights need it). While the generated sky is on, "
+               "rtx.skyBrightness stops mattering as well: it scales the probe the dome light replaces. rtx.fogColorScale and rtx.maxFogDistance "
+               "belong to the legacy depth fog, which is skipped whenever volumetrics are running.");
     RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, zHalfMin, 100.0f,
                     "Smallest half density distance the medium is allowed, in world units - one metre at this game's scale.\n"
                     "The medium is solved by matching the game's linear ramp at the point where it is half opaque. Scripted fog banks put that point behind the "

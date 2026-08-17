@@ -118,7 +118,10 @@ namespace dxvk {
     RTX_OPTION("rtx.dusklight.game", bool, celestialLock, false,
                "Diagnostic: pins the sun/moon direction where it currently stands.\n"
                "The direction the game computes depends on nothing but time of day, so if the lighting still swings around while this is on, "
-               "whatever is moving it is downstream of the game - the space Remix reads the direction in, rather than the direction itself.");
+               "whatever is moving it is downstream of the game - the space Remix reads the direction in, rather than the direction itself.\n"
+               "The recipe, moved here from the overlay 2026-08-17: the azimuth and elevation on the Readouts tab are functions of the game's "
+               "time of day and nothing else, so if they hold still while the player runs in a circle the direction is not tied to the player. "
+               "Turn this on and check whether a tree's shadow stays anchored to the tree.");
 
     // Fake shadows. The game draws its own approximations of shadows, all of
     // which Remix computes for real from the geometry - so drawing them puts a

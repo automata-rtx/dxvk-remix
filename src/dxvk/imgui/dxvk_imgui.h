@@ -250,13 +250,23 @@ namespace dxvk {
     void showEnhancementsTab(const Rc<DxvkContext>& ctx);
     void showDevelopmentSettings(const Rc<DxvkContext>& ctx);
 
+    void showDusklightOverlay(const Rc<DxvkContext>& ctx);
     void showDusklightWindow(const Rc<DxvkContext>& ctx);
-    void showDusklightRemixTab(const Rc<DxvkContext>& ctx);
-    void showDusklightWarpTab(const Rc<DxvkContext>& ctx);
+    // The permanent header, drawn above the tab bar and so visible from every tab.
+    void showDusklightStatusStrip();
+    void showDusklightMasterSwitches();
+    void showDusklightAlerts();
+    // The tabs. Each is flat for its hot controls with cold ones behind sibling collapsing
+    // headers, all one level deep.
+    void showDusklightGoTab(const Rc<DxvkContext>& ctx);
     void showDusklightTimeOfDay();
+    void showDusklightLightsTab(const Rc<DxvkContext>& ctx);
+    void showDusklightSkyTab(const Rc<DxvkContext>& ctx);
+    void showDusklightSurfacesTab(const Rc<DxvkContext>& ctx);
+    void showDusklightSceneTab(const Rc<DxvkContext>& ctx);
     void showDusklightControlsTab(const Rc<DxvkContext>& ctx);
     void showDusklightModsTab(const Rc<DxvkContext>& ctx);
-    void showDusklightOverlay(const Rc<DxvkContext>& ctx);
+    void showDusklightReadoutsTab(const Rc<DxvkContext>& ctx);
     bool m_dusklightWindowOpen = false;
 
     // helper to display a configurable grid of all textures currently hooked to ImGUI

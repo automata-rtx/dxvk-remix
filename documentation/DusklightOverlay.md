@@ -71,8 +71,11 @@ diagnosed.
 
 > **Standing rule, already paid for twice:** the game and the Remix DLL are one
 > protocol. Build both from the same point. Both directions of skew have cost
-> an evening. When you bump the protocol, bump `kRequiredProtocol` in
-> `showDusklightRemixTab` in the same commit.
+> an evening. When you bump the protocol, bump `kRequiredProtocol` in the same
+> commit. It is a single `constexpr` in the anonymous namespace at the head of
+> the Dusklight block in `dxvk_imgui.cpp` — it moved out of
+> `showDusklightRemixTab` on 2026-08-17, when that function was replaced by the
+> status strip, and there is still exactly one definition of it.
 
 ### 1.1 Traps in this transport
 
@@ -193,22 +196,80 @@ turned off without turning off the overlay.
 
 ---
 
-## 3. Tabs
+## 3. The window
 
-```
-Dusklight  ├─ Dusklight Remix   everything that changes the image
-           ├─ Warp              travel to any level
-           └─ Controls          rebind the game's actions
-```
+**Restructured 2026-08-17.** It was four tabs over nineteen collapsing
+sections, and about **three quarters of its vertical extent was prose rather
+than controls** — roughly seven screens of scrolling in its *default* state,
+before anyone expanded anything, because ImGui persists only a window's
+position, size and collapsed flag, so every section reopened to its
+`DefaultOpen` state on each launch. Effect Lights alone was about 70% of that.
 
-### 3.1 Dusklight Remix
+### 3.0 What made the fix cheap
 
-Two sections at the top exist because of a failure this project has already
-paid for more than once — a switch that does nothing because an unrelated Remix
-option is off.
+Two facts, and the first is the whole lever:
 
-**Requirements.** Every Remix rendering option these features depend on but do
-not own, named with its live state and a button that sets it:
+1. **Every `RemixGui` widget bound to an `RtxOption` already renders a hover
+   tooltip built from that option's own description** —
+   `RtxOptionUxWrapper`'s destructor in `rtx_gui_widgets.h`, via
+   `RemixGui::BuildRtxOptionTooltip`. Every one of the 227 `rtx.dusklight.*`
+   declarations carries a description, and they are consistently a *superset*
+   of what the panel restated underneath the control. So most of the prose was
+   duplicating something a hover already gave you.
+2. **What must be read without hovering is a much smaller set.** The rule
+   applied throughout is mechanical: *if the text describes what a control
+   DOES it is a tooltip; if it describes a state that is currently WRONG it
+   stays on screen.*
+
+Where a sentence in the panel said something the description did **not**, the
+sentence was moved **into the description in the header** rather than deleted —
+the header is the authority, and it also feeds `RtxOptions.md` at the next
+Windows regeneration. Group-level prose that belongs to no single option became
+the **collapsing header's own tooltip** (`dusklightHeaderTip`, which must be
+called immediately after the header and before its body).
+
+Result: **33 prose blocks / ~4,800 characters, down from 113 / ~32,000**, with
+**14 collapsible sections down from 18** and **no control removed** — every
+option that had a widget still has one.
+
+### 3.1 The permanent header
+
+Above the tab bar, so it is visible from every tab. Nothing in it expands.
+
+**Status strip.** Connection, protocol agreement and device registration as one
+`ImGui::TextColored` token: green connected-and-matched, amber for either skew
+direction or an unregistered device, red not connected. The long explanation of
+each case is the token's tooltip; the **one line naming which side is behind and
+both numbers stays inline**, because it is a warning rather than reference.
+
+This used to be a four-branch paragraph in the middle of one tab of four, below
+three collapsing headers — so expanding any of them pushed it off screen, and a
+session sitting on Warp, Controls or Mods had no indication of protocol state at
+all. The Mods tab printed its *own* partial version notice for exactly that
+reason; it now defers to the real one. This is the readout `CLAUDE.md` says to
+read before debugging anything else.
+
+**Save / Discard**, with an unsaved marker, on the row below it.
+
+**Master switches.** The eight feature on/off toggles, two compact rows, always
+visible: Bridge, Atmosphere, Sky, Effect Lights, Emissive, Ramps, Water, HD
+Pack. Each was previously the first control inside a collapsing header, which
+put the single most-used control of every feature one expansion and several
+screens away.
+
+They are drawn by `dusklightToggle`, a plain `ImGui::Checkbox` wired to the
+option by hand, **not** `RemixGui::Checkbox` — `RtxOptionUxWrapper` reserves the
+full width of a row for its reset-button lane and hit-tests the whole row for
+its tooltip, so two of them cannot share a line. The hand-wired version carries
+the same description tooltip and loses only the reset dot. `setDeferred` still
+lands in the `rtx.conf` layer because §1.2's `RtxOptionLayerTarget` is in scope.
+
+**Each of those eight is drawn in exactly one place.** Drawing one both here and
+on its tab would give a single option two widgets with the same ImGui ID, since
+`RtxOptionUxWrapper` keys its ID off the option's address.
+
+**Alert lane.** Renders **nothing at all** — not a separator, not a blank
+line — when nothing is wrong, which is the normal case. It carries:
 
 | Requirement | Option | Why |
 | :-- | :-- | :-- |
@@ -216,25 +277,52 @@ not own, named with its live state and a button that sets it:
 | Bloom enabled | `rtx.bloom.enable` | the Dusklight bloom is a *mode* of that pass |
 | Sky auto-detect off | `rtx.skyAutoDetect = None` | or the detected sky rasterizes behind the generated one |
 
+plus the three effect-light diagnoses (*not running / none passed the rule /
+all orphans*), which were previously visible only to someone who had already
+scrolled five screens into a `DefaultOpen` section.
+
 These stay Remix's own settings on purpose — they are the renderer's, not the
-game's — so they are *reported and offered*, never silently forced.
+game's — so they are *reported and offered*, never silently forced. Each unmet
+one gets an amber line and a `Fix` button. **It reads exactly the same three
+booleans the old always-open "Requirements" section did**, and that matters:
+making it conditional is only safe while the condition is unchanged, because the
+failure it exists to prevent is an evening spent on a Dusklight switch that
+cannot work.
 
-**What this overrides in Remix.** The inverse list: options that will appear to
-do nothing while the atmosphere is on, because it takes them over. Written down
-because "I changed it and nothing happened" is the most expensive kind of bug
-here.
+What went with it: the old section's normal case was three static `[ok]` lines,
+a paragraph of rationale and **no actionable widget**, permanently open at the
+top of the busiest tab.
 
-- `rtx.volumetrics.froxelMaxDistanceMeters` — sized from the game's fog range
-- `rtx.volumetrics.transmittanceColor` / `transmittanceMeasurementDistanceMeters`
-- `rtx.volumetrics.singleScatteringAlbedo`
-- `rtx.volumetrics.enableFogRemap` / `enableFogColorRemap` — **bypassed entirely**, so a value here is a false lead
-- `rtx.volumetrics.enableAtmosphere` — forced on outdoors
-- `rtx.skyBrightness` — scales the probe the generated dome replaces
-- `rtx.fogColorScale` / `rtx.maxFogDistance` — legacy depth fog, skipped whenever volumetrics run
+**"What this overrides in Remix" was deleted as a section** — zero controls,
+795 characters of static reference. Its list now lives in
+`rtx.dusklight.atmosphere.enable`'s description, so it is the Atmosphere master
+switch's tooltip, which is the right place: every item on it is overridden *by*
+the atmosphere and only while it is enabled.
 
-**Materials.** A third Remix-owned section, above the game's settings and
-working whether or not the game is connected, because material translation is
-this runtime's half of the wire and does not go through the bridge.
+### 3.2 Tabs
+
+```
+Dusklight  ├─ Go         warp, and the clock
+           ├─ Lights     effect lights, sun and moon, room lights
+           ├─ Sky        atmosphere, bloom, ambient grade
+           ├─ Surfaces   materials, water, HD texture pack
+           ├─ Scene      the game's geometry and tuning switches
+           ├─ Input      rebind the game's actions
+           ├─ Mods       the game's mod inventory
+           └─ Readouts   every rtx.dusklight.env.* diagnostic
+```
+
+Each tab is **flat for its hot controls**, with cold ones behind sibling
+collapsing headers that are **all one level deep**. No tab's flat section
+exceeds one screen.
+
+The default window width went from 500 to **560** (`ImGuiCond_FirstUseEver`, so
+an existing `imgui.ini` keeps whatever size it was given) so eight tab labels
+fit without the tab bar shrinking them.
+
+**Materials** are on Surfaces: Remix's own half of the wire, working whether or
+not the game is connected, because material translation does not go through the
+bridge.
 
 | Control | Option | What it decides |
 | :-- | :-- | :-- |
@@ -286,20 +374,23 @@ score is still logged; nothing decides on it.
 `aurora-ao/docs/dx9/remix-material-interface.md` §9 for the rule and the
 measurement, §10 for the two-colour ramp.
 
-Then the game's own settings, in collapsible sections: Bridge, Sun / Moon
-Light, **Effect Lights**, Local Point Lights (comparison), Geometry, Game,
-Bloom, Ambient Grade, Atmosphere - Fog and Sky. The first three are open by
-default; the rest start collapsed.
+The game's own settings are spread across the topic tabs rather than stacked in
+one: effect lights, sun/moon and room lights on **Lights**; the atmosphere,
+bloom and the ambient grade on **Sky**; water and the HD texture pack beside
+materials on **Surfaces**; the geometry and tuning switches on **Scene**. The
+Bridge switch is on the master row and its "device registered" line is in the
+status strip. Every collapsing header on every tab starts **closed**; nothing is
+`DefaultOpen` any more, which is what the seven-screen default was made of.
 
 **A name collision worth knowing about before you go looking.** Remix's *own*
 Lighting tab has a section also called **Effect Light** — singular — which is
 upstream's `rtx.effectLight*` / `rtx.lightConverter` feature for attaching a
 light to a tagged texture. It has nothing to do with ours. Ours is
-`rtx.dusklight.game.effectLight*` and lives in the Dusklight window's Game tab.
-Searching either doc or the source for "effectLight" hits both.
+`rtx.dusklight.game.effectLight*` and lives on the Dusklight window's **Lights**
+tab. Searching either doc or the source for "effectLight" hits both.
 
 One of those is worth naming here because it is a rendering decision rather than
-a preference: **Geometry > Game's Blob Shadows** (`rtx.dusklight.game.blobShadows`,
+a preference: **Scene > Game's Blob Shadows** (`rtx.dusklight.game.blobShadows`,
 default **off**, tested in game 2026-08-06 and correct). Blob shadows are the flat discs the game paints under rupees,
 hearts and pots — an approximation of a shadow Remix traces for real from the
 same geometry, so drawing them puts a painted shadow on top of a correct one.
@@ -308,17 +399,19 @@ draw call is issued rather than one being hidden downstream. Its *projected*
 shadows — Link and the major actors, `dDlst_shadowReal_c` — are a separate
 system and are untouched.
 
-**Water** (`rtx.dusklight.water.*`, added 2026-08-11) is its own collapsing
-header in this tab rather than a fourth top-level tab — it is a rendering
-control like the atmosphere's, not a control plane of its own.
+**Water** (`rtx.dusklight.water.*`, added 2026-08-11) is one collapsing header
+on the **Surfaces** tab rather than a top-level tab of its own — it is a
+rendering control like the atmosphere's, not a control plane. Its master switch
+is on the window's master row; everything in the header is `BeginDisabled`
+behind it, and that pair sits **wholly inside** the header.
 
 | Group | Controls | Note |
 | :-- | :-- | :-- |
-| the switch | Translucent Water | everything below is `BeginDisabled` behind it |
+| the switch | Water, on the master row | everything in the header is `BeginDisabled` behind it |
 | the material | Index of Refraction, Transmittance Color, Transmittance Distance, Thin Walled, Thin Wall Thickness | **Distance is the one to tune first** — it sets how far light travels before reaching the transmittance colour, so it decides how quickly water reads as deep. The default is a starting value in the game's units, not a measurement |
 | the surface | Animate Texcoords, UV Tiling, Scroll Speed, Normal Intensity | replaces the transform the draw arrived with. Tiling is what fixes a ripple texture stretched once across Lake Hylia |
 | the layers | Shimmer (mera), Waves (nami), Shoreline (mizugiwa), Murk (nigori), Additive (kasan) | **all off by default.** A lake is several stacked draws and only one should be the refracting surface; which one is a look decision. The names are the game's own — `aurora-ao/docs/dx9/remix-material-interface.md` §11 |
-| the exceptions | Shoreline Keeps Its Blend, Apply To Replacements, Hide Projected Layer | each exists for a specific reason recorded in its tooltip and in §11 |
+| the exceptions | Shoreline Keeps Its Blend, Waves Keep Their Blend, Apply To Replacements, Hide Projected Layer | each exists for a specific reason recorded in its option description — which is what the hover tooltip shows — and in §11 |
 
 **No protocol bump.** Water is read entirely from the D3D9 stream — the game
 marks its own draws and the mark rides `D3DMATERIAL9::Power` — so nothing here
@@ -328,15 +421,37 @@ diagnostic only: they annotate the material report's `dusklight.mark` line and
 no control depends on them, so an older game build that does not push them is
 not out of date — it simply produces no markers.
 
-**Greying.** Sections whose Remix dependency is off are wrapped in
-`ImGui::BeginDisabled` *and* carry a line naming the option and where to find
-it. Greyed without an explanation is barely better than broken.
+**Greying, and the two rules around it.** A group whose Remix dependency is off
+is wrapped in `ImGui::BeginDisabled` *and* carries a line naming the option and
+where to find it. Greyed without an explanation is barely better than broken —
+and **hidden is worse than either**, because there is then nothing on screen to
+explain and nothing to find. The Dusklight bloom's eight manual controls were
+hidden rather than greyed while the game's feed drove the pass until 2026-08-17;
+they are now drawn disabled, and the Threshold Scale that only applies while the
+feed *is* driving is disabled in the other direction.
 
-### 3.2 Warp
+**Where the `BeginDisabled` goes matters.** It must be *inside* each collapsing
+header, never wrapped around a run of them: a `CollapsingHeader` inside
+`BeginDisabled` refuses the click that opens it, so wrapping the group would
+make the greyed controls unreachable rather than merely inert. The Sky tab's
+volumetrics gate is written that way — one pair per header body — which is why
+the atmosphere panel is now six small methods
+(`showImguiHot` / `Fog` / `FroxelGrid` / `SkyShape` / `PhysicalSky` /
+`Readouts`) rather than one `showImguiSettings`, with the headers and the
+`Indent`/`Unindent` pairs owned by `dxvk_imgui.cpp`.
 
-Region and Level dropdowns, a Warp button, and Room / Point / Layer under a
-collapsed header — they are rarely wanted, since the defaults land at the
-level's first entrance.
+**The five labels that looked like sections are now real headers.** The
+atmosphere used to render 36 controls flat under one header, sub-divided by
+`TextUnformatted` labels with no collapse state, so reaching the physical-sky
+knobs meant scrolling past the whole fog block.
+
+### 3.3 Go
+
+Region and Level dropdowns, a Warp button, then **the clock, flat**, then one
+collapsed `Rarely needed` header holding Room / Point / Layer and Clock Rate —
+the warp defaults land at the level's first entrance, so those are rarely
+wanted, and Clock Rate's own text used to tell the reader to go to a section on
+a different tab.
 
 **The names come from the game, not from Remix.** The destination table
 (`src/dusk/map_loader_definitions.h`, 18 regions / 103 levels) belongs to the
@@ -384,10 +499,17 @@ with `kMinLayer = -1`, `kMaxLayer = 14` (`warp.cpp:12-13`). Our bounds match on
 both sides of the wire; 15 would be a silent alias for -1, which is why the max
 is 14 rather than 15.
 
-#### 3.2.1 Time of day
+#### 3.3.1 Time of day
 
-Shares the Warp tab because both answer "put me somewhere specific". A slider,
-four presets on the quarter points, and **Freeze Time**.
+Shares the Go tab because both answer "put me somewhere specific". A clock
+readout, a slider, six presets on the game's own palette instants, and
+**Freeze Time**.
+
+**It is flat, and that is deliberate.** It opened with a collapsing header of
+its own until 2026-08-17, on a tab named Warp — one expansion down from
+anywhere, for the control the test playbook makes session step 1: *"Clock — do
+this first, it is the tool the rest want."* The header is gone; nothing else
+about it was touched.
 
 ```
 overlay → rtx.dusklight.game.{timeOfDay,timeCommit,freezeTime}
@@ -431,9 +553,10 @@ Clock arithmetic is in **integer minutes** deliberately: `dxvk_imgui.cpp` does
 not include `<cmath>`, and relying on a transitive one across three compilers
 is not worth a CI round.
 
-### 3.3 Controls
+### 3.4 Input
 
-**Built 2026-07-29, protocol 6.** A controller-port selector, the six
+**Built 2026-07-29, protocol 6.** Named "Controls" until 2026-08-17; the
+function is still `showDusklightControlsTab`. A controller-port selector, the six
 rebindable actions with what each is currently bound to, and Rebind / Clear.
 
 **The game owns every decision. This tab decides nothing.**
@@ -489,6 +612,35 @@ screen rather than inventing a second convention.
 
 **Untested in game.**
 
+### 3.5 Readouts
+
+**New 2026-08-17.** Every `rtx.dusklight.env.*` diagnostic the window shows, and
+nothing else — zero controls, so it needs no `RtxOption` plumbing at all.
+
+They belong together because they are all the same kind of thing: pushed by the
+game, all `NoSave`, all one-directional, none of them editable. They were
+interleaved with the settings in seven places, one block (`Environment
+Response`) was `DefaultOpen` at the bottom of the busiest tab with no control in
+it, and **the colpat crossfade was printed twice** — once in `dxvk_imgui.cpp`
+and once in `rtx_dusklight_atmosphere.cpp`, roughly 700 source lines apart, each
+with a different set of neighbouring fields. The more complete copy survives, on
+this tab; the atmosphere's `area:` line dropped its duplicate three values and
+keeps the ones only it has.
+
+Grouped by source: Sun and moon / Effect lights / Room lights / HD texture pack
+/ Environment response / Atmosphere, resolved. Separated from the settings by a
+**tab boundary rather than a header**, so a diagnostic can never be mistaken for
+a control.
+
+**What this costs is adjacency, and that is a real cost rather than a free win.**
+Named so it is a decision and not a discovery: the effect-light chain is read
+while moving Master Intensity, and the HD pack's two counter rows are the first
+step of the pack's own test recipe. The *diagnoses* that go with those numbers
+stayed where the controls are — only the numbers moved — and whether that is the
+right split is **the one part of this restructure a test session should decide
+rather than a document.** If the adjacency turns out to matter, the mitigation
+is a one-line summary in place with the full block still here.
+
 ---
 
 ## 4. ImGui version constraints
@@ -513,8 +665,10 @@ conversion, not a warning to be silenced.
 
 | Piece | Where |
 | :-- | :-- |
-| Overlay window, tabs, all three tab bodies | `src/dxvk/imgui/dxvk_imgui.cpp` (`showDusklightOverlay` → `showDusklightWindow` → `showDusklight{Remix,Warp,Controls}Tab`) |
-| Time of day (called from the Warp tab, and from its early-return path too, so the clock survives the destination list lagging) | `showDusklightTimeOfDay` in the same file |
+| Overlay window, the permanent header, all eight tab bodies | `src/dxvk/imgui/dxvk_imgui.cpp` (`showDusklightOverlay` → `showDusklightWindow` → `showDusklightStatusStrip` / `MasterSwitches` / `Alerts`, then `showDusklight{Go,Lights,Sky,Surfaces,Scene,Controls,Mods,Readouts}Tab`) |
+| Time of day (called once, from the Go tab; the warp combos are a branch rather than an early return, so the clock survives the destination list lagging) | `showDusklightTimeOfDay` in the same file |
+| `kRequiredProtocol` | one `constexpr` in the anonymous namespace at the head of the Dusklight block in `dxvk_imgui.cpp` |
+| Atmosphere panel, split into the groups the Sky tab draws under headers | `rtx_dusklight_atmosphere.cpp` (`showImguiHot` / `showImguiFog` / `showImguiFroxelGrid` / `showImguiSkyShape` / `showImguiPhysicalSky` / `showImguiReadouts`) |
 | Game-owned settings, hosted in Remix | `src/dxvk/rtx_render/rtx_dusklight_game.h` |
 | Game-pushed readouts | `src/dxvk/rtx_render/rtx_dusklight_env.h` |
 | Self-illumination: options, thresholds, candidate log — and the two-colour ramp, which shares the same `D3DMATERIAL9` transport | `src/dxvk/rtx_render/rtx_dusklight_emissive.h`, applied at one site in `rtx_instance_manager.cpp` |
@@ -527,6 +681,9 @@ conversion, not a warning to be silenced.
 **Rebase surface.** Everything Dusklight-specific in the overlay is in its own
 functions, called from one place each. A conflict in `dxvk_imgui.cpp` should
 resolve by re-applying a call, not by re-deriving a tab.
+
+**The one upstream file this restructure touches beyond that** is
+`rtx_bloom.cpp`'s `showDusklightImguiSettings`, which was already fork-only.
 
 ---
 
@@ -547,6 +704,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Shadow Insect sparks | landed 2026-08-13, protocol 15 — **CI-green and syntax-checked only, never run in game.** Two options (`effectLightSparks`, `effectLightSparkHold`) and one readout (`effLightsSparks`) for 闇虫 *yami mushi*, the Shadow Insect — the twilight bug whose body is drawn **only** under wolf senses, so its electric spark is the only sign of it in normal view. Verified from source: the actor returns from `draw()` before entering any draw list while senses are down, the spark emitters are untouched by that, and the state machine takes a 30% branch into the sparking state **specifically when the body's alpha is zero**. **Nothing here newly lights anything** — the eight spark effects were already ungated `Class::Other`; they moved to `Class::Spark` so they could be named, counted and switched. `effectLightSparks` is therefore an **undo** switch, on by default because that is the existing behaviour. `effectLightSparkHold` is a renderer setting, not a look setting: the bug's shortest spark window is 5-15 frames, shorter than the base grace period, so without it a bouncing bug destroys and re-creates its light and loses its temporal history each time. **Whether these effects pass the additive-and-glow rule at all is unknown from source** — the `.jpa` assets are not in the repo — which is exactly what `effLightsSparks` (`seen N  lit N`) reports. Design: `dusklight-ao/docs/effect-lights.md` §3.2 |
 | Room Lights section | landed 2026-08-12, joins protocol 13 — **CI-green only, never run in game, and deliberately off by default.** The room's own authored lights (`dungeonlight`), a third registry from either of the two the bridge already forwards and the only one carrying a cone. Its six readouts exist to settle two questions from one log rather than from an argument: `roomLightsFound` vs `roomLightsDrawn` for whether a room has any, and `roomLightsShaped` vs `roomLightsUnshapeable` for whether the cone work carries any weight. The cone's **direction and angle are transcribed** from the game; the **shape of its edge is an approximation** (GX has four falloff curves, Remix has one) and the two ring-shaped curves cannot be expressed at all. Design: `dusklight-ao/docs/effect-lights.md` §8.1 |
 | HD Texture Pack section | landed 2026-08-05, protocol 7 — **tested good 2026-08-06, first try.** The counters split game-side from Remix-side exactly as intended. Known characteristic: a long first-launch warm-up, `DusklightAtmosphere.md` §12.1 |
+| **Overlay restructure** | landed 2026-08-17, **no protocol change and no option renamed, added or re-flagged — a pure layout change.** Four tabs over 19 collapsing sections became a permanent status/master-switch/alert header plus eight topic tabs over 14 headers, none of them `DefaultOpen`. Prose went from 113 blocks / ~32,000 characters to 33 / ~4,800 by leaning on the per-option hover tooltip every `RemixGui` widget already renders; sentences the descriptions did not carry were moved *into* the descriptions. **No control was removed** — every option that had a widget still has one, verified by diffing the set of option identifiers with a widget before and against after. **Read carefully and invariant-checked; NOT compiled** (this fork builds on Windows only) and not run in game. Regression signatures to watch for: a setting that takes effect and is gone next launch means §1.2's `RtxOptionLayerTarget` was lost; a control that should be greyed and is not, or a collapsing header that refuses to open, means a `BeginDisabled` pair moved across a header boundary; a readout reported "missing" has moved to the Readouts tab |
 | Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the lava scores **0.00**, so no threshold could ever reach it. Rev 4 therefore drops the score from the decision entirely and cuts on three measured facts instead — the section now has no threshold in it, and only Emissive Brightness is expected to be touched. **Tested in game 2026-08-06:** the rule accepts the lava, and Emissive Brightness was dialled to 10.0 there, which is now its default. No protocol change: nothing in it is read by the game |
 
 Both of the two designs this document argues for at length are now confirmed in
@@ -555,7 +713,9 @@ and **layer `-1`** (warps land in the right story version). The round-trip list
 rebuild behaved as described, lag and all.
 
 **Protocol is at 17** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach` - **retired at 14**, see below, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers`, `colpatPrev`/`colpatBlend`, the three background alphas `bgWaterAlpha`/`bgAuxAlpha`/`bgFakeFogAlpha` **and** the six `roomLights*` readouts, 14 = the effect-light vocabulary rework: `effectLightReachScale`, `effectLightRadiusScale`, `effectLightAuthoredColor`, `effectLightAuthoredRadius`, the four `effectLightLantern*` options and the `effLightsAuthored`/`effLightsClasses` readouts, 15 = the Shadow Insect spark: `effectLightSparks`, `effectLightSparkHold` and the `effLightsSparks` readout, 16 = the Mods tab: `modsRunning`, `modCount` and `modList` outbound, `modsEnabled` inbound, 17 = the local-light mirror **removed** - the four `localLights*` readouts go, and `hideStarBillboards` becomes live after being an inert checkbox since it was added). `kRequiredProtocol`
-lives in `showDusklightRemixTab`; bump it in the same commit as the game side.
+is a single `constexpr` in the anonymous namespace at the head of the Dusklight
+block in `dxvk_imgui.cpp` (it lived in `showDusklightRemixTab` until
+2026-08-17); bump it in the same commit as the game side.
 
 > **13 covers everything on its session branch, and was taken once.**
 > `perBladeFlowers`, the `colpatPrev` / `colpatBlend` pair, the three
