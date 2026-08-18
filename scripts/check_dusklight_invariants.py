@@ -512,7 +512,7 @@ def main() -> int:
         print(
             "\nThese are facts stated in more than one place that no longer agree. "
             "A clean git merge does not mean they do - see CLAUDE.md, "
-            "'Merges that succeed and are still wrong'."
+            "'A clean git merge is not a correct merge'."
         )
         return 1
 

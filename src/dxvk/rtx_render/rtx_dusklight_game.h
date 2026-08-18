@@ -73,7 +73,7 @@ namespace dxvk {
     // Action binds, driven from the overlay's Controls tab. Indices and commit counters only: the
     // game owns the bind table, resolves conflicts, and pushes back both the resulting table and a
     // line of prose describing what happened. Nothing here decides anything - see
-    // documentation/DusklightOverlay.md section 3.3.
+    // documentation/DusklightOverlay.md section 3, "Two round-trip contracts, one shape".
     // All NoSave, for the same reason the warp commits are: a capture request that survived a
     // restart would arm itself on next launch.
     RTX_OPTION_FLAG("rtx.dusklight.bind", int, port, 0, RtxOptionFlags::NoSave,
@@ -549,7 +549,7 @@ namespace dxvk {
     // reach. Their debug panel is compiled out of every build of this port (one #if DEBUG around
     // the whole of d_kankyo.cpp's genMessage functions, and DEBUG is 0), so the bindings survive
     // only as a specification - a label the authors wrote, the exact field, and the range they
-    // worked in. docs/kankyo-tuning-surface.md in the game repo has the extraction.
+    // worked in.
     //
     // These three and no others because these three are the only environment fields that are set
     // once per scene rather than rebuilt every frame by the palette blend, which is what lets the

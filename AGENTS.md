@@ -34,7 +34,7 @@ This file provides context for AI coding agents working in this repository.
 >   *this repo* and are unaffected — but `kankyo` (環境) is *environment*,
 >   `wether` is the game's spelling of *weather*, and the game tree spells some
 >   words two ways, so a search for one spelling finds half a feature. Reference:
->   `dusklight-ao/docs/japanese-naming.md`.
+>   `dusklight-ao/docs/japanese-naming-remix.md`.
 >
 > Design documents for this fork's own work:
 > `documentation/DusklightAtmosphere.md` (the rendering, and §11 the whole-fork
@@ -83,7 +83,7 @@ Full guide: `documentation/CONTRIBUTING-style-guide.md`
   - Classes and structs: `PascalCase`
   - **These apply to code written here.** Game symbols quoted in comments or
     documentation keep the game's own spelling — they are romanized Japanese and
-    must not be Anglicised (`dusklight-ao/docs/japanese-naming.md`).
+    must not be Anglicised (`dusklight-ao/docs/japanese-naming-remix.md`).
 - **Includes**: Standard library first, then third-party, then local. Separate groups with blank lines.
 - **Memory**: Prefer smart pointers (`std::unique_ptr`, `std::shared_ptr`). Use `Rc<T>` for GPU resources.
 - **Profiling**: Use `ScopedCpuProfileZone()` / `ScopedGpuProfileZone(ctx, "name")` for performance-critical code.

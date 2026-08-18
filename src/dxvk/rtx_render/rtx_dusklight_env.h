@@ -29,7 +29,7 @@ namespace dxvk {
   // docs/kankyo-remix.md). "kankyo" is the game's own name for its environment system,
   // romanized Japanese rather than an acronym - like most identifiers in the game, which
   // the decompilation preserves from the original Japanese team. It is spelled that way in
-  // every option description below on purpose; dusklight-ao docs/japanese-naming.md is the
+  // every option description below on purpose; dusklight-ao docs/japanese-naming-remix.md is the
   // reference. The game pushes these through the Remix API every frame it is
   // running under Remix with the bridge enabled; they describe what the game's environment
   // system computed, not how strongly Remix should respond to it. Response knobs live with
@@ -57,8 +57,8 @@ namespace dxvk {
     // Corrected 2026-08-12: this said "the game's bloom brightness", which is what the value does
     // rather than what the game calls it, and it invites reaching for this to brighten a bloom. The
     // original team's own slider (d_kankyo.cpp:7084) labels the field blur DENSITY, paired with
-    // blur WIDTH on the line above it (:7083) - dusklight-ao docs/japanese-naming.md section 8
-    // carries the whole panel, which is a primary source in its section 6 sense.
+    // blur WIDTH on the line above it (:7083). An authored HIO label outranks a decompiled member
+    // name - dusklight-ao docs/japanese-naming-remix.md section 4 is why.
     RTX_OPTION_FLAG("rtx.dusklight.env", float, bloomBlurRatio, 128.0f, RtxOptionFlags::NoSave,
                     "The game's blur density in its native 0..255 range, the other half. Written by the game's kankyo bridge.\n"
                     "Density rather than brightness: it is the weight each blur sample carries, which does read as brightness on screen, but the game "
@@ -83,9 +83,8 @@ namespace dxvk {
     // reads as all of it. The game keeps FOUR background ambient layers and hands a piece of room
     // geometry one of them by the low two bits of its tevstr type (d_kankyo.cpp:4199-4200), from a
     // fixed table in the room actor - d_a_bg.cpp:336, over the six room model files model.bmd ..
-    // model5.bmd. This option carries layer 0 only. dusklight-ao
-    // docs/kankyo-tuning-surface.md section 2.1a has the routing table and why the other three
-    // are not sent.
+    // model5.bmd. This option carries layer 0 only; the description below says why the other
+    // three are not sent.
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, bgAmbient, Vector3(1.0f, 1.0f, 1.0f), RtxOptionFlags::NoSave,
                     "The ambient colour the game's environment system is applying to background layer 0, normalized to 0..1. Written by the game's kankyo bridge.\n"
                     "Layer 0 is the one the original team's panel labels 'chikei', terrain; it lights the room's first and last model files, and it is what the "
@@ -174,7 +173,7 @@ namespace dxvk {
     // (d_kankyo.cpp:6582) labels kasumi_outer as the near band and kasumi_inner as the far one,
     // the debug view (d_kankyo_debug.cpp:301,306) prints them as kasumiF and kasumiB, and the two
     // dome actors paint one band each. Note this makes "outer" the NEAR band, opposite to what the
-    // English reads like. dusklight-ao docs/japanese-naming.md section 6 carries the derivation.
+    // English reads like. dusklight-ao docs/japanese-naming-remix.md section 6 carries the derivation.
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kasumiInner, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
                     "The game's far horizon haze band, normalized to 0..1. Written by the game's kankyo bridge.\n"
                     "'Kasumi' is the game's own name for horizon haze; the game labels this one the back band.");
