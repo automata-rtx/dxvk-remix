@@ -595,6 +595,12 @@ namespace dxvk {
       : froxelMaxDistanceMeters() * RtxOptions::getMeterToWorldUnitScale();
     volumeArgs.froxelFireflyFilteringLuminanceThreshold = froxelFireflyFilteringLuminanceThreshold();
     volumeArgs.attenuationCoefficient = volumetricAttenuationCoefficient;
+    // Note: The game's fog ramp as an extinction field, for rtx.dusklight.atmosphere.fogRampMode 2.
+    // Called unconditionally, not under the `dusklight` branch above: the medium's *shape* is a
+    // separate decision from its coefficients, and this writes the "off" state explicitly so a
+    // build with the bridge disabled cannot inherit a mode from anywhere. Read only by the fork's
+    // sampleDensityField override in rtx/algorithm/volume_lighting.slangh.
+    dusklightAtmosphere.fillVolumeRampArgs(volumeArgs);
     volumeArgs.enable = enable() && (dusklight || canUsePhysicalFog);
     volumeArgs.enableTranslucentShadows = volumeArgs.enable && enableTranslucentShadows();
     volumeArgs.scatteringCoefficient = volumetricScatteringCoefficient;

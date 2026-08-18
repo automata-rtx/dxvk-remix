@@ -43,8 +43,16 @@
 // residual is exact rather than approximate - see the derivation at the use site in
 // composite.comp.slang. DusklightAtmosphere.md §5.2.
 struct DusklightCompositeArgs {
-  // Radiance the far ramp tends towards. Carried separately from CompositeArgs' own fog colour,
-  // which has already been through the legacy fog path's scale.
+  // Radiance the far ramp tends towards. By default this is the fully resolved ambient - palette
+  // steered towards the dome's sphere mean - which is exactly what the medium's own in-scatter
+  // blends towards, so both halves of the fog reach one colour. With
+  // rtx.dusklight.atmosphere.fogColorDirectional on it is the palette-derived radiance instead and
+  // skyColorWeight below does the dome blend per pixel; see that field.
+  //
+  // Still carried separately from CompositeArgs' own fog colour. That one used to have been through
+  // rtx.fogColorScale; since 2026-08-17 the legacy path is fed the same resolved radiance and the
+  // scale is bypassed while the atmosphere is active, so the two now agree - but they are still two
+  // fields with two lifetimes and merging them would couple this struct to the legacy fog's.
   vec3 fogColor;
   uint enable;
 
@@ -60,12 +68,21 @@ struct DusklightCompositeArgs {
   // whatever sky is behind them, which is also why the original authored its fog colour in the same
   // palette entry as its sky.
   //
+  // ZERO BY DEFAULT SINCE 2026-08-17, with fogColor above carrying the already-resolved ambient
+  // instead. The reason is the top-up identity: the medium's ambient in-scatter is isotropic and can
+  // only be given one colour per frame (the dome's sphere mean), so a far ramp that samples the same
+  // dome *directionally* blends towards a different colour than the near half does, and
+  // "S * (1 - f) + A * f" silently has two A's in it wherever the dome is not uniform - which
+  // outdoors is everywhere. Agreement can only be reached by making the far half isotropic too,
+  // because the near half has nowhere to put a direction. rtx.dusklight.atmosphere.fogColorDirectional
+  // puts the directional sample back for anyone who prefers the tint to the identity, and is what
+  // makes this non-zero.
+  //
   // It used to carry the physical sky's blend weight, on the reasoning that the palette stops
   // describing the sky once the sky is simulated. True, but too narrow: the game's fog colour is its
-  // sky colour under *either* model, and the near half of the fog now takes its ambient from the
-  // same dome (as a sphere average, since that term is isotropic). Both halves therefore follow one
-  // weight - rtx.dusklight.atmosphere.skyAmbientWeight - or they go back to describing different
-  // weather at different distances.
+  // sky colour under *either* model. When it is non-zero now it carries
+  // rtx.dusklight.atmosphere.skyAmbientWeight - the same weight the near half's ambient was blended
+  // with - which is as close as the directional path can get to agreeing.
   float skyColorWeight;
 
   // How much of the medium a ray that hits no geometry is allowed to pick up.
@@ -87,6 +104,16 @@ struct DusklightCompositeArgs {
 
   // 0 = Handover, the original distance split, kept as the A/B baseline.
   // 1 = Top up, the ramp reaches the game's exact opacity at every distance.
+  // 2 = Exact ramp. Takes the same code path as Top up here, deliberately: the difference lives in
+  //     the medium, which is given sigma(d) = 1 / (end - d) by the fork's sampleDensityField
+  //     override in rtx/algorithm/volume_lighting.slangh. The residual computed below then comes out
+  //     *flat* rather than merely small - zero when the game's ramp starts at or beyond the camera,
+  //     and a constant -start / (end - start) when it starts behind it, which is fog the original
+  //     had already applied before the camera and no medium can reproduce. The residual is kept
+  //     rather than skipped because it carries that constant, because it is the safety net for the
+  //     divergence clamp at the ramp's very end and for a froxel grid the metre ceiling stopped
+  //     short, and because a residual that *varies with distance* here is how the mode reports being
+  //     broken.
   uint fogRampMode;
   // Trim on the dome-derived colour. Applied here as well as on the host's sphere average, or the
   // near and far halves would be trimmed by different amounts.

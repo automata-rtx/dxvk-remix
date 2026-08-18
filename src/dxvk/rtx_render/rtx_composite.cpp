@@ -401,7 +401,22 @@ namespace dxvk {
     compositeArgs.frameIdx = frameIdx;
 
     if (enableFog()) {
-      const float colorScale = fogColorScale();
+      // Note: rtx.fogColorScale is skipped while Dusklight's atmosphere is running, and this is the
+      // depth path's half of the 2026-08-17 colour agreement. The atmosphere writes its resolved
+      // linear radiance straight into the fog state (applyFogOverride), so scaling it here by an
+      // option calibrated against a different game's fog would put the two fog paths back on
+      // different colours - which is the defect: this path aimed at the palette's raw gamma triple
+      // times 0.25, the volumetric path at the decoded, exposure-referenced, dome-steered ambient,
+      // and nothing reconciled them. rtx.dusklight.atmosphere.fogRadianceScale is the level knob for
+      // both now, and the fog log prints what each convention produces for the same input.
+      //
+      // Gated on fogColorOverridden() rather than on active(), corrected 2026-08-18: applyFogOverride
+      // declines to write when a translucent material has already replaced the game's fog, and on
+      // that path the colour still in the state is the game's own raw one, which is what
+      // fogColorScale is for. Asking active() there switched the scale off for a value it still
+      // applied to.
+      const bool dusklightOwnsFogColor = ctx->getCommonObjects()->metaDusklightAtmosphere().fogColorOverridden();
+      const float colorScale = dusklightOwnsFogColor ? 1.0f : fogColorScale();
       auto& fog = settings.fog;
       compositeArgs.fogMode = fog.mode;
       compositeArgs.fogColor = { fog.color.x * colorScale, fog.color.y * colorScale, fog.color.z * colorScale };

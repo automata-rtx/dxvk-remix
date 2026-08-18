@@ -440,6 +440,38 @@ the atmosphere panel is now six small methods
 `Readouts`) rather than one `showImguiSettings`, with the headers and the
 `Indent`/`Unindent` pairs owned by `dxvk_imgui.cpp`.
 
+**`showImguiFog` now carries `BeginDisabled` pairs keyed on the *mode* rather than
+on a Remix dependency** (added 2026-08-17, when `fogRampMode` gained a third
+value — see `DusklightAtmosphere.md` §5.2):
+
+| Greyed when | Controls | Why |
+| :-- | :-- | :-- |
+| `fogRampMode != 2` | **Exact Ramp Floor** (`fogRampFloor`) | it is mode 2's divergence clamp and means nothing elsewhere |
+| `!limitDensityToRamp \|\| fogRampMode != 1` | Clear Zone Tolerance / Veil Target | the `limitDensityToRamp` half pre-dates this; the mode term is new, because mode 0 never caps and mode 2's field can never out-fog the ramp, so there is no budget to spend |
+
+> **And one that was added and then taken back out on 2026-08-18, which is the
+> instructive one.** `zHalfMin` (**Ramp Match Floor**) and **Density Scale** were
+> greyed in mode 2, on the reading that a mode which is handed the ramp itself has
+> no scalar to derive. It does: `resolve()` still builds σ out of both in every
+> mode, and σ is what light *visibility* through the fog and
+> `transmittanceMeasurementDistance` are computed from. So that greying hid **the
+> only two controls over the one quantity σ still governs there** — a control
+> greyed on a plausible reading of the mode rather than on what the code does.
+> The rule this is an instance of: **grey a control because the code stops reading
+> it, not because the feature description says it should be irrelevant.**
+
+Every pair opens and closes inside `showImguiFog`, so none of them crosses a
+header boundary. **Watch for this on a merge**: the fog block is the densest
+`BeginDisabled` nesting in the overlay, and an unbalanced stack does not fail
+loudly — it greys the rest of the tab.
+
+**One control was renamed here, and only in the UI:** *Half Density Floor* →
+**Ramp Match Floor**. The option is still `rtx.dusklight.atmosphere.zHalfMin`, so
+no config, no `rtx.conf` and no protocol is affected; what changed is that the
+anchor it floors is no longer a half-density distance (`DusklightAtmosphere.md`
+§5.1). A session note or a screenshot from before 2026-08-17 will use the old
+label for the same widget.
+
 **The five labels that looked like sections are now real headers.** The
 atmosphere used to render 36 controls flat under one header, sub-divided by
 `TextUnformatted` labels with no collapse state, so reaching the physical-sky
@@ -669,6 +701,7 @@ conversion, not a warning to be silenced.
 | Time of day (called once, from the Go tab; the warp combos are a branch rather than an early return, so the clock survives the destination list lagging) | `showDusklightTimeOfDay` in the same file |
 | `kRequiredProtocol` | one `constexpr` in the anonymous namespace at the head of the Dusklight block in `dxvk_imgui.cpp` |
 | Atmosphere panel, split into the groups the Sky tab draws under headers | `rtx_dusklight_atmosphere.cpp` (`showImguiHot` / `showImguiFog` / `showImguiFroxelGrid` / `showImguiSkyShape` / `showImguiPhysicalSky` / `showImguiReadouts`) |
+| ↳ `showImguiFog`, as of 2026-08-17 | **Ramp Owns** now has three entries (Handover / Top up / **Exact ramp**); three controls added — **Exact Ramp Floor** (`fogRampFloor`), **Palette Reads As** (`fogColorSpace`) and **Directional Far Fog** (`fogColorDirectional`); one renamed in the UI only — *Half Density Floor* → **Ramp Match Floor**. `showImguiReadouts` gained the two palette conversions side by side, the top-up residual in both its mode-2 and non-mode-2 forms, and one line saying the legacy depth fog aims at the same ambient. See the greying table in §3.2 |
 | Game-owned settings, hosted in Remix | `src/dxvk/rtx_render/rtx_dusklight_game.h` |
 | Game-pushed readouts | `src/dxvk/rtx_render/rtx_dusklight_env.h` |
 | Self-illumination: options, thresholds, candidate log — and the two-colour ramp, which shares the same `D3DMATERIAL9` transport | `src/dxvk/rtx_render/rtx_dusklight_emissive.h`, applied at one site in `rtx_instance_manager.cpp` |
@@ -705,6 +738,7 @@ resolve by re-applying a call, not by re-deriving a tab.
 | Room Lights section | landed 2026-08-12, joins protocol 13 — **CI-green only, never run in game, and deliberately off by default.** The room's own authored lights (`dungeonlight`), a third registry from either of the two the bridge already forwards and the only one carrying a cone. Its six readouts exist to settle two questions from one log rather than from an argument: `roomLightsFound` vs `roomLightsDrawn` for whether a room has any, and `roomLightsShaped` vs `roomLightsUnshapeable` for whether the cone work carries any weight. The cone's **direction and angle are transcribed** from the game; the **shape of its edge is an approximation** (GX has four falloff curves, Remix has one) and the two ring-shaped curves cannot be expressed at all. Design: `dusklight-ao/docs/effect-lights.md` §8.1 |
 | HD Texture Pack section | landed 2026-08-05, protocol 7 — **tested good 2026-08-06, first try.** The counters split game-side from Remix-side exactly as intended. Known characteristic: a long first-launch warm-up, `DusklightAtmosphere.md` §12.1 |
 | **Overlay restructure** | landed 2026-08-17, **no protocol change and no option renamed, added or re-flagged — a pure layout change.** Four tabs over 19 collapsing sections became a permanent status/master-switch/alert header plus eight topic tabs over 14 headers, none of them `DefaultOpen`. Prose went from 113 blocks / ~32,000 characters to 33 / ~4,800 by leaning on the per-option hover tooltip every `RemixGui` widget already renders; sentences the descriptions did not carry were moved *into* the descriptions. **No control was removed** — every option that had a widget still has one, verified by diffing the set of option identifiers with a widget before and against after. **Read carefully and invariant-checked; NOT compiled** (this fork builds on Windows only) and not run in game. Regression signatures to watch for: a setting that takes effect and is gone next launch means §1.2's `RtxOptionLayerTarget` was lost; a control that should be greyed and is not, or a collapsing header that refuses to open, means a `BeginDisabled` pair moved across a header boundary; a readout reported "missing" has moved to the Readouts tab |
+| Fog controls, 2026-08-17/18 pass | landed 2026-08-17, hardened 2026-08-18 — **not built, not tested in game.** Three controls added to `showImguiFog` (**Exact Ramp Floor**, **Palette Reads As**, **Directional Far Fog**), one UI-only rename (*Half Density Floor* → **Ramp Match Floor**, still `zHalfMin`), a third entry on **Ramp Owns**, and `BeginDisabled` pairs keyed on `fogRampMode` — **one of which was removed again on 2026-08-18** after it turned out to hide the only two controls over the quantity mode 2 still uses σ for; see §3.2. `showImguiReadouts` gained the palette under both conversions, the mode-2 residual and a line stating that the legacy depth fog now aims at the same ambient. **No protocol change** — every one of these is read by Remix, none by the game. Regression signature: an unbalanced `BeginDisabled` greys the rest of the tab, and a residual readout that varies with distance in mode 2 **within the froxel grid's reach** is the fog defect rather than a UI one — outside that reach, and over the divergence clamp, it varies by construction and the panel says so. Design: `DusklightAtmosphere.md` §5.1–§5.4 |
 | Materials section (self-illumination + matrep) | landed 2026-08-04, run in game twice since. 2026-08-04: the score and threshold worked, but the accepted materials were brown rock, not lava. 2026-08-05: the lava scores **0.00**, so no threshold could ever reach it. Rev 4 therefore drops the score from the decision entirely and cuts on three measured facts instead — the section now has no threshold in it, and only Emissive Brightness is expected to be touched. **Tested in game 2026-08-06:** the rule accepts the lava, and Emissive Brightness was dialled to 10.0 there, which is now its default. No protocol change: nothing in it is read by the game |
 
 Both of the two designs this document argues for at length are now confirmed in

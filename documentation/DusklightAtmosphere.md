@@ -121,10 +121,14 @@ orders of magnitude denser than air and comes from its palette. So:
 - **Fog density** stays the game's. It is the only thing at this scale that
   produces visible fog at all.
 - **Sky radiance** becomes physical (Phase C).
-- **Fog colour** follows the sky: the far ramp samples the generated dome *in
-  the view direction*. That is what aerial perspective actually is — distant
-  things fade towards the sky behind them — and it is also why the original
-  authored its fog colour in the same palette entry as its sky.
+- **Fog colour** follows the sky, which is why the original authored its fog
+  colour in the same palette entry as its sky. *(This bullet used to say the far
+  ramp samples the generated dome **in the view direction** — aerial perspective
+  proper, distant things fading towards the sky behind them. **Off by default
+  since 2026-08-17:** it gave the fog's near and far halves two different colours
+  and broke §5.2's identity. Both halves now use the dome's sphere mean;
+  `rtx.dusklight.atmosphere.fogColorDirectional` restores the directional sample.
+  The coupling to the sky is unchanged — only which integral of it.)*
 
 The consistency requirement is unchanged and still met. One weight drives the
 sky's appearance, the light it casts, and the colour distant geometry fades
@@ -360,32 +364,91 @@ stops, and outside a transition the two patterns are equal with the ratio at
 
 TP's fog is `f(z) = saturate((z - start) / (end - start))`. We need an
 extinction coefficient σ for a Beer-Lambert medium. Replace Remix's hand-tuned
-linear remap with an analytic match at the **half-density point**:
+linear remap with an analytic match **at one anchor distance**:
 
 ```
-z_half = max((start + end) / 2, zHalfMin)
-σ      = ln(2) / z_half
+z_anchor = max((start + end) / 2, zHalfMin)          the ramp's midpoint, floored
+σ        = -ln(1 - f(z_anchor)) / z_anchor           matched to the game's own opacity there
 ```
+
+**Corrected 2026-08-17. The second line used to read `σ = ln(2) / z_half`**, which
+asserts the game is *half* opaque at the anchor. That is true only while the anchor
+is the ramp's own midpoint — where `f = 0.5` by definition, and `-ln(1 - 0.5) = ln 2`,
+so the new expression reduces to the old one exactly. It stops being true the moment
+the `zHalfMin` clamp moves the anchor, and **scripted fog banks are precisely the case
+that moves it**. See the mist-tag row below for what that cost.
 
 Scale-free, no magic endpoints, and correct across every regime the game uses:
 
-| Situation | `start`, `end` (units) | z_half | Result |
-| :-- | :-- | :-- | :-- |
-| Hyrule Field, clear day | large, very large | far | thin medium, long-range haze |
-| Faron Woods, morning | mid | mid | visible mood fog, thins as the palette advances |
-| Forest Temple | near-mid | mid-near | interior depth |
-| Goron Mines | near | near | dense, hot |
-| Lost Woods mist tag, kytag01 at full | `-2000`, `200` | clamped to `zHalfMin` | near-whiteout |
+| Situation | `start`, `end` (units) | z_anchor | `f(z_anchor)` | Result |
+| :-- | :-- | :-- | :-- | :-- |
+| Hyrule Field, clear day | large, very large | far (the midpoint) | 0.5 | thin medium, long-range haze |
+| Faron Woods, morning | mid | mid (the midpoint) | 0.5 | visible mood fog, thins as the palette advances |
+| Forest Temple | near-mid | mid-near (the midpoint) | 0.5 | interior depth |
+| Goron Mines | near | near (the midpoint) | 0.5 | dense, hot |
+| Lost Woods mist tag, kytag01 at full | `-2000`, `200` | clamped to `zHalfMin` = 100 | **0.955** | near-whiteout — and **4.46× denser since 2026-08-17** |
+
+Every row but the last has the clamp idle, so its anchor is the midpoint, `f`
+there is exactly 0.5 and the derived σ is **unchanged** by the correction. Only
+the clamped row moves — which is the whole point: the correction is invisible
+except exactly where the old expression was wrong.
 
 Note the mist-tag case: the tag — a **kytag**, i.e. a *kankyo tag*:
 `d_a_kytag00`…`d_a_kytag17` are invisible actors that override environment state
 for the area they sit in — passes a **negative start** with
 `start < end` (`dusklight-ao/src/d/actor/d_a_kytag01.cpp:94`), which in the
-vanilla ramp means "already ~90% fogged at z=0". The clamp turns that into a
-very dense medium, which is the right answer. (An earlier revision of this
+vanilla ramp means "already ~90% fogged at z=0". (An earlier revision of this
 section said `start > end`; that was a recon claim nobody verified, and §14.7
-records why it mattered.) `zHalfMin` is the one tuning knob and it
-exists to stop σ diverging.
+records why it mattered.)
+
+**What that row used to produce, and what it produces now.** With the anchor
+clamped to `zHalfMin` = 100, the game's own ramp is `(100 + 2000) / 2200 = 0.955`
+opaque there — not 0.5. So:
+
+| | σ at the mist tag | The medium at 100 units |
+| :-- | --: | :-- |
+| Before 2026-08-17 (`ln 2 / z_anchor`) | 0.006931 /unit | 50% opaque, where the original is 95.5% |
+| After (`-ln(1 - f) / z_anchor`) | 0.030910 /unit | 95.5% opaque, matching |
+
+**4.46× thinner than it should have been, and every scripted fog bank in the game
+had the same defect** — the clamp is what binds for all of them. The row still
+reads "near-whiteout" because the *ramp* was always going to supply the whiteout
+under `fogRampMode` 1; what was wrong is that the medium underneath it was half
+clear where the original had almost closed, so the top-up residual was carrying
+nearly all of it and the shafts sat in air that was barely there.
+Derivation and citations: `rtx_dusklight_atmosphere.cpp`, `sigmaMatchingRampAt`.
+
+`zHalfMin` is the one tuning knob for this and it exists to stop σ diverging: it
+is a floor on the **anchor distance**, not on a half-density distance. Raising it
+thins the very densest fog; lowering it lets a whiteout close in harder.
+
+**`f(z_anchor)` is itself clamped to 0.999**, because the game's ramp really does
+reach fully opaque and no finite extinction reproduces that — `-ln(0)` is
+infinite. The cap lands σ at `ln(1000) / z_anchor`, a whiteout rather than a
+divide by zero. **It is reachable**, and a comment claiming otherwise was
+corrected on 2026-08-18: the anchor is `max(midpoint, max(zHalfMin, 1e-3))` and
+`zHalfMin` defaults to 100, so **any ramp ending at or below about 100 units puts
+the anchor at or past the ramp's end**, where the ramp is already fully opaque and
+this clamp — an arbitrary constant, not anything about the game's fog — is what
+picks σ. That is inside the stated design envelope rather than outside it:
+`zHalfMin`'s own help text advertises "a scripted whiteout closing in over two
+metres", and two metres is 200 units. Worth knowing before treating a σ of
+`ln(1000)/100` as a derived quantity.
+
+**Which modes read it — narrower in the option's help text than in the code, so
+read this rather than that.** `resolve()` computes the anchor and `sigma`
+unconditionally (`rtx_dusklight_atmosphere.cpp`, the `anchorDistance` /
+`sigmaMatched` block), and `applyVolumeArgs` hands that σ to
+`attenuationCoefficient` in **every** mode. In `fogRampMode` 2 the view ray does
+not see it — the shader's own field divides it straight back out — but **light
+visibility through the fog still does**, because `calcVolumetricAttenuation` has
+no camera to measure a radial distance from and keeps the scalar medium. So
+`zHalfMin` and `densityScale` are not inert in mode 2; they stop steering the
+fog's *appearance* and go on steering how much the fog dims a light shining
+through it. In that mode σ is additionally floored at `kExactRampMinSigma`
+(1e-6), because `densityScale = 0` would otherwise delete the medium outright
+while every readout went on reporting an exact ramp — §5.2's floor table.
+*(Read from the code on 2026-08-17, re-read 2026-08-18; not measured.)*
 
 **Two corrections to this row, both landed 2026-08-11 and both from the same
 misreading.** They matter because this is the regime the ledger's C0 still calls
@@ -413,10 +476,16 @@ enable Remix's remap; we write the derived coefficients straight into
 
 ### 5.2 The split — by job, not by distance
 
-**Reworked 2026-08-13. `rtx.dusklight.atmosphere.fogRampMode` selects between the
-two, defaulting to the new one; the old one is kept as the A/B baseline. What
-follows describes both, because the reason the first one had to go is the most
-useful thing in this section.**
+**Reworked 2026-08-13; a third mode added 2026-08-17.
+`rtx.dusklight.atmosphere.fogRampMode` selects between all three, defaulting to
+**1, Top up**. What follows describes all three, because the reason the first one
+had to go is the most useful thing in this section.**
+
+| Mode | Name | Who reproduces the game's opacity curve |
+| :-- | :-- | :-- |
+| 0 | Handover (legacy) | the ramp past `froxelMaxDistance`, the medium before it. Kept as the A/B baseline |
+| 1 | **Top up** *(default)* | the ramp, at every distance, as an exact residual against whatever the medium achieved |
+| 2 | Exact ramp | **the medium itself**, given the game's curve as a heterogeneous extinction field; the ramp supplies only a flat constant when the game's ramp starts behind the camera. **UNTESTED IN GAME** |
 
 #### The original: split by distance
 
@@ -430,8 +499,10 @@ opaque and an exponential is ~75%. So each system got the range it was good at:
 **The flaw is at the near end, not the far one, and it is C11.** A homogeneous
 medium cannot be clear where the game is clear. TP's ramp is *exactly zero*
 before `fogStartZ`; an exponential starts extinguishing at the camera. With
-`start` halfway to `end`, `z_half = 0.75·end`, so at `z = start` the derived
-medium is already `1 − 2^(−0.667) ≈ 37%` opaque where the original is untouched.
+`start` halfway to `end`, the anchor is `0.75·end` — the midpoint, with the
+clamp idle, so `f` there is exactly 0.5 and §5.1's correction leaves this
+arithmetic alone — and at `z = start` the derived medium is already
+`1 − 2^(−0.667) ≈ 37%` opaque where the original is untouched.
 Under a split-by-distance scheme that error is unreachable — the near field is
 precisely the region the medium was made responsible for.
 
@@ -469,12 +540,208 @@ real in-scatter from real lights.** That last term is the shafts, and it is the
 only thing the volumetrics add to the picture — which is the correct division of
 labour, because it is the only thing they can do that a ramp cannot.
 
+> **The algebra above was correct and, until 2026-08-17, silently false in
+> practice — and this is the most instructive thing in this section.** It has one
+> `A` in it. The implementation had two. The medium's ambient in-scatter is
+> isotropic and gets **one colour per frame**, the dome's sphere-mean radiance;
+> the composite's far ramp was sampling **the same dome in the view direction**.
+> So the near half blended towards the average sky and the far half towards the
+> sky in front of the camera, and `A·m·(1 − t) + A·t = A·f` quietly had two
+> different `A`s in it — by construction, wherever the dome is not uniform, which
+> outdoors is always.
+>
+> Nothing caught it. The derivation is right, the code matched the derivation
+> term by term, both halves were "the dome" and the mismatch had no name. §5.3
+> even called it a feature — *"the two agree on average, which is the kind of
+> agreement that matters"* — which is exactly the sentence that should have been
+> the alarm: an identity does not hold **on average**.
+>
+> **Fixed by making the far half isotropic too**, because the near half cannot be
+> made directional — there is one `multiScatteringEstimate` for the whole frame
+> and nowhere to put a direction. `fillCompositeArgs` now hands the composite the
+> already-resolved `fogAmbient` and a `skyColorWeight` of **0**, so the shader's
+> own dome lerp is switched off and both halves reach one colour.
+> **What that costs is aerial perspective's directional tint**: the distance no
+> longer warms towards the sun. `rtx.dusklight.atmosphere.fogColorDirectional`
+> (default **false**) puts it back for anyone who would rather have the tint than
+> the identity — see §5.3.
+>
+> The general lesson, worth more than the fix: **an identity's terms have to be
+> checked for being the same *value*, not just the same *name*.** Both sides said
+> "the dome" and meant different integrals of it.
+
 **What this buys, and it is the whole point: density stops being a fidelity
 knob.** It no longer decides how thick the fog looks, so it is free to be set
 purely for shaft quality — and, critically, free to be held *under* the game's
 own curve so C11 stops happening.
 
+#### Mode 2: the ramp *is* a medium
+
+**Landed 2026-08-17. UNTESTED IN GAME** — built and invariant-checked on a Linux
+checkout, which cannot compile this fork at all, so CI is the first real compile.
+
+Modes 0 and 1 both start from "a homogeneous medium cannot be the game's ramp".
+That is true of a *homogeneous* one. Requiring **any** participating medium to
+reproduce `T(d) = 1 − f(d)` determines its extinction uniquely:
+
+```
+T(d)     = (end − d) / (end − start)          for start ≤ d < end
+σ(d)     = −T′(d) / T(d) = 1 / (end − d)
+```
+
+**So the console's fog always was a participating medium — a heterogeneous one**,
+thin at the camera and diverging at the ramp's end. That is *why* no single scalar
+σ expresses it, and why mode 1 needed a residual at all. The curve was read twice
+before this was built: from `GXSetFog` in the game's own
+`libs/dolphin/src/gx/GXPixel.c`, and independently from aurora's WebGPU shader at
+`aurora-ao/lib/gx/shader.cpp:1562`.
+
+Handed to the medium as an **optical depth over each segment** rather than as a
+point sample of σ, because the segment integral is closed form:
+
+```
+∫ 1/(end − u) du from a to b  =  ln((end − a) / (end − b))
+```
+
+Consecutive raymarch steps therefore **telescope exactly**, whatever the step
+count and whatever the blue-noise jitter does to the step boundaries. A point
+sample would not. An independent reviewer re-derived this numerically on
+2026-08-17 against four real ramps with jittered, non-uniform steps: the medium's
+opacity matched the game's `f(d)` to five decimal places and is provably
+independent of step count and jitter.
+
+**What it buys over mode 1 is the medium's *shape*.** Mode 1 makes the fog *look*
+right by construction but leaves the medium a flat exponential held down by
+`clearZoneTolerance`; the light shafts are therefore spread evenly through air the
+artists made clear. In mode 2 the medium is genuinely clear where the original is
+clear and genuinely thick where it is thick, so shafts sit where the haze is.
+`limitDensityToRamp` and `clearZoneTolerance` have nothing to do here — the field
+can never out-fog the game's ramp, which is a property rather than an assertion
+(see below), so the residual can never be clamped.
+
+**What the residual still does here, because the obvious guess is wrong and was
+written down wrong once already.** A medium only exists in *front* of the camera,
+so the field starts at `a = max(start, 0)`. Writing the medium's opacity
+`m(d) = (d − a)/(end − a)` and the game's `f(d) = (d − start)/(end − start)`, the
+top-up residual `(f − m)/(1 − m)` collapses to the **constant** `−start/(end − start)`
+— which is `f(0)`, the fog the original had **already applied at the camera**. No
+medium beginning at the camera can produce that; the composite adds it as a flat
+veil instead, and the total is still exactly `S·(1 − f) + A·f`.
+
+So the residual in mode 2, over the stretch the medium owns, is:
+
+- **exactly zero** when the game's ramp starts at or beyond the camera;
+- **a constant, at every distance**, equal to the ramp's head start when it starts
+  behind the camera — which scripted fog banks do routinely. The Lost Woods mist
+  tag's `−2000..200` gives `2000/2200 = 0.909091`; measured against the field
+  itself on 2026-08-17 as `0.909090..0.909092`.
+
+**Regression signature, stated so it is recognised rather than discovered: a
+residual that *varies with distance* in mode 2 — before the divergence clamp and
+within the grid's reach — means the medium did not receive the field it was
+supposed to.** The panel and the fog log both print the constant, label it
+`CONSTANT`, name the distance it holds out to, and spell out **the two places it
+is expected to vary** rather than leaving them to be reported as bugs:
+
+1. **over the last `rampMinRemaining` units**, where the divergence clamp freezes
+   the medium while the game's ramp keeps closing, so the residual rises off the
+   constant to exactly 1 at the ramp's end — which is *how the last sliver gets
+   closed at all*;
+2. **past the grid's reach**, if the metre ceiling `froxelMaxDistanceMaxMeters` is
+   binding, where the residual is carrying the fog's colour the way it does in
+   mode 1. The log says so explicitly when that is the case.
+
+> **Point 2 is the common case outdoors, not an edge one, and the signature was
+> written without it for a day.** `froxelMaxDistanceMaxMeters` defaults to 120 m =
+> **12,000 units**, and the open world's `fogEndZ` has been measured around
+> **33,500** — so in the commonest scene in the game the grid covers about a third
+> of the ramp and the residual genuinely varies over the other two thirds. As
+> first written, "a residual that varies with distance is the defect to report"
+> **would have fired on a correct build, outdoors, immediately.** Qualified
+> 2026-08-18 in the panel, the log and here. A regression signature that fires on
+> a healthy build is worse than none: it spends a test window and teaches the
+> reader to ignore the readout.
+
+All of this is readable from a session log without anyone being asked to describe
+a colour.
+
+**The divergence clamp.** σ is unbounded as `d → end`, so a step landing there
+would ask for infinite optical depth. The remaining distance is floored at
+`rtx.dusklight.atmosphere.fogRampFloor` (default 0.01) **of the ramp's range in
+front of the camera** — deliberately not of `end − start`: the mist tag's 2200-unit
+span has only 200 units of it in front of anyone, so a fraction of the span would
+have frozen the medium over the last 11% of what is on screen instead of the last
+1%. The medium's transmittance therefore bottoms out at exactly `fogRampFloor`
+rather than reaching zero. **What that costs is the medium's own density over that
+last sliver, and therefore any shaft in it** — the fog itself is closed by the
+top-up residual, which is what it is for.
+
+**Three floors around this, each of which stops a documented setting from becoming
+a silent no-op. Two were added 2026-08-18, after the first pass shipped without
+them.**
+
+| Floor | Where | Why it exists |
+| :-- | :-- | :-- |
+| `max(rampMinRemaining, 1e-4)` | shader, `dusklightRampOpticalDepth` | keeps the division finite without depending on a host clamp it cannot see |
+| `kMinRampFloorFraction = 1e-4` of the visible range | host, `resolve()` | **`fogRampFloor = 0` is a legal, advertised value.** `fillVolumeRampArgs` used to *refuse* a `rampMinRemaining` of exactly 0 and leave the mode at 0 — so setting the option's own documented minimum turned Exact ramp off while the composite still ran mode 2's residual against an uncapped homogeneous medium and **every readout still said "exact ramp"**. At this fraction the medium's transmittance bottoms out at 0.0001, four decades below anything visible |
+| `kExactRampMinSigma = 1e-6`, **mode 2 only** | host, `resolve()` | the scalar σ divides back out of the view ray exactly, but only while it is above the shader's own `1e-8` reference clamp. `densityScale = 0` — which the slider allows — sends both the extinction and the scattering coefficient to zero and **makes the medium vanish with the panel still reporting an exact ramp**. `1e-6` is a half-density distance of ~693,000 units, i.e. no measurable attenuation, so it preserves what `densityScale = 0` is asking for. **Deliberately not applied in modes 0 and 1**, where σ = 0 means "no medium at all" and is a legitimate setting — mode 1 with no medium is the composite's ramp on its own |
+
+The shape of all three is the same and is worth carrying: **a mode that switches
+itself off in response to a legal setting, while every readout goes on describing
+the mode, is worse than a mode that fails loudly.**
+
+**Two more things this mode changes that are not the ramp.**
+
+- **`froxelRangeScale` is floored at 1.** Its sub-1 default exists to leave the
+  fog's final closure to the composite, which an exponential needs and this field
+  does not; leaving the far stretch outside the grid here would attenuate the
+  surface correctly and deposit **none** of the fog's colour on it, because the
+  in-scatter is only integrated inside the grid and the residual that would
+  otherwise supply it is zero. **The metre ceiling
+  (`froxelMaxDistanceMaxMeters`) still binds, and outdoors it binds routinely** —
+  120 m = 12,000 units against a measured open-world `fogEndZ` of ~33,500, so the
+  grid covers roughly a third of the ramp there. When it binds the residual comes
+  back and covers the difference the way it does in mode 1; the log prints the
+  grid's reach against the ramp's end so that case is visible. So mode 2's
+  exactness is a near-field property outdoors and a whole-range property in the
+  smaller ramps — which is where it is wanted, since that is where the shafts are.
+- **Light *visibility* is still computed against the scalar σ.**
+  `calcVolumetricAttenuation` is called from `resolve.slangh`,
+  `visibility.slangh`, `volume_integrator.slangh` and
+  `RtxdiApplicationBridge.slangh` with world-space origins and no camera, where a
+  ramp measured radially from the camera has no meaning. Stated rather than
+  discovered: a distant light shining through the far end of the ramp is
+  attenuated *less* than the view ray through the same air is.
+  **UNVERIFIED how visible that is.**
+
+Two further places the mode is not exact, both bounded and both covered by the
+residual: `evalAtmosphericDensityBetween` is bypassed (its factor is 1 for any
+segment inside the atmosphere shell, which every step of a fog ramp measured in
+hundreds of units is, so it only bites for a camera above the shell); and
+`calcVolumetricAttenuation` truncates a step longer than
+`maxAttenuationDistanceForNoAtmosphere` when the atmosphere is off, which is
+indoors. Both are written up at the head of the shader file — see §11.
+
+**Where the code is, because "the volumetric shaders are not in this repository"
+was said once and was wrong.** They are in the **RTXDI submodule**, reached
+through `meson.build`'s `volumetrics_include_path_string`. The fork's addition is
+`src/dxvk/shaders/rtx/algorithm/volume_lighting.slangh`, which **shadows** the
+submodule's file of the same relative path rather than vendoring it: it renames
+the one function it needs to change (`sampleDensityField`) out of the way with a
+macro, includes the submodule's copy verbatim by its long path, and defines a
+replacement over it. Modes 0 and 1 fall straight through to upstream. §11 has what
+a rebase must check.
+
 #### Holding the medium under the ramp
+
+**This whole subsection is about mode 1 and is inert in mode 2.** Mode 2's field
+follows the game's ramp from `max(start, 0)` onward, so it can never be denser
+than the ramp, the peak excess is exactly zero by construction, and
+`limitDensityToRamp` / `clearZoneTolerance` / `clearZoneVeilTarget` have nothing
+to do (`resolve()` short-circuits them). Mode 2 therefore does not pay the trade
+below at all — which is the strongest argument for it, and also why "the one real
+trade in the fog system" is now a statement about mode 1 rather than about the
+system.
 
 `rtx.dusklight.atmosphere.limitDensityToRamp` (default on) lowers σ until
 
@@ -488,9 +755,22 @@ only peak where the line starts, where the two slopes match
 monotone in σ, so a bisection solves it exactly. Both σ values, the peak and where
 it occurs are in the panel and in the log line.
 
-`clearZoneTolerance` (default 0.08) is **the one real trade in the fog system**.
-At 0 the near field is as crisp as the original and there is almost no medium
-left to scatter anything; higher buys shaft presence with a thin near-field haze.
+**The *other* direction is now reported too (`rampShortfallPeak`, added
+2026-08-17): the peak amount by which the medium falls short of the ramp, which
+is the largest residual the composite has to supply.** Same four candidate points
+— the two curves are the same pair, so their stationary point is the same and only
+the sign differs — kept as a separate function rather than a sign flag on
+`rampExcessPeak`, whose clamp-to-zero and "start is where a positive excess almost
+always lives" seed are both statements about the excess direction and neither
+survives the flip. It answers "what did the composite's ramp actually have to do",
+which was previously unanswerable from a log; in mode 2 it is replaced by the
+closed-form constant above.
+
+`clearZoneTolerance` (default 0.08) is **the one real trade in mode 1**. At 0 the
+near field is as crisp as the original and there is almost no medium left to
+scatter anything; higher buys shaft presence with a thin near-field haze. (Until
+2026-08-17 this line read "the one real trade in the fog system", which was true
+while there were only two modes. Mode 2 does not make the trade.)
 
 **Since 2026-08-15 that budget is spent in luminance, not in coverage**, and the
 tolerance above is its ceiling. Coverage alone is half the picture: what a viewer
@@ -552,6 +832,13 @@ above decides what the ramp contributes.
 appearance, the medium owns light. The first answer forced a homogeneous medium
 to imitate a linear ramp in the region where it is least able to.
 
+**And 2026-08-17 asked whether it had to be split at all.** Mode 2 gives the
+medium the ramp itself, so the medium owns both — appearance *and* light — and the
+composite is left holding only the constant the game had already applied before
+the camera. That is a third answer rather than a replacement: mode 1 stays the
+default until mode 2 has been run in game, because mode 1 has been looked at and
+mode 2 has not.
+
 ### 5.3 The fog's colour, and the dome light that is not in the light list
 
 **Landed 2026-08-13. Untested in game.**
@@ -599,9 +886,32 @@ stats use. The sky changes over minutes; a few frames of lag is invisible.
 
 A sphere average is the *right* quantity rather than a compromise: the term it
 feeds is an isotropic in-scatter estimate, so what it wants is the froxel's
-irradiance from the environment. The far ramp keeps sampling the dome in the
-**view direction**, which is aerial perspective proper; the two agree on average,
-which is the kind of agreement that matters.
+irradiance from the environment.
+
+> **This paragraph used to end: *"The far ramp keeps sampling the dome in the
+> **view direction**, which is aerial perspective proper; the two agree on
+> average, which is the kind of agreement that matters."* It is kept, struck
+> through, because it is the sentence that hid the defect for four days.**
+>
+> "Agree on average" is exactly the agreement that does **not** matter here. The
+> §5.2 identity needs the two halves to blend towards the same colour *pixel by
+> pixel*; two different integrals of one dome agree in the mean and disagree
+> everywhere. **Corrected 2026-08-17:** both halves now use the sphere average.
+> `fillCompositeArgs` hands the composite the resolved `fogAmbient` and a
+> `skyColorWeight` of 0, which switches the shader's own dome lerp off.
+
+**`rtx.dusklight.atmosphere.fogColorDirectional` (default `false`) is the switch
+back.** With it on the far ramp samples the dome in the view direction again —
+aerial perspective proper, distant things fading towards whatever sky is behind
+them — and the composite is handed the palette-derived `fogRadiance` plus
+`skyAmbientWeight` instead, so the shader does its own lerp. **The cost of leaving
+it off, stated so it is recognised rather than discovered: the distance loses its
+directional tint, so a sunset no longer warms the haze on the sun's side.** That
+is a real loss, and it is why the directional path was made a switch rather than
+deleted.
+
+It is **inert** with no sky, or with `skyAmbientWeight` at 0: there is only the
+palette colour then, and both halves already agree.
 
 **Corrected 2026-08-13, from the first test session: the dome supplies the fog's
 *hue*, not its *level*.** `skyIntensity` is a **lighting** calibration — it sets
@@ -622,14 +932,20 @@ inside a sealed room — which is what "washed out and bright indoors" was.
 | 2 Full radiance | colour and brightness | physically the better answer for an open sky; try it if terrain reads darker than the sky behind it |
 
 In Hue only mode the dome's radiance is normalised by luminance to the palette's
-own level, and **the same scale is handed to the composite**, so the far ramp's
-view-direction sample lands where the near half's sphere average did.
+own level, and **the same scale is handed to the composite** (`skyAmbientScale`),
+so that where the far ramp does sample the dome itself — i.e. under
+`fogColorDirectional` — it lands at the level the near half's sphere average did.
+With `fogColorDirectional` off, which is the default, the far ramp does not sample
+the dome at all: it is handed the already-blended `fogAmbient` and the question
+does not arise.
 
 `skyAmbientWeight` (default 1.0) drives **both halves**. It used to be
 `physicalWeight` on the far half only, on the reasoning that the palette stops
 describing the sky once the sky is simulated — true, but too narrow: the game's
 fog colour is its sky colour under either model. Splitting the two weights is how
-the fog ends up one colour close by and another in the distance.
+the fog ends up one colour close by and another in the distance. **Since
+2026-08-17 it reaches the composite only under `fogColorDirectional`**; with that
+off the host applies it once, on the host, and hands the result down.
 
 **How much of C10 this fixes: outdoors, most of it; indoors, none.** A dome
 radiance is measured in the renderer's own units, so outdoor fog is now bright
@@ -641,11 +957,13 @@ deliberately not in this change** — it is the remaining half of C10.
 ### 5.4 The fog's level — treating a display colour as one
 
 **Landed 2026-08-13. Untested in game.** This is the remaining half of ledger
-C10, and it closes it.
+C10, and it closes it. **Reworked 2026-08-17: the gamma decode became selectable
+and the whole derivation now also feeds the legacy depth path** — see the two
+subsections at the end.
 
 `fog_col` is not a radiance. The game blended it over a **finished, already
 exposed image**, so its meaning is *"what the screen should show there"*.
-Decoding it out of gamma (§5.1) fixes its shape; nothing fixes its **level**,
+Decoding it out of gamma fixes its shape; nothing fixes its **level**,
 because a display colour has no level until you say what exposure it was meant
 to be seen at.
 
@@ -656,8 +974,14 @@ both**. That is the whole of "dark scenes read grey".
 The fix is to say the exposure out loud:
 
 ```
-fogRadiance = sRGBToLinear(fog_col) · fogRadianceScale / exposure
+paletteRead  = fogColorSpace == 0 ? sRGBToLinear(fog_col) : fog_col
+fogRadiance  = paletteRead · fogRadianceScale / exposure
 ```
+
+**The `sRGBToLinear` step is selected by `rtx.dusklight.atmosphere.fogColorSpace`
+and, since 2026-08-17, defaults OFF.** The exposure division is unconditional and
+runs after either reading; the two are separate thoughts and always were. Why the
+correct reading is not the default is the subsection below.
 
 `exposure` is what the tonemapper is about to multiply the frame by
 (`tonemapping.slangh`, `getExposure`; applied as `color *= getExposure(...)` in
@@ -672,16 +996,27 @@ fog still attenuates the scene, and that term is exposure-independent.
 
 **Only the palette's share is corrected.** Whatever the fog takes from the sky
 dome (§5.3) is already a real radiance measured in the renderer's own units, and
-rescaling it would be wrong. So outdoors with `skyAmbientWeight` at 1.0 this does
-essentially nothing — which is why the default mode is *Indoors only*.
+rescaling it would be wrong.
+
+> **Corrected 2026-08-17.** This paragraph used to end "So outdoors with
+> `skyAmbientWeight` at 1.0 this does essentially nothing — which is why the
+> default mode is *Indoors only*." **Both halves were wrong**, and the second
+> hid the first. The default has been **2 (Always)** since 2026-08-13; the
+> option's own help string says so. And the correction does *not* stop at the
+> palette's share outdoors: under the default `skyAmbientMode = 1` (Hue only),
+> `resolve()` computes `skyLevelScale = sRGBLuminance(fogRadiance) /
+> domeLuminance`, and `fogRadiance` already carries `exposureCorrection` — so
+> the correction propagates into the dome-derived ambient outdoors as well.
+> §5.4's own statement that "the dome's radiance is normalised by luminance to
+> the palette's level" is still literally true and silently carries this.
 
 `rtx.dusklight.atmosphere.exposureFogMode`:
 
 | Mode | Where it applies | Why you would pick it |
 | :-- | :-- | :-- |
 | 0 Off | nowhere | The pre-2026-08-13 behaviour, kept as the A/B baseline |
-| 1 **Indoors only** *(default)* | areas the game reports as having no sky | Exactly where there is no dome to take a real radiance from, so exactly where the problem still bites |
-| 2 Always | everywhere, to the palette's share | If outdoor fog still reads mis-levelled with `skyAmbientWeight` below 1 |
+| 1 Indoors only | areas the game reports as having no sky | Exactly where there is no dome to take a real radiance from, so exactly where the problem still bites |
+| 2 **Always** *(default since 2026-08-13)* | everywhere; outdoors it reaches the dome-derived ambient too, via `skyLevelScale` | The palette supplies the fog's level everywhere under `skyAmbientMode = 1`, not only indoors |
 
 **Deliberately reads the auto-exposure multiplier only, not
 `rtx.tonemap.exposureBias`.** A manual bias is a considered look adjustment to
@@ -694,6 +1029,81 @@ that is the point. And fog brightness now moves *with* eye adaptation rather
 than against it, so walking from sun into a cave should no longer show the fog
 brightening as the scene darkens. The panel prints the live correction
 (`exposure correction: x…`); below 1 means a bright scene, above 1 a dark one.
+
+#### `fogColorSpace` — the correct answer is not the default, deliberately
+
+**Added 2026-08-17.** Decoding is what is *correct*: `fog_col` is a display value —
+the console clamps it to 0..255 and blends it into an already-shaded framebuffer
+with no tone mapping anywhere downstream — and Remix injects into a **pre-tonemap
+linear radiance** buffer. Using a gamma-encoded triple as a radiance is a category
+error, and **not only a level one**: decoding changes the *ratios* between the
+channels, so the raw reading is less saturated than the artists' colour actually
+is.
+
+The default is **Raw** anyway, and the reason is honest rather than principled:
+
+| | |
+| :-- | :-- |
+| **0 Decoded** | sRGB decode. Correct. What the volumetric path did *alone* before 2026-08-17. About **2.3× darker at a mid grey** — 0.5 becomes 0.214 — but **~3.2× at the levels this game's fog palette actually uses** (the one measured entry decodes to 0.12, raw ~0.381), and more for darker entries |
+| **1 Raw** *(default)* | the palette value used directly. What the legacy depth path did *alone*, and therefore **the only reading that has ever actually been judged**, over months of play |
+
+No level calibration ever existed to absorb a drop of 2.3× at mid grey and ~3.2× at
+this game's real fog levels, so switching the default
+would be a **look change wearing a correctness fix's clothes**.
+`rtx.dusklight.atmosphere.fogRadianceScale` is the number that makes Decoded land
+where Raw did; move to Decoded once that has been recalibrated. The fog log prints
+the palette under **both** conversions on every distinct fog state, so the size of
+the difference in a given area is readable from a session log rather than from a
+screenshot.
+
+**The fog log's de-duplication hash now includes `fogRampMode`, `fogColorSpace`
+and `fogColorDirectional`** — a deliberate exception to the rule that only *game*
+state goes in it. Each of the three exists to be A/B'd, and **an A/B whose log
+does not reprint when the switch moves cannot be read**. All three are discrete
+and only a person moves them, so the cost to the 32-line budget is bounded by how
+often someone toggles a control rather than by anything the game does.
+
+#### One derivation now feeds both fog paths
+
+**Also 2026-08-17, and it is the defect that made `fogColorSpace` necessary.**
+There are two fog paths in this runtime and they were aiming at **different
+colours**, with nothing anywhere reconciling them:
+
+| Path | What it aimed at, before |
+| :-- | :-- |
+| Legacy depth fog (`rtx_composite.cpp`) | the palette's **raw** gamma triple × `rtx.fogColorScale` (default 0.25) — an option calibrated against a different game's fog |
+| Volumetric + far ramp | the **decoded**, exposure-referenced, dome-steered `fogAmbient` |
+
+Two changes close it. `applyFogOverride` now writes the fully resolved
+`fogAmbient` into `FogState::color` instead of the raw palette entry — **not
+clamped to 1**, on purpose, because it is a radiance in a pre-tonemap linear frame
+and the exposure correction routinely takes it above 1 in a dark room (it is still
+guarded against NaN and negatives). And `rtx_composite.cpp` **skips
+`rtx.fogColorScale`** for that value.
+
+**So `rtx.fogColorScale` no longer affects Dusklight's fog in the ordinary case.**
+Any document or `rtx.conf` telling you to calibrate it is stale; the level knob
+for **both** paths is now `rtx.dusklight.atmosphere.fogRadianceScale`.
+`rtx.fogColorScale` still does its ordinary job for any other title and whenever
+`rtx.dusklight.atmosphere.enable` is off.
+
+> **The gate is `fogColorOverridden()`, not `active()`, and the difference is
+> worth knowing — it was `active()` for a day.** `applyFogOverride` has three
+> early returns, and the one that matters is **a translucent material having
+> already replaced the game's fog**: on that path the atmosphere declines to
+> write, so the colour left in the state is the game's own raw one — which is
+> exactly the value `rtx.fogColorScale` exists to scale. `applyFogOverride`
+> therefore latches whether it actually wrote, and the composite reads that
+> latch. Gating on `active()` instead switched the scale off for a value it was
+> still applying to.
+>
+> The general shape, which is the reusable part: **"is the feature on" and "did
+> the feature take this value over" are different questions, and a consumer
+> downstream of an early return has to ask the second one.**
+
+**Regression signature:** if the fog changed *brightness* when this landed,
+`fogRadianceScale` is the number to move — the depth path lost a ×0.25 it used to
+carry, and gained the exposure correction it never had.
 
 ### 5.5 Forward scattering
 
@@ -779,7 +1189,7 @@ would compute the same thing twice.
 | Multi-scattering LUT (32×32) | on medium change only | sky-view LUT | Same |
 | Sky-view LUT (lat-long) | per frame | dome light, visible sky **and** the far fog's colour | There is no separate sky-view table: the dome image *is* it. All three consumers already funnel through `sampleDomeLightTexture`, so one evaluation serves appearance, GI and aerial perspective with no new plumbing |
 | Medium extinction/scattering | per frame, once | volumetrics only | **Not** shared with the sky — see the correction in §1. Air is transparent at this game's distances, so the fog's medium and the sky's are different things that agree on colour |
-| Aerial perspective | — | — | **Not computed.** The far ramp samples the dome in the view direction, which is the same thing for a fraction of the cost. No fourth LUT |
+| Aerial perspective | — | — | **Not computed, and since 2026-08-17 not approximated either by default.** The far ramp *could* sample the dome in the view direction, which is the same thing for a fraction of the cost and needs no fourth LUT — but that made the fog's two halves blend towards different colours and broke §5.2's identity, so it is now behind `rtx.dusklight.atmosphere.fogColorDirectional` (default **false**). By default both halves use the dome's sphere mean and the distance has no directional tint |
 
 The two big ones are the last two rows: unifying the medium removes a whole
 derivation *and* removes the possibility of sky and fog disagreeing, and the
@@ -1012,7 +1422,7 @@ shows, and the first knob to reach for.
 
 | # | Compromise | How it will show | First knob |
 | :-- | :-- | :-- | :-- |
-| C0 | ~~The calibration pass was never run.~~ **Run 2026-07-28. Phase A/B confirmed good in-game.** One constant was wrong: `skyIntensity` at 1.0 gave a visibly dim sky. The analytic anchor was right but the arithmetic behind it was not — it ignored that the palette colours are decoded out of gamma before they are scaled, which takes a mid blue from 0.5 to about 0.2, so the multiplier needed to be ~6× larger to land the same sky-to-sun ratio. Now 6.0. `zHalfMin` and `froxelRangeScale` were not reported as wrong. | — | — |
+| C0 | ~~The calibration pass was never run.~~ **Run 2026-07-28. Phase A/B confirmed good in-game.** One constant was wrong: `skyIntensity` at 1.0 gave a visibly dim sky. The analytic anchor was right but the arithmetic behind it was not — it ignored that the palette colours are decoded out of gamma before they are scaled, which takes a mid blue from 0.5 to about 0.2, so the multiplier needed to be ~6× larger to land the same sky-to-sun ratio. Now 6.0. `zHalfMin` and `froxelRangeScale` were not reported as wrong — **and note what that does and does not mean, because it was read as calibration for a year.** The pass never exercised either: it did not visit the scripted-fog regime that is the only place `zHalfMin`'s clamp binds (§13), and "not reported as wrong" is not a measurement. Both have since moved underneath that sentence: `zHalfMin` is now a floor on the **anchor distance** and the match at that anchor is to the game's actual opacity rather than to 0.5 (§5.1, corrected 2026-08-17, which made the clamped case 4.46× denser), and `froxelRangeScale` is **floored at 1 in `fogRampMode` 2** because its sub-1 default exists for an exponential's closure and that field closes itself. **The measurement is still owed, and it is now a measurement of different quantities.** | — | — |
 | C11 | ~~**A homogeneous medium cannot be clear near the camera.**~~ **Largely resolved 2026-08-13, untested in game.** The observation stands and the arithmetic was worse than this row said: with `start` halfway to `end` the matched medium is **~37%** opaque where the original is untouched. What changed is that the medium no longer has to reproduce the fog at all (§5.2), so σ is capped until its peak excess over the game's own ramp is within `clearZoneTolerance` (default 0.08) and the ramp supplies the rest. | Residual near-field haze bounded by `clearZoneTolerance`, and reported exactly: "peak excess over the game's ramp" in the panel and the log. | `rtx.dusklight.atmosphere.clearZoneTolerance` — lower for a crisper near field, higher for more shaft presence. This is now the *only* trade in the fog system. |
 | C10 | ~~**Fog is composited in linear HDR, not the game's display space.**~~ **Resolved 2026-08-13, untested in game, in two halves.** Outdoors the fog's colour is measured off the generated dome (§5.3), a real radiance in the renderer's units. Everywhere the palette is still supplying it — indoors above all — the colour is divided by the exposure the tonemapper is about to apply (§5.4), which is what a display colour means. `rtx.dusklight.atmosphere.exposureFogMode` selects Off / Indoors only / Always. | If it is wrong it will be *level*, not hue: fog too bright or too dim for the scene it sits in. The panel and log both print the live correction factor. | `exposureFogMode` to change where it runs, `fogRadianceScale` for the overall level, `skyAmbientScale` for the dome's share. |
 | C1 | **Dusk saturation.** Physical twilight is more graduated and less saturated than TP's authored dusk. | Sunsets read calmer / less punchy than vanilla. | Lower `physicalWeight`'s `elevationTerm` at low sun; or add a saturation push applied to the *medium's* Rayleigh/Mie tint, not to output pixels. |
@@ -1023,7 +1433,7 @@ shows, and the first knob to reach for.
 | C6 | ~~**Fog-avoid tag ignored.**~~ **Withdrawn 2026-08-11 — nothing was being given up.** `fog_avoid_tag` (kytag08) writes no fog state at all: its only reader aims a projected texture matrix at the `MA11` ground material the game itself calls 霧沼 *kirinuma*, "fog swamp", and the rest of the actor is particles, audio and a player flag. The clear bubble is drawn geometry and reaches Remix through the ordinary draw stream. §8.2 has every citation. **No heterogeneous-fog work is owed to this** — C11 is still a reason to want it, this is not. | — | — |
 | C7 | **Per-object fog flattened to one global.** (§8.3) | Objects authored with distinct fog match their room instead. | Could be restored per-instance later; costs a per-instance field. |
 | C8 | **Night is fully stylised.** Physics gives near-black without a sun. | No moonlight scattering / no physical night sky. | Deliberate. Moon-driven scattering is possible but is a separate feature. |
-| C9 | **`zHalfMin` clamp is a magic number.** (§5.1) | Extremely dense scripted fog may cap below vanilla. | Single tunable; raise the cap. |
+| C9 | **`zHalfMin` clamp is a magic number.** (§5.1) Still true, and still 100. What changed on 2026-08-17 is the *consequence* of it binding: the anchor match is now to the game's own opacity there rather than to 0.5, so where the clamp binds the medium is **4.46× denser** than it used to be (Lost Woods mist tag: σ 0.006931 → 0.030910). "May cap below vanilla" **was the defect and it is fixed** — the medium was half clear where the original was 95.5% opaque. The magic number itself is untouched and unmeasured. | Extremely dense scripted fog is now matched at the clamp rather than under it; if it over-caps it will read as a whiteout closing in *harder* than vanilla, which is the opposite signature to the one this row used to predict. | Single tunable; raise `zHalfMin` to thin it, lower it to let a whiteout close harder. In `fogRampMode` 2 the view ray does not use it at all — only light visibility does (§5.1). |
 
 Expected fidelity by scenario, as a reference for judging results:
 
@@ -1068,9 +1478,12 @@ Each phase is independently shippable and states its predicted look up front.
   medium changes. There is no separate sky-view LUT: the dome image already is
   one, so the physical evaluation goes straight into it.
 - C2 `physicalWeight` blend (§4).
-- C3 **Couple:** the far fog's colour follows the sky, sampled in the view
-  direction. Aerial perspective for the cost of one texture fetch.
-  for free (§7).
+- C3 **Couple:** the far fog's colour follows the sky. Aerial perspective for the
+  cost of one texture fetch, for free (§7). *(Landed sampling the dome in the
+  **view direction**; that is off by default since 2026-08-17 —
+  `fogColorDirectional` — because it gave the fog's two halves different colours.
+  The coupling itself stands: the far fog still follows the dome, via the sphere
+  mean the near half uses.)*
 - *Predicted:* §9's fidelity table.
 
 **Phase D — clouds, moya, polish.** C3 from the ledger. (C5 was withdrawn: the
@@ -1131,6 +1544,23 @@ design keeps the upstream diff to a checklist.
 - `src/dxvk/shaders/rtx/pass/dusklight/*` and
   `src/dxvk/shaders/rtx/pass/bloom/bloom_dusklight_*.comp.slang` — shaders are
   auto-discovered by `compile_shaders.py`'s `os.walk`; no build-file edits.
+- **`src/dxvk/shaders/rtx/algorithm/volume_lighting.slangh` — the one file in the
+  fork that is not new, not upstream-dxvk-remix, and not obviously either.** It
+  **shadows** the RTXDI submodule's
+  `submodules/rtxdi/rtxdi-sdk/include/volumetrics/rtx/algorithm/volume_lighting.slangh`,
+  which works because `meson.build` passes `-include` roots in order and
+  `scripts-common/compile_shaders.py` turns them into `-I` in that order, with
+  `src/dxvk/shaders` first. It is **not** a vendored copy: it renames the single
+  function it needs to change (`sampleDensityField`) out of the way with a macro,
+  includes the submodule's copy verbatim by its long path, and defines a
+  replacement over it — so an RTXDI bump is picked up automatically and a
+  signature change upstream is a compile error rather than silent drift.
+  Written against RTXDI `30431e9ff173473bb5b04190723779336ad92180`.
+  **What a rebase has to check:** that the shadowing still resolves (grep
+  `meson.build` for `shader_directory` before `volumetrics_include_path_string`),
+  that `sampleDensityField`'s signature is unchanged, and that the submodule's
+  path has not moved. Deleting this file loses `fogRampMode = 2` and nothing else;
+  the medium falls back to the scalar extinction.
 - `.cpp`/`.h` files do need a line in `src/dxvk/meson.build` (`src/d3d9/meson.build`
   for the d3d9 half). `rtx_dusklight_emissive.h` and `d3d9_rtx_matrep.h` are not
   listed there today — header-only, so the build does not care, but it is a
@@ -1145,8 +1575,10 @@ row says otherwise.
 | :-- | :-- | :-- |
 | `rtx_scene_manager.cpp` | fog state selection + `prepareSceneData` | `DusklightAtmosphere::active()` |
 | `rtx_global_volumetrics.cpp` `getVolumeArgs` | one early branch to the Dusklight derivation | same |
-| `rtx_composite.cpp` | fills `DusklightCompositeArgs` for the far half of the fog | same |
-| `composite.comp.slang` `applyFog` | range split (mode 0) / top-up residual (mode 1), plus three helpers next to `sampleDomeLightTexture` | `cb.dusklightArgs.enable` |
+| `rtx_composite.cpp` | fills `DusklightCompositeArgs` for the far half of the fog; **and, since 2026-08-17, skips `rtx.fogColorScale` on the legacy depth fog** so both fog paths aim at the one resolved radiance `applyFogOverride` writes | `DusklightAtmosphere::active()` for the args; **`fogColorOverridden()`** for the scale skip — the narrower question, because `applyFogOverride` declines to write when a translucent material already replaced the fog |
+| `rtx_global_volumetrics.cpp` `getVolumeArgs` | one **unguarded** call to `fillVolumeRampArgs`, which writes the ramp field or explicitly writes "off" | none — writing the off state is the point |
+| `volume_args.h` | four fields for the fog ramp field (`dusklightFogRampMode`, `dusklightRampStart/End/MinRemaining`) | additive; zero is upstream behaviour |
+| `composite.comp.slang` `applyFog` | range split (mode 0) / top-up residual (modes 1 **and 2** — mode 2 takes the same branch deliberately, the difference living entirely in the medium), plus three helpers next to `sampleDomeLightTexture` | `cb.dusklightArgs.enable` |
 | `composite.comp.slang` stochastic alpha blend | the same top-up applied to alpha-blended surfaces, so particles are fogged like the geometry behind them | `cb.dusklightArgs.enable` and `fogRampMode != 0` |
 | `rtx_global_volumetrics.cpp` | `volumetricFogAnisotropy` taken from the Dusklight medium instead of `rtx.volumetrics.anisotropy` | `dusklight` |
 | `composite_args.h` | one args struct added (`DusklightCompositeArgs`) | additive only |
@@ -1310,10 +1742,14 @@ aurora, not against Remix.
 | Fog-avoid tag (kytag08) | **closed 2026-08-11 without code.** It touches no fog; §8.2 and C6 record why, and nothing is owed |
 | colpat 9 bypass | **instrumented 2026-08-11, decision deferred.** `logColpatOnce` added; the literal's source is the wrong index space and whether any stage runs colpat 9 is UNKNOWN. **Untested in game — one play session with the clock freeze off settles it.** §8.6 has the three possible results and what each one triggers |
 | `skyFogMode` = Exempt | **TESTED GOOD 2026-08-13.** The sky no longer picks up the medium; the horizon seam and the dingy sky are gone. Weighted stays as a taste control for foggy weather rather than as a rival candidate, and Off stays as the A/B baseline. This closes the "live defect" below |
-| Fog rework: top-up ramp, density cap, dome-derived ambient, forward scattering | **landed 2026-08-13, UNTESTED IN GAME.** No protocol bump — this is fork-only and reads game state that was already on the wire. §5.2–§5.5 carry the design and the derivations; the causes it addresses are C11, C10, the 4.4× near/far colour mismatch and the isotropic phase function |
+| Fog rework: top-up ramp, density cap, dome-derived ambient, forward scattering | **landed 2026-08-13, UNTESTED IN GAME.** No protocol bump — this is fork-only and reads game state that was already on the wire. §5.2–§5.5 carry the design and the derivations; the causes it addresses are C11, C10, the 4.4× near/far colour mismatch and the isotropic phase function. **Four further passes landed on 2026-08-17/18 and are separate rows below** — the anchor correction, the two colour-agreement fixes and `fogRampMode` 2. In particular the near/far colour mismatch this row claims to have fixed was fixed only in *level*; the two halves went on blending towards different *colours* until 2026-08-17 |
 | First test-session corrections | **landed 2026-08-13, from the owner's first run of the rework.** Four defects, all found from the session log: the fog's dome-derived ambient was ~6x the palette's colour and unshadowed, so interiors washed out (`skyAmbientMode`, new, defaulting to Hue only); the sky-stats readback served a previous area's sky for `kMaxFramesInFlight` frames on resume; the fog log burned its whole 32-line budget in 450 ms of one transition; and `fogAnisotropy` went back to upstream's 0 as the prime suspect for a reported grid-like look. §5.3 and §5.5 |
 | Exposure-relative fog level | **landed 2026-08-13, UNTESTED IN GAME.** §5.4. Closes the second half of C10. Also made the auto-exposure stats readback unconditional — it used to run only while the Readout panel was open, which would have made the fog's brightness depend on whether anyone was looking at it |
 | Dusklight panel settings persisting | **landed 2026-08-13, UNTESTED IN GAME.** Every control in the F1 overlay was writing to the Derived layer, which is never serialised, so the whole panel silently reset on each launch. `DusklightOverlay.md` §1.2 has the mechanism and the trap |
+| Fog anchor correction (§5.1) | **landed 2026-08-17, UNTESTED IN GAME.** The medium was matched to *half* opacity at the anchor; it is now matched to the game's actual opacity there. Identical wherever the `zHalfMin` clamp is idle, **4.46× denser wherever it binds** — which is every scripted fog bank in the game. Fork-only, no protocol bump |
+| One colour for both halves of the fog (§5.2, §5.3) | **landed 2026-08-17, UNTESTED IN GAME.** The §5.2 identity needs both halves to blend towards one `A`; the near half used the dome's sphere mean and the far ramp sampled the same dome *directionally*, so it had two. Now `skyColorWeight = 0` and the composite is handed the resolved `fogAmbient`. **Cost: the distance loses its directional tint** — `fogColorDirectional` (default false) restores it. Fork-only |
+| One derivation for both fog *paths* (§5.4) | **landed 2026-08-17, UNTESTED IN GAME.** `applyFogOverride` writes the resolved radiance into `FogState::color`, and `rtx_composite.cpp` skips `rtx.fogColorScale` while the atmosphere is active. **`rtx.fogColorScale` no longer affects Dusklight's fog**; `fogRadianceScale` is the level knob for both. New `fogColorSpace` selects the palette reading and defaults to **Raw**, the one that has actually been judged. Fork-only |
+| `fogRampMode` 2, the exact transmittance ramp (§5.2) | **landed 2026-08-17, hardened 2026-08-18, UNTESTED IN GAME — and this fork cannot be compiled in a Linux container, so CI is the first real compile.** The medium is given `σ(d) = 1/(end − d)`, which is what the game's own ramp *is*. Implemented by shadowing the RTXDI submodule's `sampleDensityField` (§11); modes 0, 1 and the default are untouched. An independent reviewer re-derived the maths numerically: the opacity matches the game's ramp to 5 dp, independent of step count and jitter. **The mechanism is correct; three floors added 2026-08-18 fix defects around it** — see §5.2's floor table. Regression signature: a residual that varies with distance before the divergence clamp |
 | colpat crossfade (`styleTerm`) | **landed 2026-08-11, protocol 13, UNTESTED IN GAME.** The bridge pushed one third of the game's palette blend; `styleTerm` now follows all three and lerps instead of cutting on the incoming index. Default-safe by algebra at `colpatBlend == 1.0`, which is both the option default and the game's steady state. §4.1 has the derivation, the regression signature and why the colpat 9 guard was left alone |
 
 Owner's verdict on A + B after testing: *"a massive, frankly monumental
@@ -1438,10 +1874,17 @@ denser than air, so `exp(-σ · gridDepth)` is large — and all of it lands on 
 sky. Remix's near-clear default medium would barely show it.
 
 **Why the seam looks the way it does:** distant terrain fades toward the far
-ramp's colour, which per C3 samples the dome in the view direction — the right
-colour. The sky beside it is attenuated dome plus `fog_col`-tinted in-scatter. Two
-descriptions of one day, which is exactly what §0 exists to prevent, arriving
-through the one path §0 did not cover.
+ramp's colour, which at the time of this analysis sampled the dome in the view
+direction (per C3) — the right colour. The sky beside it is attenuated dome plus
+`fog_col`-tinted in-scatter. Two descriptions of one day, which is exactly what §0
+exists to prevent, arriving through the one path §0 did not cover.
+
+*(Since 2026-08-17 the far ramp no longer samples the dome directionally by
+default — §5.2, §5.3. That does not change this diagnosis, which is about the
+volumetric half fogging a sky pixel the ramp exempts; it does mean the far ramp's
+colour is now the dome's sphere mean unless `fogColorDirectional` is on. **If this
+seam is re-examined, note that the terrain side of it has changed colour since the
+observation was recorded.**)*
 
 **Not fixable by tagging *this*** — but read §14.9 before repeating the wider
 claim, which was wrong. Category flags apply to *instances*; the generated sky
@@ -1878,7 +2321,14 @@ rtx.volumetrics.enableFogColorRemap = False
 
 # The legacy depth-fog path. Superseded; it is skipped whenever volumetrics
 # are enabled, so these only matter if you turn volumetrics off.
-# rtx.maxFogDistance / rtx.fogColorScale - leave as they are.
+#
+# CORRECTED 2026-08-17: rtx.fogColorScale is now bypassed entirely while
+# rtx.dusklight.atmosphere.enable is on - the depth path is fed the same
+# resolved radiance the volumetric path uses, and scaling it here is what put
+# the two paths on different colours in the first place (DusklightAtmosphere.md
+# section 5.4). So it is not merely superseded: it does nothing at all for us.
+# The level knob for BOTH paths is rtx.dusklight.atmosphere.fogRadianceScale.
+# rtx.maxFogDistance - leave as it is.
 ```
 
 ### The A/B
@@ -1897,7 +2347,11 @@ experiment than the original pre-implementation Phase 0.
 
 - A **uniform** error — thick or thin everywhere, bright or dim everywhere —
   is a constant. Reach for `densityScale` first (one number, whole scene),
-  then `skyIntensity`, then `zHalfMin`.
+  then `skyIntensity`, then `zHalfMin`. *(All three steer the scalar medium, so in
+  `fogRampMode` 2 the first and third do not change the fog's appearance at all —
+  only how much it dims a light shining through. A uniform **brightness** error in
+  any mode is `fogRadianceScale`, which since 2026-08-17 is the level knob for
+  both fog paths; `rtx.fogColorScale` is bypassed and will not respond.)*
 - A **per-area** error — right in the field, wrong in the mines — is the
   mapping, and that is a real bug worth reporting rather than tuning around.
 
@@ -1943,15 +2397,15 @@ Three cautions against reading it as more than that:
   way. What that visit measured was most likely Lake Hylia's **palette** fog,
   which is a genuinely dense regime and genuinely good news for the mapping, but
   it is not the `-2000`/`200` override.
-- **So it does not isolate `zHalfMin`.** That clamp only bites where the
-  half-density point `(start + end)/2` falls behind the camera. For the mist tag
+- **So it does not isolate `zHalfMin`.** That clamp only bites where the ramp's
+  **midpoint** `(start + end)/2` falls behind the camera. For the mist tag
   that is `(-2000 + 200)/2 = -900`, and the clamp fires hard. **This is done by
   the near `end`, not by the negative `start`** — negative starts are ordinary
   (`start` was zero or negative in *every* area measured on 2026-08-06), so the
   sign of `start` discriminates nothing.
 
   Which is settled empirically rather than by argument: Lake Hylia's own ramp
-  was **measured** at `[-3000, 70000]` on 2026-08-06, a half-density point of
+  was **measured** at `[-3000, 70000]` on 2026-08-06, a midpoint of
   ~33500 — three orders of magnitude clear of `zHalfMin`, and nothing like
   `-2000`/`200`. So the visit demonstrably did not exercise the clamp, and that
   measurement is also the nearest thing to positive evidence that Lake Hylia
@@ -1961,6 +2415,16 @@ Three cautions against reading it as more than that:
   table, it has not arrived yet.) "The dense case looks right" and "the clamp is correct" were
   already different claims with evidence for only the first; the gap between
   them is now wider, not narrower.
+
+  *(Both paragraphs said "**half-density point**" until 2026-08-17. The distances
+  are unchanged and the reasoning holds, but the vocabulary was retired with
+  §5.1's correction: the anchor is the ramp's midpoint, and the game is half
+  opaque there only while the clamp is idle. For Lake Hylia's `[-3000, 70000]`
+  the clamp is idle, so 33500 genuinely is a half-density point; for the mist tag
+  it is not, and calling it one is what hid the defect §5.1 records. **And what
+  the clamp does when it bites changed on that date** — the medium there is now
+  4.46× denser — so a measurement taken before it and one taken after are not
+  comparable.)*
 - **The Goron Mines are still unvisited**, and they are the other regime — near
   and dense rather than scripted and dense.
 
@@ -1968,6 +2432,14 @@ Three cautions against reading it as more than that:
 C0 is unchanged by this and stays open; what changed is *where to go* to close
 it — `kankyo-fog.md` §5 now carries the walk-out procedure, which is the
 opposite of the intuitive one because the tag sits in a clear centre.
+
+*(Two things about that measurement moved on 2026-08-17 and it is worth reading
+§5.1 and §5.2 before taking it. `zHalfMin`'s clamp now anchors the medium to the
+game's **actual** opacity rather than to 0.5, so the scripted regime this walk-out
+targets is 4.46× denser than any earlier reading of it. And `froxelRangeScale` is
+**floored at 1 in `fogRampMode` 2**, where its sub-1 default has no reason to
+exist — so if the walk-out is done in that mode, it is not measuring this setting
+at all. Measure in the default mode 1, or record which mode was used.)*
 
 **And the Lake Hylia visit surfaced something bigger than fog density:** it is
 where the sky/fog defect in §12 shows worst, because it is the densest medium
