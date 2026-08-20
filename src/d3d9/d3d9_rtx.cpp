@@ -681,6 +681,12 @@ namespace dxvk {
     // Fetch all the legacy state (colour modes, alpha test, etc...)
     setLegacyMaterialState(m_parent, m_parent->m_alphaSwizzleRTs & (1 << kRenderTargetIndex), m_activeDrawCallState.materialData);
 
+    // Whatever aurora said about this draw on the fork's own per-draw channel, rather than through
+    // a repurposed D3DMATERIAL9 field. Peeked, not consumed: aurora clears by sending a zeroed
+    // block at the end of the run it marked, the same discipline its water mark uses, because
+    // "latch it forever" and "clear after every draw" are both wrong and both were tried there.
+    m_activeDrawCallState.materialData.dusklightDrawMeta = dxvk::DusklightDrawMetaState::peek();
+
     // Fetch fog state 
     setFogState(m_parent, m_activeDrawCallState.fogState);
 

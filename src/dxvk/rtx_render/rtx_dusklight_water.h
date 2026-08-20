@@ -160,6 +160,26 @@ namespace dxvk {
                "becomes a hard glass edge. That pass exists precisely to soften that boundary, so\n"
                "converting it destroys the one thing it does. Off makes it refract like the rest.");
 
+    RTX_OPTION("rtx.dusklight.water", bool, wavesAsBlend, false,
+               "Leave the wave pass ('nami') as the alpha-blended overlay it is, rather than\n"
+               "making it a refracting surface. This is what puts a visible water texture back.\n"
+               "A translucent material in Remix has NO albedo slot - the type carries exactly three\n"
+               "textures (normal, transmittance, emissive) - and makeMaterial below sets none of\n"
+               "them. So every layer converted to water becomes a perfectly smooth, uniformly\n"
+               "tinted interface with no surface detail whatever, which over a lake bed is close to\n"
+               "invisible. Before this switch existed the only pass that still showed a texture was\n"
+               "the shoreline, because it alone kept its alpha blend.\n"
+               "'nami' is the game's word for waves, and its pass is the one carrying the ripple\n"
+               "art, so it is the right one to keep: the body of water still refracts through its\n"
+               "other layers and the waves are drawn over it.\n"
+               "DEFAULT OFF as of 2026-08-15, reverted the same day it landed: tested in game it did not\n"
+               "read as the wave surface at all - what it produced was a trail of ripples behind Link\n"
+               "as he swims, which is the pass doing something real but not the thing this was for.\n"
+               "Off is the behaviour before that change: waves refract like every other layer.\n"
+               "NOTE this is painted detail, not refracted - a real fix derives a normal map from\n"
+               "the wave texture's luminance. See DusklightAtmosphere.md and the note in\n"
+               "makeMaterial about why feeding the colour texture in raw was reverted.");
+
     RTX_OPTION("rtx.dusklight.water", bool, applyToReplacements, true,
                "Keep water translucent even where a replacement material was authored for it.\n"
                "A capture cannot express water: GameCapturer::captureMaterial writes an albedo\n"
@@ -249,15 +269,23 @@ namespace dxvk {
     // Note this is deliberately not a texture hash test. The same water texture
     // appears on non-water draws in this game, and the same water appears with
     // different textures as the level's water rises.
+    //
+    // The Power test comes first on purpose. Both operands are pure reads, so `&&` may
+    // short-circuit on either - but RtxOption<T>::getValue() takes the process-wide
+    // RtxOptionImpl::getUpdateMutex() (rtx_option.h) while Power is a float already in
+    // cache, and almost nothing this game draws is water. Removes one uncontended lock
+    // acquisition per non-water draw; not measured as a frame-time win, and this
+    // runtime's measured per-draw cost is BLAS rebuild rather than CPU bookkeeping.
     inline bool isWater(const LegacyMaterialData& mat) {
-      return DusklightWater::enable() && waterRole(mat) == WaterRole::Surface;
+      return waterRole(mat) == WaterRole::Surface && DusklightWater::enable();
     }
 
     // The camera-projected overlay drawn over a water surface - MA02/MA10, which
     // dKy_bg_MAxx_proc (d_kankyo.cpp:11479) hands a C_MTXLightPerspective built from the
     // live camera fovy and aspect. Not the surface, and not something to refract through.
+    // Same operand order as isWater above, for the same reason.
     inline bool isProjectedOverlay(const LegacyMaterialData& mat) {
-      return DusklightWater::enable() && waterRole(mat) == WaterRole::Projected;
+      return waterRole(mat) == WaterRole::Projected && DusklightWater::enable();
     }
 
     // Which MAxx tag this draw's material carried, or 0. Aurora ships the number
@@ -296,7 +324,11 @@ namespace dxvk {
     }
 
     inline bool keepAsBlendedOverlay(const LegacyMaterialData& mat) {
-      return DusklightWater::shorelineAsBlend() && waterLayer(mat) == WaterLayer::Shoreline;
+      switch (waterLayer(mat)) {
+      case WaterLayer::Shoreline: return DusklightWater::shorelineAsBlend();
+      case WaterLayer::Waves:     return DusklightWater::wavesAsBlend();
+      default:                    return false;
+      }
     }
 
     // The dimensions of the texture Remix actually received, or 0x0. Reported because

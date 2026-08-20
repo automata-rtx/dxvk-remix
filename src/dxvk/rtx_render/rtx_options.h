@@ -535,7 +535,24 @@ namespace dxvk {
                     "If this is too low, fast moving objects may flicker and have bad lighting.  If it's too high, repeated objects may flicker.\n"
                     "This does not account for sceneScale.", args.minValue = 0.f);
 
-    RTX_OPTION("rtx", bool, useNewGuiInputMethod, true, "Disables the previous method for getting mouse/keyboard input and enables a new method which should be more reliable.  If successful the old method will be deprecated.  This setting can't be changed at runtime, so it must be set in a .conf file.");
+    // FORK CHANGE: default flipped to false. Upstream ships true.
+    //
+    // The new method opens an invisible overlay window and registers raw keyboard input with
+    // RIDEV_NOLEGACY, which suppresses normal Windows key messages for the WHOLE PROCESS. Under
+    // Dusklight that means SDL - and therefore the game - stops receiving keyboard input from the
+    // moment the Remix splash appears, while Remix's own hotkeys keep working. The symptom is
+    // total: the game does not respond to anything, the F1 overlay responds to everything, and
+    // nothing is logged.
+    //
+    // It was found early and written into the recommended rtx.conf
+    // (dusklight-ao/docs/dx9-fixed-function.md), which worked right up until someone renamed that
+    // file on 2026-08-16 while bisecting an unrelated crash and lost all input again. A default
+    // that has to be corrected by a config file is one deleted config file away from looking like
+    // a new bug, and the option is startup-only so it cannot be recovered from the panel.
+    //
+    // The old method routes input through a window-proc hook that always forwards messages on,
+    // which is what this game needs. Set it back to true to try upstream's path.
+    RTX_OPTION("rtx", bool, useNewGuiInputMethod, false, "Disables the previous method for getting mouse/keyboard input and enables a new method which should be more reliable.  If successful the old method will be deprecated.  This setting can't be changed at runtime, so it must be set in a .conf file.\nDEFAULTED OFF IN THIS FORK: the new method registers raw input with RIDEV_NOLEGACY, which suppresses legacy key messages process-wide and leaves the game with no keyboard input at all while the Remix overlay keeps working.");
 
     RTX_OPTION_ARGS("rtx", UIType, showUI, UIType::None, "0 = Don't Show, 1 = Show Simple, 2 = Show Advanced.",
                     args.environment = "RTX_GUI_DISPLAY_UI",

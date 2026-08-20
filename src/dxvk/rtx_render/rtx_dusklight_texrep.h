@@ -90,6 +90,16 @@ namespace dxvk {
     constexpr uint64_t kHandleBase = 0xD05C000000000000ull;
     constexpr uint64_t kIndexMask = 0x0000FFFFFFFFFFFFull;
 
+    // The largest index the side channel can carry, which is a different quantity from
+    // the handle mask above - and conflating the two is what let indexFromAmbientG admit
+    // a value whose uint32_t conversion is undefined. Aurora ships the index as a float
+    // in D3DMATERIAL9::Ambient.g, and 2^24 is the largest integer float32 represents
+    // exactly: past it the round-trip check in indexFromAmbientG stops meaning anything,
+    // and it is also well inside uint32_t, so the conversion there is defined.
+    // NOT a declared maximum pack size - aurora declares none, this is the carrier's
+    // limit rather than a contract between the repositories.
+    constexpr uint32_t kMaxIndex = 1u << 24;
+
     // Reads the replacement index out of aurora's D3D9 material side channel (Ambient.g) and
     // returns the handle the game would have registered it under, or 0 for "no replacement".
     uint64_t handleFromLegacyMaterial(const D3DMATERIAL9& material);

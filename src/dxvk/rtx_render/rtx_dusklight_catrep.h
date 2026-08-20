@@ -66,6 +66,11 @@ namespace dxvk {
                     "Records, for every texture hash the runtime has categorized this run, which categories it received "
                     "and how many draws carried it. Use it to find out what is actually being treated as UI, particle, "
                     "decal or ignored, rather than reading rtx.conf and inferring.\n"
+                    "THIS IS THE ONLY PLACE THAT INFORMATION EXISTS. A category is keyed on a hash this runtime computes "
+                    "from the D3D9 texture, so the game and aurora are both blind to it, and rtx.conf lists the hashes you "
+                    "TAGGED rather than the ones being drawn. Reading the config and inferring which entry is responsible "
+                    "for a symptom produced a confidently wrong answer on 2026-08-09.\n"
+                    "A category printed with a trailing ? was present on some draws of that texture and not others.\n"
                     "An action, not a value: NoSave, and it fires when the number CHANGES.");
 
     // Bounded like every other Dusklight log. A frame of this game runs a few

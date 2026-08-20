@@ -182,15 +182,15 @@ the first time on bad numbers.
 
 The local path is **exposure fusion**: synthesise three exposures from the one image, score each
 pixel in each for "well-exposedness" against a target of 0.50, blend per pixel. Building and
-scoring those three needs a response curve, and there the operator is a **ruler, not a look**.
-`luminance.comp.slang` uses it three times to build the synthetic exposures and
-`final_combine.comp.slang` once more as a local intensity probe.
+scoring those three needs a response curve, and there the operator is a **ruler, not a look**
+(three uses in `luminance.comp.slang`, one more as a local intensity probe in
+`final_combine.comp.slang` — the five-per-pixel cost is §9's).
 
-> **Correction.** An earlier revision of this document argued for pinning the ruler to ACES, on
-> the grounds that AgX was "roughly 4× weaker in the midtones" and that the 0.50 target was
-> better calibrated to ACES. **Both claims were wrong** — they came from a throwaway analysis
-> script carrying the same transposed inset/outset matrices later caught and fixed in
-> `agx.slangh`. The tables below are recomputed from the shipped constants.
+> **Correction.** An earlier revision argued for pinning the ruler to ACES, on the grounds that
+> AgX was "roughly 4× weaker in the midtones" and worse calibrated to the 0.50 target. **Both
+> claims were wrong** — they came from an analysis script carrying the same transposed
+> inset/outset matrices later fixed in `agx.slangh`. The tables below are recomputed from the
+> shipped constants.
 
 Fusion weight spread (max − min; higher = stronger local adaptation):
 
@@ -206,11 +206,11 @@ Fusion weight spread (max − min; higher = stronger local adaptation):
 | +6 | 0.000 | **0.037** | 0.000 |
 | **mean** | 0.162 | **0.166** | 0.158 |
 
-The means are within 5% of each other. Switching the ruler **redistributes where local adaptation
-acts rather than weakening it**: ACES is strongest around mid grey and dead above +4 stops; AgX
-spreads further into shadows and highlights; GT7 peaks hardest at +2 but goes flat above +3,
-because by then all three of its synthetic exposures have reached display white and there is
-nothing left to disagree about.
+The means are within 5% of each other, so switching the ruler **redistributes where local
+adaptation acts rather than weakening it**: ACES is strongest around mid grey and dead above +4
+stops, AgX spreads further into shadows and highlights, and GT7 peaks at +2 but goes flat above
++3 — by then all three of its synthetic exposures have reached display white and have nothing
+left to disagree about.
 
 Calibration against the hardcoded 0.50 target — the scene value each ruler calls "correctly
 exposed":
@@ -224,13 +224,12 @@ exposed":
 All three sit inside ±0.3 stops, and AgX is the best calibrated of them — the reverse of what the
 earlier revision claimed.
 
-**So the ruler now follows the selected operator.** ACES keeps behaving exactly as it does in
-stock Remix, and AgX and GT7 are each judged on their own response curve rather than through a
-curve they have nothing to do with. `None` keeps ACES, because the fusion still needs something to
-measure with when no final look is applied.
+**So the ruler follows the selected operator.** ACES keeps behaving exactly as it does in stock
+Remix; AgX and GT7 are each judged on their own response curve. `None` keeps ACES, because the
+fusion still needs something to measure with when no final look is applied.
 
 **One rule governs what the ruler sees: it measures the operator's CURVE, never the artistic look
-layered on top of it.** So AgX's `minEv`/`maxEv` and GT7's peak and shoulder stay, because those
+layered on top of it.** AgX's `minEv`/`maxEv` and GT7's peak and shoulder stay, because those
 shape the response being measured; AgX's ASC-CDL look transform and GT7's saturation boost are
 neutralised inside `localTonemapRuler()`. Without that, dragging a saturation slider would change
 local contrast as a side effect, which is not what any of those sliders claims to do.
@@ -239,12 +238,6 @@ The one genuine cost is that the shipped `rtx.localtonemap.shadows` / `highlight
 `exposurePreferenceSigma` defaults were tuned against the ACES response, so they may want
 revisiting per operator. That is a tuning job, not a correctness problem, and
 `exposurePreferenceSigma` remains the direct control over local effect strength.
-
-**Performance note.** Because the ruler is evaluated three times in `luminance.comp.slang` and
-once more in `final_combine.comp.slang`, plus once for the final look, the local path evaluates
-the selected operator **five times per pixel**. That is free for ACES (pure ALU) but not for GT7
-at 51 transcendental ops per evaluation — see §9.
-
 
 ---
 
@@ -272,22 +265,26 @@ Per evaluation: ACES-legacy is pure ALU; AgX is ~9 (three `log2`, three `pow`); 
 almost all of it the PQ transfer function - six `gt7InverseEotfSt2084` across the two ICtCp
 conversions and three `gt7EotfSt2084` coming back.
 
-**A LUT would flatten this to one texture fetch, and is the wrong trade here.** The reason to
-run GT7 is hue accuracy under 1 degree; trilinear interpolation between LUT nodes interpolates
-linearly in encoded RGB, which is the operation that causes hue error in the first place. At the
-common 33-cubed size, node spacing is ~3% per axis. A LUT would also need a log shaper (the
-input is unbounded HDR while a 3D LUT is indexed on [0,1]^3), and the chroma fade is a smoothstep
-across a narrow 0.98-1.16 band that nodes can straddle. Direct evaluation is the faithful choice;
-revisit only if profiling says otherwise. *Inference, not established:* the reference ships no
-LUT because it is a sample implementation written for clarity - it has a `main()`, a test
-harness, and switchable ICtCp/Jzazbz paths. What the shipping game does is unknown from it.
+**A LUT would flatten this to one texture fetch, and is the wrong trade here.** The reason to run
+GT7 is hue accuracy under 1 degree, and trilinear interpolation between LUT nodes interpolates
+linearly in encoded RGB — the operation that causes hue error in the first place — at ~3% node
+spacing on a 33-cubed grid. It would also need a log shaper (the input is unbounded HDR, a 3D LUT
+is indexed on [0,1]^3), and the chroma fade is a smoothstep across a narrow 0.98-1.16 band that
+nodes can straddle. Direct evaluation is the faithful choice; revisit only if profiling says
+otherwise. *Inference, not established:* the reference ships no LUT because it is a sample
+implementation written for clarity, so what the shipping game does is unknown from it.
+
 ---
 
 ## 10. The GT7 saturation boost is a fork addition, not part of the reference
 
+**Nothing in this section is Polyphony's.** The operator itself is a port whose source of truth
+is `shaders/rtx/pass/tonemap/reference/gt7_tone_mapping.cpp` — diff against that file, and fix
+the port rather than the reference; `gt7.slangh`'s own header carries why the operator exists,
+the ICtCp mechanism, and the two unit/gamma traps. What follows is the fork's addition on top:
 GT7's photographic restraint is the point of it, but it can read as flat next to a punchier
-operator. `rtx.tonemap.gt7SaturationBoost` lifts lit surfaces while leaving the sky — the thing
-GT7 was chosen for — alone.
+operator, so `rtx.tonemap.gt7SaturationBoost` lifts lit surfaces while leaving the sky — the
+thing GT7 was chosen for — alone.
 
 **Why intensity and not chroma.** The obvious gate is "boost low-chroma things", but measured in
 ICtCp the sky does not separate that way: deep sunset sky reaches chroma 0.219, higher than any
@@ -352,6 +349,8 @@ transposed; sRGB↔Rec.2020 round trip to 1e-4; grey-stays-grey to 1e-4; AgX mon
 **Verified by compiler:** CI only. There is no MSVC or slang toolchain in the environment these
 changes were written in.
 
-**Not verified at all:** anything about how this looks. No frame of this has been rendered.
-The five test cases in the original brief — walking between interior and exterior, muzzle flash,
-staring at a lamp, level transitions, AgX vs ACES on saturated emissives — all remain untested.
+**Not verified:** the five test cases in the original brief — walking between interior and
+exterior, muzzle flash, staring at a lamp, level transitions, AgX vs ACES on saturated
+emissives — all remain untested. (This paragraph used to say "no frame of this has been
+rendered", which the 2026-08-07 observations four paragraphs above contradict; what is
+untested is those five cases, not the whole feature.)

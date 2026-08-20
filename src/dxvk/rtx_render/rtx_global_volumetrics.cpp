@@ -595,6 +595,12 @@ namespace dxvk {
       : froxelMaxDistanceMeters() * RtxOptions::getMeterToWorldUnitScale();
     volumeArgs.froxelFireflyFilteringLuminanceThreshold = froxelFireflyFilteringLuminanceThreshold();
     volumeArgs.attenuationCoefficient = volumetricAttenuationCoefficient;
+    // Note: The game's fog ramp as an extinction field, for rtx.dusklight.atmosphere.fogRampMode 2.
+    // Called unconditionally, not under the `dusklight` branch above: the medium's *shape* is a
+    // separate decision from its coefficients, and this writes the "off" state explicitly so a
+    // build with the bridge disabled cannot inherit a mode from anywhere. Read only by the fork's
+    // sampleDensityField override in rtx/algorithm/volume_lighting.slangh.
+    dusklightAtmosphere.fillVolumeRampArgs(volumeArgs);
     volumeArgs.enable = enable() && (dusklight || canUsePhysicalFog);
     volumeArgs.enableTranslucentShadows = volumeArgs.enable && enableTranslucentShadows();
     volumeArgs.scatteringCoefficient = volumetricScatteringCoefficient;
@@ -621,7 +627,14 @@ namespace dxvk {
     volumeArgs.maxFilteredRadianceU = 1.f - volumeArgs.minFilteredRadianceU;
     volumeArgs.multiScatteringEstimate = multiScatteringEstimate;
     volumeArgs.enableReferenceMode = enableReferenceMode();
-    volumeArgs.volumetricFogAnisotropy = anisotropy();
+    // Note: Upstream's default is 0 - perfectly isotropic - which spreads every light's in-scatter
+    // evenly in all directions and leaves shafts and torch glow flat. Real haze is strongly forward
+    // scattering, so the Dusklight medium carries its own value rather than inheriting that.
+    // Not the same quantity as the generated sky's mieAnisotropy, which shapes the sun's glow inside
+    // the dome image and never reaches this grid.
+    volumeArgs.volumetricFogAnisotropy = dusklight
+      ? dusklightAtmosphere.derived().fogAnisotropy
+      : anisotropy();
 
     volumeArgs.enableNoiseFieldDensity = enableHeterogeneousFog();
     volumeArgs.noiseFieldSubStepSize = noiseFieldSubStepSizeMeters() * RtxOptions::getMeterToWorldUnitScale();

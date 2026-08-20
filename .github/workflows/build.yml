@@ -17,13 +17,23 @@ jobs:
   build-windows:
     runs-on: windows-2022
 
+    # ONE CONFIG ON PURPOSE (2026-08-14, owner's instruction): a build we put out for
+    # Remix/DX9 is Windows x86_64 only. debug and debugoptimized were removed from the
+    # matrix below; every flavour here was already x86_64, so what this drops is three
+    # copies of the same ~15 minute build, not any architecture coverage.
+    #
+    # Nothing was lost in the way that matters. Both tripwires this fork actually trips
+    # survive on release: CheckRtInstanceSize is release/debugoptimized-only, so release
+    # is precisely the flavour that must be kept for it, and the hashStructByMemory
+    # static_assert is config-independent - on the run that prompted this it failed in
+    # debug and fail-fast cancelled the other two mid-build, which is why the failure
+    # looked debug-specific and was not.
+    #
+    # To restore a flavour, add its pair back here; nothing else in the file is
+    # config-aware.
     strategy:
       matrix:
         include:
-          - build-flavour: debug
-            output-subdir: _Comp64Debug
-          - build-flavour: debugoptimized
-            output-subdir: _Comp64DebugOptimized
           - build-flavour: release
             output-subdir: _Comp64Release
 
@@ -70,16 +80,28 @@ jobs:
     # Upstream still needs it. If this fork is ever rebased onto a version that changes the bridge,
     # this is the deletion to reapply rather than a conflict to resolve.
 
+  # This fork has no SLACK_WEBHOOK_URL secret, so before 2026-08-14 this job failed with
+  # "Missing input! Either a method or webhook is required to take action." every single
+  # time a build failed - a second red job, on ubuntu, with nothing to do with the code,
+  # sitting next to the real compile error and looking like part of it.
+  #
+  # The secrets context is not available in a job-level if, so the webhook is lifted into
+  # the job env and the step is guarded on that instead. Set the secret and it starts
+  # working again with no further change.
   notify-slack-on-failure:
     runs-on: ubuntu-latest
     needs: build-windows
     if: ${{ failure() }}
 
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
     steps:
     - name: Notify Slack
+      if: ${{ env.SLACK_WEBHOOK_URL != '' }}
       uses: slackapi/slack-github-action@v3
       with:
-        webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+        webhook: ${{ env.SLACK_WEBHOOK_URL }}
         webhook-type: incoming-webhook
         payload: |
           text: "<!here> Build workflow failed for ${{ github.repository }}"

@@ -50,6 +50,7 @@
 #include "d3d9_initializer.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cfloat>
 #include <thread>
 #include <future>
@@ -6437,20 +6438,38 @@ namespace dxvk {
     // the HUD at the game's own resolution, and the HUD is one of the two things that still
     // has to rasterize correctly. handleForRasterStage() returns 0 unless this sampler is the
     // stage aurora's index describes. rtx_dusklight_texrep.h.
+    //
+    // The gating deliberately stays inside resolveAlbedo (its enable() / applyToRaster()
+    // early returns) rather than being hoisted into the capture list. Hoisting was tried in
+    // this same pass and is a net loss: resolveAlbedo re-reads both options on the CS thread
+    // regardless, so a tagged bind paid four acquisitions of the process-wide
+    // RtxOptionImpl::getUpdateMutex() (rtx_option.h) where it pays two - two of them on the
+    // D3D9 thread, which is the latency-sensitive one - and the only case it improved was
+    // "pack installed but the feature switched off". A bind with no pack index reads no
+    // option either way: handleForRasterStage() is two float compares on state already in
+    // cache and returns 0, which is the whole test below.
+    //
+    // Diagnostics are unaffected: resolveAlbedo's early returns are ahead of its
+    // ++s_stats.handlesSeen, so a bind turned away there has never counted toward texrep.rmx.
+    const uint64_t texRepHandle = dusklightTexRep::handleForRasterStage(m_state.material, StateSampler);
     EmitCs([
       cSlot = slot,
       cImageView = commonTex->GetSampleView(srgb),
-      cTexRepHandle = dusklightTexRep::handleForRasterStage(m_state.material, StateSampler)
+      cTexRepHandle = texRepHandle
     ](DxvkContext* ctx) {
       Rc<DxvkImageView> view = cImageView;
       if (cTexRepHandle != 0) {
-        auto* rtxCtx = dynamic_cast<RtxContext*>(ctx);
-        if (rtxCtx != nullptr) {
-          if (const TextureRef* replacement = dusklightTexRep::resolveAlbedo(
-                rtxCtx->getSceneManager().getAssetReplacer().get(), cTexRepHandle, true)) {
-            if (DxvkImageView* replacementView = replacement->getImageView()) {
-              view = replacementView;
-            }
+        // Every EmitCs lambda on this device runs on m_csThread, which is constructed with
+        // dxvkDevice->createRtxContext() unconditionally (see the constructor), so there is
+        // no path by which a plain DxvkContext gets here. Same assert-and-static_cast this
+        // fork already uses in d3d9_rtx.cpp's own EmitCs lambda, in place of an RTTI walk
+        // whose null branch was unreachable.
+        assert(dynamic_cast<RtxContext*>(ctx));
+        auto* rtxCtx = static_cast<RtxContext*>(ctx);
+        if (const TextureRef* replacement = dusklightTexRep::resolveAlbedo(
+              rtxCtx->getSceneManager().getAssetReplacer().get(), cTexRepHandle, true)) {
+          if (DxvkImageView* replacementView = replacement->getImageView()) {
+            view = replacementView;
           }
         }
       }

@@ -151,20 +151,33 @@ namespace dxvk {
     ImGui::Indent();
     RemixGui::Checkbox("Follow Game##bloomDusklight", &dusklightFollowGameObject());
 
+    // Whichever half of this is inert is GREYED, not hidden. Until 2026-08-17 the eight manual
+    // controls were simply not drawn while the feed was driving the pass, which is the failure
+    // this project's own rule names: "greyed without an explanation is barely better than
+    // broken", and a control that vanishes is worse than either - there is nothing on screen to
+    // explain, and nothing to find. Drawing them enabled is not the alternative: while the feed
+    // is live resolveDusklightParams reads DusklightEnv instead of them, so an enabled control
+    // would accept input and change nothing.
     const bool feedActive = dusklightFollowGame() && DusklightEnv::enable();
     if (feedActive) {
-      ImGui::TextWrapped("Driven by the game's environment feed (rtx.dusklight.env.*).");
-      RemixGui::DragFloat("Threshold Scale##bloomDusklight", &dusklightThresholdScaleObject(), 0.01f, 0.f, 10.f, "%.2f");
-    } else {
-      RemixGui::DragFloat("Threshold##bloomDusklight", &dusklightThresholdObject(), 0.01f, 0.f, 100.f, "%.2f");
-      RemixGui::DragFloat("Blur Size##bloomDusklight", &dusklightBlurSizeObject(), 1.f, 0.f, 255.f, "%.0f");
-      RemixGui::DragFloat("Blur Ratio##bloomDusklight", &dusklightBlurRatioObject(), 1.f, 0.f, 255.f, "%.0f");
-      RemixGui::ColorEdit3("Tint##bloomDusklight", &dusklightTintObject());
-      RemixGui::Checkbox("Screen Blend##bloomDusklight", &dusklightScreenBlendObject());
-      RemixGui::DragFloat("Base Weight##bloomDusklight", &dusklightBaseWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
-      RemixGui::ColorEdit3("Mono Color##bloomDusklight", &dusklightMonoColorObject());
-      RemixGui::DragFloat("Mono Amount##bloomDusklight", &dusklightMonoAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
+      ImGui::TextWrapped("Driven by the game's environment feed (rtx.dusklight.env.*). Untick Follow "
+                         "Game to set the greyed values below by hand.");
     }
+
+    ImGui::BeginDisabled(!feedActive);
+    RemixGui::DragFloat("Threshold Scale##bloomDusklight", &dusklightThresholdScaleObject(), 0.01f, 0.f, 10.f, "%.2f");
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(feedActive);
+    RemixGui::DragFloat("Threshold##bloomDusklight", &dusklightThresholdObject(), 0.01f, 0.f, 100.f, "%.2f");
+    RemixGui::DragFloat("Blur Size##bloomDusklight", &dusklightBlurSizeObject(), 1.f, 0.f, 255.f, "%.0f");
+    RemixGui::DragFloat("Blur Ratio##bloomDusklight", &dusklightBlurRatioObject(), 1.f, 0.f, 255.f, "%.0f");
+    RemixGui::ColorEdit3("Tint##bloomDusklight", &dusklightTintObject());
+    RemixGui::Checkbox("Screen Blend##bloomDusklight", &dusklightScreenBlendObject());
+    RemixGui::DragFloat("Base Weight##bloomDusklight", &dusklightBaseWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
+    RemixGui::ColorEdit3("Mono Color##bloomDusklight", &dusklightMonoColorObject());
+    RemixGui::DragFloat("Mono Amount##bloomDusklight", &dusklightMonoAmountObject(), 0.01f, 0.f, 1.f, "%.2f");
+    ImGui::EndDisabled();
 
     RemixGui::Checkbox("Display Referred##bloomDusklight", &dusklightDisplaySpaceObject());
     RemixGui::Checkbox("Mono Uses Luminance##bloomDusklight", &dusklightMonoUseLuminanceObject());

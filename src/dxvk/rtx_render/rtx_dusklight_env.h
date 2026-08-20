@@ -29,7 +29,7 @@ namespace dxvk {
   // docs/kankyo-remix.md). "kankyo" is the game's own name for its environment system,
   // romanized Japanese rather than an acronym - like most identifiers in the game, which
   // the decompilation preserves from the original Japanese team. It is spelled that way in
-  // every option description below on purpose; dusklight-ao docs/japanese-naming.md is the
+  // every option description below on purpose; dusklight-ao docs/japanese-naming-remix.md is the
   // reference. The game pushes these through the Remix API every frame it is
   // running under Remix with the bridge enabled; they describe what the game's environment
   // system computed, not how strongly Remix should respond to it. Response knobs live with
@@ -57,8 +57,8 @@ namespace dxvk {
     // Corrected 2026-08-12: this said "the game's bloom brightness", which is what the value does
     // rather than what the game calls it, and it invites reaching for this to brighten a bloom. The
     // original team's own slider (d_kankyo.cpp:7084) labels the field blur DENSITY, paired with
-    // blur WIDTH on the line above it (:7083) - dusklight-ao docs/japanese-naming.md section 8
-    // carries the whole panel, which is a primary source in its section 6 sense.
+    // blur WIDTH on the line above it (:7083). An authored HIO label outranks a decompiled member
+    // name - dusklight-ao docs/japanese-naming-remix.md section 4 is why.
     RTX_OPTION_FLAG("rtx.dusklight.env", float, bloomBlurRatio, 128.0f, RtxOptionFlags::NoSave,
                     "The game's blur density in its native 0..255 range, the other half. Written by the game's kankyo bridge.\n"
                     "Density rather than brightness: it is the weight each blur sample carries, which does read as brightness on screen, but the game "
@@ -83,9 +83,8 @@ namespace dxvk {
     // reads as all of it. The game keeps FOUR background ambient layers and hands a piece of room
     // geometry one of them by the low two bits of its tevstr type (d_kankyo.cpp:4199-4200), from a
     // fixed table in the room actor - d_a_bg.cpp:336, over the six room model files model.bmd ..
-    // model5.bmd. This option carries layer 0 only. dusklight-ao
-    // docs/kankyo-tuning-surface.md section 2.1a has the routing table and why the other three
-    // are not sent.
+    // model5.bmd. This option carries layer 0 only; the description below says why the other
+    // three are not sent.
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, bgAmbient, Vector3(1.0f, 1.0f, 1.0f), RtxOptionFlags::NoSave,
                     "The ambient colour the game's environment system is applying to background layer 0, normalized to 0..1. Written by the game's kankyo bridge.\n"
                     "Layer 0 is the one the original team's panel labels 'chikei', terrain; it lights the room's first and last model files, and it is what the "
@@ -174,7 +173,7 @@ namespace dxvk {
     // (d_kankyo.cpp:6582) labels kasumi_outer as the near band and kasumi_inner as the far one,
     // the debug view (d_kankyo_debug.cpp:301,306) prints them as kasumiF and kasumiB, and the two
     // dome actors paint one band each. Note this makes "outer" the NEAR band, opposite to what the
-    // English reads like. dusklight-ao docs/japanese-naming.md section 6 carries the derivation.
+    // English reads like. dusklight-ao docs/japanese-naming-remix.md section 6 carries the derivation.
     RTX_OPTION_FLAG("rtx.dusklight.env", Vector3, kasumiInner, Vector3(0.0f, 0.0f, 0.0f), RtxOptionFlags::NoSave,
                     "The game's far horizon haze band, normalized to 0..1. Written by the game's kankyo bridge.\n"
                     "'Kasumi' is the game's own name for horizon haze; the game labels this one the back band.");
@@ -257,6 +256,29 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", std::string, warpStage, "", RtxOptionFlags::NoSave,
                     "The stage file the current selection resolves to - the name the warp actually travels on. Written by the game's kankyo bridge.");
 
+    // ---------------------------------------------------------------------------------------
+    // Mods. Protocol 16.
+    //
+    // The game's own mod UI is never drawn under the fixed function backend, so the Mods tab in
+    // this overlay is the only way to reach one. The game publishes its inventory here and reads
+    // rtx.dusklight.game.modsEnabled back; nothing in this runtime loads or executes anything.
+    // ---------------------------------------------------------------------------------------
+    RTX_OPTION_FLAG("rtx.dusklight.env", bool, modsRunning, false, RtxOptionFlags::NoSave,
+                    "True once the game's mod loader has run discovery and published its inventory.\n"
+                    "False with modCount 0 is the honest 'this build predates the mod wire, or discovery has not run "
+                    "yet'; true with modCount 0 means discovery ran and found nothing, which is a different problem.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", int, modCount, 0, RtxOptionFlags::NoSave,
+                    "How many mods the game discovered. Sent separately from the list because an empty string never "
+                    "crosses the wire - see modList.");
+    RTX_OPTION_FLAG("rtx.dusklight.env", std::string, modList, "", RtxOptionFlags::NoSave,
+                    "The game's discovered mods, one record per mod, fields separated by '|' and records by ';'.\n"
+                    "Fields are: id, display name, native status, active, failed. The Mods tab parses this and nothing "
+                    "else - the runtime never loads or runs mod code, it only shows what the game reported and sends "
+                    "back which ids should be on.\n"
+                    "Native status matters and is why it is on the wire: the D3D9 backend never initializes WebGPU, so "
+                    "a native mod that touches the renderer takes the process down when it loads. The tab shows that "
+                    "before you tick anything.");
+
     // Action binds, pushed by the game for the Controls tab to display. The game is the only side
     // that can name a bind correctly - the stored value is an SDL scancode on a keyboard driven
     // port and a native gamepad button otherwise - so it sends finished strings rather than raw
@@ -272,20 +294,12 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, bindKeyboard, false, RtxOptionFlags::NoSave,
                     "True when the selected port is driven by a keyboard, which is what decides whether a bind is a scancode or a gamepad button.");
 
-    RTX_OPTION_FLAG("rtx.dusklight.env", bool, localLightsRunning, false, RtxOptionFlags::NoSave,
-                    "True when the game got past every gate and actually ran its light submission loop. Written by the game's kankyo bridge.\n"
-                    "Without this an option that reads false and an area with no lights in it are indistinguishable from the other side, since both report zero.");
-    RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsFound, 0, RtxOptionFlags::NoSave,
-                    "How many point lights the game itself had registered this frame, before any filtering on our side. Written by the game's kankyo bridge.\n"
-                    "This is what tells a room with no lights in it apart from a bridge that is failing to submit them - two states that otherwise both read as "
-                    "zero drawn, which is what made the first attempt at this hard to diagnose.");
-    RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsDrawn, 0, RtxOptionFlags::NoSave,
-                    "How many of the game's own point lights were submitted to Remix this frame. Written by the game's kankyo bridge.");
-    RTX_OPTION_FLAG("rtx.dusklight.env", int, localLightsTracked, 0, RtxOptionFlags::NoSave,
-                    "How many of the game's own point lights currently hold a live Remix light. Written by the game's kankyo bridge.");
+    // The four localLights* readouts were removed at protocol 17 (2026-08-16) along with the
+    // mirror itself. They reported a system superseded on 2026-08-06 whose A/B had been run
+    // and decided; see rtx_dusklight_game.h's effectLights for what replaced it.
 
-    // Room lights - the room's own authored lights. found vs drawn is the same separation the
-    // mirror above needed; shaped vs unshapeable is the pair that answers the cone question,
+    // Room lights - the room's own authored lights. found vs drawn is the separation the
+    // retired mirror also needed; shaped vs unshapeable is the pair that answers the cone question,
     // which nothing in this project has ever been able to answer by reading, because the data
     // lives in the game's stage files rather than in its source.
     RTX_OPTION_FLAG("rtx.dusklight.env", bool, roomLightsRunning, false, RtxOptionFlags::NoSave,

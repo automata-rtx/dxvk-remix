@@ -1,0 +1,216 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// ============================================================================
+// DUSKLIGHT FORK FILE. This SHADOWS the RTXDI submodule's
+// submodules/rtxdi/rtxdi-sdk/include/volumetrics/rtx/algorithm/volume_lighting.slangh
+//
+// It shadows rather than replaces: meson.build passes `-include` roots in order
+// (:367 shader_directory, :371 volumetrics_include_path_string) and
+// scripts-common/compile_shaders.py:41 turns each into `-I{path}` in that same
+// order, so `#include "rtx/algorithm/volume_lighting.slangh"` finds this file
+// first. Verified by reading both files on 2026-08-17; not exercised by a build,
+// because this fork only builds on Windows.
+//
+// WHAT IS HERE, AND WHY IT IS NOT A 368-LINE COPY. Only one upstream function
+// needs to change - sampleDensityField, the per-step density hook - so this file
+// renames that one function out of the way with a macro, includes the submodule's
+// copy verbatim by its long path (reachable through the `submodules` -I root, the
+// same way `#include "nrc/include/NrcStructures.h"` is), and defines a
+// replacement that calls it. Everything else in the upstream file is still the
+// upstream file, so an RTXDI bump is picked up automatically instead of silently
+// drifting behind a vendored snapshot, and a signature change upstream is a
+// compile error here rather than a shadowed stale copy.
+//
+// Pinned RTXDI submodule at the time of writing: 30431e9ff173473bb5b04190723779336ad92180
+// Diff this against that path's copy if anything below stops making sense.
+//
+// WHAT IS ADDED: rtx.dusklight.atmosphere.fogRampMode = 2 ("Exact ramp"), which
+// makes the medium's extinction follow the game's own fog curve exactly instead of
+// approximating it with one scalar. See documentation/DusklightAtmosphere.md §5.2.
+// ============================================================================
+
+#define sampleDensityField dusklightUpstreamSampleDensityField
+#include "rtxdi/rtxdi-sdk/include/volumetrics/rtx/algorithm/volume_lighting.slangh"
+#undef sampleDensityField
+
+// ---------------------------------------------------------------------------
+// DUSKLIGHT ADDITION: the game's fog ramp as an extinction field.
+// ---------------------------------------------------------------------------
+//
+// The console's fog is a lerp, not a medium: GXSetFog with GX_FOG_PERSP_LIN gives
+// f(d) = saturate((d - start) / (end - start)) and blends the framebuffer towards
+// fog_col by f. Read twice - from GXSetFog in the game's own
+// libs/dolphin/src/gx/GXPixel.c, and independently from aurora's WebGPU shader at
+// aurora-ao/lib/gx/shader.cpp:1562.
+//
+// Requiring a participating medium to reproduce T(d) = 1 - f(d) determines its
+// extinction field uniquely:
+//
+//     T(d)     = (end - d) / (end - start)          for start <= d < end
+//     sigma(d) = -T'(d) / T(d) = 1 / (end - d)
+//
+// so the game's fog IS a participating medium - a heterogeneous one, thin at the
+// camera and diverging at the ramp's end. That is why no single scalar sigma
+// expresses it, and why fogRampMode 1 needed a residual in the composite at all.
+//
+// This is expressed as an optical depth over a segment rather than as a point
+// sample of sigma, because the segment integral is exact and closed form:
+//
+//     integral of 1/(end - u) du from a to b = ln((end - a) / (end - b))
+//
+// Consecutive raymarch steps therefore telescope to exactly ln((end - a)/(end - d)),
+// where a is where the field starts (see the next paragraph), whatever the step count
+// and whatever the blue-noise jitter does to the step boundaries. A point sample would
+// not. Checked numerically on 2026-08-17 against four real ramps with jittered,
+// nonlinearly distributed steps: the medium's opacity matched the game's f(d) to 0.000000
+// wherever the ramp starts in front of the camera.
+//
+// WHAT THIS FIELD CANNOT DO, stated here because the obvious claim is wrong. The lower
+// clamp below starts the field at max(start, 0), because a medium only exists in front
+// of the camera. When start is negative - which scripted fog banks do routinely - the
+// original was already -start / (end - start) fogged AT the camera, and nothing a medium
+// does can reproduce fog applied before it. The medium then reproduces the ramp's shape
+// from the camera onward and the composite's top-up residual adds that head start as a
+// flat constant veil; the combination is still algebraically the game's own formula. The
+// medium is never *denser* than the ramp in either case, which is the property that makes
+// the residual safe: it can never go negative and be clamped.
+//
+// THE DIVERGENCE CLAMP AND WHAT IT COSTS. sigma is unbounded as d -> end, so the
+// last step's optical depth would be infinite. The remaining distance is floored at
+// dusklightRampMinRemaining, which the host sets to
+// rtx.dusklight.atmosphere.fogRampFloor * (end - max(start, 0)) - a fraction of the
+// ramp's range in front of the camera rather than of its full span, so the floor means
+// the same thing whether or not the ramp starts behind the viewer. The medium's
+// transmittance therefore bottoms out at exactly fogRampFloor instead of reaching zero:
+// at the 0.01 default the medium closes the ramp to 99%, not 100%, and stops thickening
+// over the last 1% of the visible ramp. That last 1% is closed by the composite's top-up
+// residual, which is what it is for - so the clamp costs no visible fog, only the
+// medium's own density (and therefore the shafts) over that last sliver.
+float dusklightRampOpticalDepth(const VolumeArgs volumeArgs, float distanceA, float distanceB)
+{
+  const float rampStart = volumeArgs.dusklightRampStart;
+  const float rampEnd = volumeArgs.dusklightRampEnd;
+  // Note: 1e-4f rather than 0 so that a degenerate ramp still divides by something finite below.
+  // The host floors this too, at 1e-4 of the visible range rather than at an absolute distance
+  // (kMinRampFloorFraction in rtx_dusklight_atmosphere.cpp), so in practice this max never binds -
+  // it is kept because a shader must not depend on a host-side clamp it cannot see. Until
+  // 2026-08-18 the host instead *refused* a fogRampFloor of 0 and silently left this mode off, so
+  // the two sides disagreed about whether the option's own documented minimum was legal.
+  const float lastPoint = rampEnd - max(volumeArgs.dusklightRampMinRemaining, 1e-4f);
+
+  if (!(lastPoint > rampStart))
+  {
+    return 0.0f;
+  }
+
+  // Note: clamped to the ramp's own range at both ends, which is what makes the field
+  // exactly zero before start (the original is perfectly clear there) and exactly flat
+  // past the clamp point. A negative rampStart clamps to nothing here - the raymarch's own
+  // distances begin at zero - which is the head start described above.
+  const float entry = clamp(min(distanceA, distanceB), rampStart, lastPoint);
+  const float exit = clamp(max(distanceA, distanceB), rampStart, lastPoint);
+
+  return log((rampEnd - entry) / (rampEnd - exit));
+}
+
+// Replaces the upstream density hook, and falls through to it in every mode but ours.
+//
+// The value returned is a density scalar, and the caller multiplies it by
+// volumeArgs.attenuationCoefficient (for extinction) and by
+// volumeArgs.scatteringCoefficient (for in-scatter), then by the step length. So to
+// land a step's optical depth on the ramp's exact integral, the density has to be
+//
+//     tau / (sigma * stepSize)
+//
+// and the reference sigma divides straight back out of both products. That is why the
+// in-scatter is correct as well as the transmittance, and why the host is free to keep
+// attenuationCoefficient at whatever value the other consumers of the medium need -
+// with one exception, which is why the host floors it (kExactRampMinSigma in
+// rtx_dusklight_atmosphere.cpp): the cancellation holds only while attenuationCoefficient.x
+// is above the 1e-8 reference clamp below. At exactly zero - which
+// rtx.dusklight.atmosphere.densityScale = 0 used to produce - both products are zero and the
+// medium disappears while every readout still reports an exact ramp.
+// .x rather than a luminance because the host sets
+// this medium's extinction deliberately scalar; see Derived::sigma in
+// rtx_dusklight_atmosphere.h for why the fog's colour must not become a per-channel
+// extinction.
+//
+// NOT applied to calcVolumetricAttenuation, deliberately. That function is called from
+// resolve.slangh, visibility.slangh, volume_integrator.slangh and
+// RtxdiApplicationBridge.slangh with no camera and with world-space origins, where a
+// ramp measured radially from the camera has no meaning. Those callers keep the scalar
+// medium. The consequence, stated rather than discovered: light *visibility* through
+// the fog is still computed against the scalar extinction even in this mode, so a
+// distant light shining through the far end of the ramp is attenuated less than the
+// view ray through the same air is. UNVERIFIED how visible that is.
+//
+// Three more places this mode is not exact, all bounded, all covered by the composite's
+// top-up residual, and all stated here so they are recognised rather than rediscovered:
+//   - evalAtmosphericDensityBetween is bypassed, so the planet-shaped atmosphere's own
+//     0..1 density factor is not applied. It is 1 for any segment fully inside the
+//     atmosphere shell, which every step of a fog ramp measured in hundreds of units is,
+//     so this only bites for a camera above the shell.
+//   - calcVolumetricAttenuation clamps a step to
+//     maxAttenuationDistanceForNoAtmosphere (host: transmittanceMeasurementDistance * 5)
+//     when the atmosphere is off, which is indoors. A step longer than that is truncated
+//     and under-attenuates. With the grid reaching the ramp's end and its steps a
+//     fraction of that, the clamp is roughly 5x the half-density distance and the steps
+//     are well inside it, but it is a real ceiling and not a guarantee.
+//   - the noise field is bypassed. Upstream applies enableNoiseFieldDensity AFTER the
+//     atmospheric factor, and this branch returns before reaching upstream at all, so
+//     rtx.volumetrics.enableHeterogeneousFog does nothing while mode 2 is selected. It
+//     defaults false (rtx_global_volumetrics.h), so this is inert today - but turning it
+//     on in this mode would silently have no effect, which is exactly the class of thing
+//     this list exists to stop someone rediscovering. Combining the two would mean
+//     multiplying the ramp's density by the noise rather than replacing it.
+float sampleDensityField(
+  const VolumeArgs volumeArgs,
+  const VolumeDefinitionCamera camera,
+  float3 from, float3 to, float distance, const float timeMS
+)
+{
+  if (volumeArgs.dusklightFogRampMode == 2)
+  {
+    // Note: translated world space is world space minus the volume camera's position
+    // (camera.slangh, worldToTranslatedWorld), so a length here is a RADIAL distance from
+    // that camera - which is the quantity THIS FORK's ramp is a function of
+    // (composite.comp.slang uses hitT), so the medium and the residual agree and the
+    // identity holds.
+    //
+    // The console's own fog is a function of perspective-corrected depth rather than
+    // radial distance (aurora-ao/lib/gx/shader.cpp:1562 evaluates it on in.pos.z), and
+    // GXSetFogRangeAdj exists to correct for exactly that difference at wide FOV. Neither
+    // aurora backend implements the adjustment table, so radial-vs-planar is a standing
+    // approximation of this whole fog path rather than something this mode introduces.
+    // It over-corrects at the top and bottom of the frame relative to GX. Do NOT "fix"
+    // this toward eye-space Z: the ramp, the residual and the medium must agree, and
+    // radial is what the composite already uses.
+    const float sigmaReference = max(volumeArgs.attenuationCoefficient.x, 1e-8f);
+    const float stepLength = max(distance, 1e-6f);
+
+    return dusklightRampOpticalDepth(volumeArgs, length(from), length(to)) / (sigmaReference * stepLength);
+  }
+
+  return dusklightUpstreamSampleDensityField(volumeArgs, camera, from, to, distance, timeMS);
+}

@@ -105,6 +105,25 @@ struct VolumeArgs {
   // the option was static so it read the current one; that assumption does not hold once the grid
   // is sized from the game's own fog range, which changes per area.
   float previousFroxelMaxDistance;
+
+  // Note: Dusklight's fog ramp, as an extinction field rather than as a scalar. Read only by the
+  // fork's sampleDensityField override in rtx/algorithm/volume_lighting.slangh, which is where the
+  // derivation and the cost of the clamp are written down. Zero-initialised, and mode 0 means
+  // "upstream's homogeneous medium", so a build with the Dusklight bridge off behaves exactly as
+  // upstream here.
+  // Mirrors rtx.dusklight.atmosphere.fogRampMode so a log line and a shader branch cannot disagree
+  // about which mode ran; only value 2 changes anything on this path.
+  uint dusklightFogRampMode;
+  // The game's own ramp, in world units, as distances from the volume camera. rampStart is routinely
+  // negative - a scripted fog bank sets it that way so the ramp is already underway at the camera.
+  float dusklightRampStart;
+  float dusklightRampEnd;
+  // Floor on (rampEnd - d), which is what keeps the last step's optical depth finite. The medium's
+  // transmittance bottoms out at this divided by (rampEnd - max(rampStart, 0)) - the ramp's range in
+  // FRONT OF THE CAMERA, not its full span - i.e. at exactly rtx.dusklight.atmosphere.fogRampFloor.
+  // The distinction is the whole point of the choice made where this is produced: for the Lost Woods
+  // ramp the two differ by 11x (2/200 against 2/2200).
+  float dusklightRampMinRemaining;
 };
 
 #ifdef __cplusplus
