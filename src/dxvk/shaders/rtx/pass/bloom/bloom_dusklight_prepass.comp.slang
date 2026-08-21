@@ -25,10 +25,12 @@
 // Mono overlay step of the Dusklight bloom.
 //
 // The game runs this before gathering bloom: the framebuffer is converted to greyscale and
-// tinted, then blended back over itself by the overlay's alpha. The environment system drives
-// it per palette - twilight desaturates by about 38% through this, and the wolf senses look
-// leans on it too. The bloom pyramid then gathers from the overlaid image, so this must run
-// before the downsample chain, exactly as it does on the original hardware.
+// tinted, then blended back over itself by the overlay's alpha. The environment system drives it
+// per palette, out of the bloom table's mSaturateSubtractA - the twilight entries (tables 1 and 2)
+// set 0x60, desaturating by about 38%, with a white tint. The wolf senses entry does not drive
+// this: table 3 leaves mSaturateSubtractA at 0x00, so senses is not a way to see this pass run.
+// The bloom pyramid then gathers from the overlaid image, so this must run before the downsample
+// chain, exactly as it does on the original hardware.
 //
 // The TEV implementation built its greyscale by replicating the red channel (swap table
 // R,R,R,G), not by computing luminance. That bias is visible in warm scenes, so red-replicate

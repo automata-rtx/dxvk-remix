@@ -123,7 +123,8 @@ expression this replaced on 2026-08-17 and why it was wrong, the
 clamp, the 0.955 figure, and the `f ≤ 0.999` cap with the case where it binds.
 The consequence worth stating here: where the clamp binds — **every scripted fog
 bank in the game** — the medium is now **4.46× denser**. Where it is idle,
-nothing moved.
+nothing moved. **The only ramps ever measured are §14.11**, and the 33500 quoted
+in two places as an `end` is a midpoint out of that table.
 
 `zHalfMin` is a floor on the **anchor distance**, not on a half-density distance,
 and neither it nor `densityScale` is inert in `fogRampMode` 2 — the panel said
@@ -396,3 +397,44 @@ would look worse.**
 start. A recon pass got both wrong; the mechanism error was caught by the code
 not working, while the place name survived two more weeks across twelve passages
 in two repos, because a wrong place name is invisible until someone is sent there.
+
+**14.11 The only measured fog ramps — and where 33500 came from.** Read from one
+run on **2026-08-06** (Hyrule Field → Lake Hylia → South Faron). These are the
+**only** recorded measurements of the game's ramp this project has; every other
+figure in this document is a worked example.
+
+| Area | ramp `[start, end]` | froxel grid covers, at the 120 m default |
+| :-- | :-- | :-- |
+| Hyrule Field | `[0, 60000]` | 20% |
+| (long-range) | `[500, 120000]` | 10% |
+| (negative start) | `[-10000, 110000]` | 18% |
+| Lake Hylia | `[-3000, 70000]` | 21% |
+
+**No measured `fogEndZ` is anywhere near 33500.** 33500 is the *midpoint* of Lake
+Hylia's `[-3000, 70000]` — an anchor distance in §5.1's sense — and that is what
+it was introduced as, in `2829d46`. `d5a4524` restated it as "the open world's
+`fogEndZ` has been measured around 33500" while keeping the midpoint sentence
+beside it, and the documentation cut `6a44c7b` then deleted the midpoint sentence
+and left the restatement. That is what survives, in exactly two places in this
+fork: the `fogRampMode` help in `rtx_dusklight_atmosphere.h` — **which is an
+`RTX_OPTION` description, so it is on screen as a tooltip** — and the comment
+above the mode 2 panel text in `rtx_dusklight_atmosphere.cpp`.
+
+**A third quotation is in the other repo, and it is the one that can spoil the
+measurement below.** `dusklight-ao/docs/remix-test-playbook.md:137` primes the
+tester with "an open-world `fogEndZ` near 33,500 units" *before* they take the
+reading. It is spelt with a comma, which is why a grep for `33500` does not find
+it. That sentence wants neutralising before anyone is sent to Hyrule Field — not
+replacing with a new figure, because none is established.
+
+**If the outdoor `fogEndZ` really is 60000–70000, that figure is roughly half the
+real one**, and the "grid covers about a third of the ramp" that both sites
+derive from it is wrong with it — the table above measures 10–21%.
+
+**Not settled here, and a documentation edit cannot settle it.** The two code
+sites are deliberately left alone: what decides this is one fresh log or
+screenshot of the Readouts tab's `Fog: on  N .. N units` line
+(`dxvk_imgui.cpp`), taken standing in Hyrule Field. If it reads ~60000, both
+sites want correcting; if it reads ~33500, the 2026-08-06 table is the thing that
+is stale. **Do not "fix" either number from this paragraph** — it records which
+of two things is unknown, not which one is wrong.

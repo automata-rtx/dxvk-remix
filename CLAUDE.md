@@ -64,13 +64,16 @@ formality: it once stood between a routine cleanup and 19 commits of lost work.
 The game and this DLL are one protocol: the game pushes
 `rtx.dusklight.env.protocol`, this fork compares it against `kRequiredProtocol`
 (`src/dxvk/imgui/dxvk_imgui.cpp:2613`, file scope, read by the status strip above
-the tab bar). **Protocol is at 17.** Build both sides from the same commit point
+the tab bar). **Protocol is at 18.** Build both sides from the same commit point
 and bump both in one commit; the Dusklight tab reports which side is old.
 
-**12 is skipped and is not free** — it is held by the unmerged
-`claude/kasumi-naming-correction-w3e204`, and 13–17 were taken beside it. The
-next branch to need a number takes **18**. No script can see an unmerged branch,
-so check the live `claude/*` branches yourself.
+**12 is skipped and is not free** — it was taken by
+`claude/kasumi-naming-correction-w3e204`, and 13–17 were taken beside it while it
+sat. Part of that branch has since landed: the corrected haze blend, gated behind
+`rtx.dusklight.atmosphere.kasumiBlendMode` and **still never run in game**; the
+`env.*` band alpha it also carried did not. So 12 stays a hole rather than a
+merge to go and do, and the next branch to need a number takes **19**. No script
+can see an unmerged branch, so check the live `claude/*` branches yourself.
 
 ## The Dusklight surface in this repo
 
@@ -148,6 +151,12 @@ protocol number or side channel.
 it, and never restate its drift counts from memory.** The script prints the live
 count; that is the figure to quote. A name absent from it is not evidence the
 option does not exist — the headers are the authority.
+
+**Shader source is ASCII.** `compile_shaders.py` opens shaders with the platform
+default encoding — cp1252 on the runner — so a kana, or one of the kanji whose
+bytes cp1252 rejects, ends the Windows build before a shader is compiled, naming
+a Python file rather than yours. The em dashes already in there decode, which is
+exactly why this looks permitted; `shader-encoding` is the local one-liner.
 
 **Three tripwires fire only in a Windows CI build, and each prints its own
 remedy:** `CheckRtInstanceSize` (`rtx_instance_manager.cpp:159-163`),

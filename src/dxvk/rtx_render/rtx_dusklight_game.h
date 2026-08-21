@@ -233,6 +233,22 @@ namespace dxvk {
                "Also set rtx.skyAutoDetect to None, otherwise the auto detected dome keeps feeding a second, dimmer sky into the same pixels.\n"
                "Note the dome is not untaggable, which this option's rationale used to claim: it carries no texture, but rtx.skyBoxGeometries "
                "categorises by geometry hash instead. documentation/DusklightAtmosphere.md section 14.9.");
+    RTX_OPTION("rtx.dusklight.game", bool, hideVrkumo, false,
+               "Stops the game drawing its cloud layer - the vrkumo packet (vr + kumo, cloud).\n"
+               "Reported from play rather than measured: the clouds are extremely bright and very large. Both are free in a rasterizer and neither is free "
+               "here, because a big bright surface in the traced scene is a light. It bounces into everything under it, and it hangs between the camera and "
+               "the sky we generate, so the same geometry lights the scene wrongly AND hides what was supposed to light it.\n"
+               "The companion to rtx.dusklight.game.hideVrbox above, and not a substitute for it: hideVrbox takes the game's sky DOME, this takes the CLOUD "
+               "layer drawn in front of the dome. Turn on rtx.dusklight.atmosphere.skyEnable with only one of the two and the other's geometry is still "
+               "sitting in front of the generated sky.\n"
+               "Built 2026-08-21, protocol 18, NOT YET RUN IN GAME - nobody has looked at a frame with this on, so everything above about what it improves "
+               "is the reasoning for building it, not a result.\n"
+               "Two failures worth telling apart. If the clouds are still there with this on, the gate is on the wrong side of the game's backend check - "
+               "the same #if TARGET_PC that guards hideVrbox in d_a_vrbox.cpp - or the name never reached the game at all; readOptionBool keeps the old "
+               "value on a miss, so a typo in the option name and a gate that does nothing look identical from here. If the SUN or the STARS go with the "
+               "clouds, the gate is too high in the call chain: dKyw_drawVrkumo hands the packet to dKyw_setDrawPacketListSky, the same sky list the sun, "
+               "the lens flare and both star packets are handed to (dusklight-ao/src/d/d_kankyo_wether.cpp), so it has to take the vrkumo packet alone "
+               "rather than the list it goes into.");
     // Clock control. Both NoSave: a frozen clock or a pinned time that survived a restart would
     // be a silent, invisible reason for the world to behave oddly, and this pair exists to make
     // comparisons repeatable rather than to configure anything.

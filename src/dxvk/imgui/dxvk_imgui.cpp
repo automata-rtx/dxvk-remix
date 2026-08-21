@@ -2610,7 +2610,7 @@ namespace dxvk {
     // the sole reader; scripts/check_dusklight_invariants.py matches this line against the prose
     // and the version registry in documentation/DusklightOverlay.md, which is what makes a
     // double-bump visible. Do not copy the literal anywhere else.
-    constexpr int kRequiredProtocol = 17;
+    constexpr int kRequiredProtocol = 18;
 
     // Matches the game's own warp menu. -1 is "you pick", and the game maps anything at or above
     // 15 to the same thing, so 14 is the last layer that means itself.
@@ -3591,7 +3591,7 @@ namespace dxvk {
     }
   }
 
-  // The game's own geometry and tuning switches. Flat, no headers at all - eleven controls, one
+  // The game's own geometry and tuning switches. Flat, no headers at all - twelve controls, one
   // screen, and every one of them is a thing you turn on to look at something.
   void ImGUI::showDusklightSceneTab(const Rc<DxvkContext>& ctx) {
     RemixGui::Checkbox("Disable Frustum Culling", &DusklightGame::disableFrustumCullingObject());
@@ -3600,6 +3600,10 @@ namespace dxvk {
     RemixGui::Checkbox("...Including The Stars", &DusklightGame::hideStarBillboardsObject());
     ImGui::Unindent();
     RemixGui::Checkbox("Hide Game Sky Dome", &DusklightGame::hideVrboxObject());
+    // Sibling of the row above, not a sub-switch of it: the dome and the cloud layer are two
+    // separate packets and either can be hidden alone. Flat and adjacent so the pairing reads
+    // off the screen; rtx_dusklight_game.h states why you usually want both.
+    RemixGui::Checkbox("Hide Game Sky Clouds", &DusklightGame::hideVrkumoObject());
     RemixGui::Checkbox("Per-Blade Grass", &DusklightGame::perBladeGrassObject());
     RemixGui::Checkbox("Per-Flower Blossoms", &DusklightGame::perBladeFlowersObject());
     RemixGui::Checkbox("Hide Epona Dash Effect", &DusklightGame::hideDashEffectObject());

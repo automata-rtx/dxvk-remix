@@ -960,6 +960,35 @@ namespace dxvk {
       "8.6 for what this result decides."));
   }
 
+  // Always false in this build, and that is a statement about the feed rather than about the
+  // setting. The near band's alpha is real authored data - d_a_vrbox2.cpp:358-361 paints
+  // vrbox_kasumi_outer_col's .a alongside its .rgb, and the palette CSV exports a column for it
+  // (d_kankyo.cpp:6582) - but no rtx.dusklight.env.* option carries it, so there is nothing here to
+  // read. Checked against the whole env surface on 2026-08-21, not assumed.
+  //
+  // Making it live is one edit in a file this change does not own plus the two lines below it: add
+  // a float readout to rtx_dusklight_env.h defaulting NEGATIVE, have the game's bridge push it,
+  // then return `kasumiFrontWeightUseGameAlpha() && DusklightEnv::<name>() >= 0.0f`. The negative
+  // default is the load-bearing part. It is the difference between "the game has not told us" and
+  // "the artists chose zero", and reading the second as the first would quietly drop the near band
+  // out of the composite against any game build older than the one that starts pushing it. A
+  // reported 0 must be honoured as a real value; only "never reported" may fall back.
+  bool DxvkDusklightAtmosphere::kasumiFrontWeightIsFromGame() const {
+    return false;
+  }
+
+  float DxvkDusklightAtmosphere::resolvedKasumiFrontWeight() const {
+    // One source today, because kasumiFrontWeightIsFromGame() cannot yet answer yes. Deliberately
+    // not written as a ternary over the two sources: with one arm unreachable both arms would have
+    // to read the slider, and a ternary whose branches are identical is the kind of line a later
+    // reader "simplifies" without noticing it was the seam. The seam is the if above; this is the
+    // fallback arm of it, and the second arm arrives with the readout.
+    //
+    // The clamp is not redundant with the option's declared range - an rtx.conf can set a value
+    // outside it - and the shader's saturate is a second net rather than the only one.
+    return std::clamp(kasumiFrontWeight(), 0.0f, 1.0f);
+  }
+
   float DxvkDusklightAtmosphere::resolvePhysicalWeight() const {
     if (!physicalSky() || !enable() || !DusklightEnv::enable()) {
       return 0.0f;
@@ -1353,6 +1382,12 @@ namespace dxvk {
     pushArgs.kasumiInner = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiInner()));
     pushArgs.physicalWeight = std::clamp(d.physicalWeight, 0.0f, 1.0f);
     pushArgs.kasumiOuter = sRGBGammaToLinear(sanitizeColor(DusklightEnv::kasumiOuter()));
+    // Clamped here as well as in the option's declared range, because an rtx.conf reaches the
+    // option directly and the shader indexes a mode rather than lerping by it - an out of range
+    // value would fall through to the sun-relative arm and look like the switch not working.
+    pushArgs.kasumiBlendMode = static_cast<uint32_t>(
+      std::clamp(kasumiBlendMode(), 0, static_cast<int>(DUSKLIGHT_KASUMI_BLEND_FIXED)));
+    pushArgs.kasumiFrontWeight = resolvedKasumiFrontWeight();
     pushArgs.paletteInfluence = clampedPaletteInfluence;
     pushArgs.horizonSharpness = std::max(skyHorizonSharpness(), 1e-3f);
     pushArgs.groundFraction = std::clamp(skyGroundFraction(), 0.0f, 1.0f);
@@ -1509,6 +1544,14 @@ namespace dxvk {
     // these combos enumerates ALL of the modes rather than only the one selected. That is why the
     // per-mode paragraphs that used to sit under each combo are gone: reading what a mode does no
     // longer requires selecting it first.
+    //
+    // ONLY for a widget NOT bound to an RtxOption. An RtxOption-bound RemixGui widget builds an
+    // RtxOptionUxWrapper whose destructor submits the reset-button circle as its own item
+    // (rtx_gui_widgets.h, ImGui::ItemAdd on hitBb) after the control, so IsItemHovered() here would
+    // be asking about that circle rather than about the row - and the same destructor already shows
+    // this exact tooltip by rect test, disabled row included. Calling this after one of those gets
+    // a second tooltip on the wrong item, and 1.88's SetTooltip overrides the previous one, so it
+    // replaces the reset button's own "Reset to default".
     template <typename T>
     void dusklightOptionTip(dxvk::RtxOption<T>& option) {
       if (ImGui::IsItemHovered()) {
@@ -1665,6 +1708,56 @@ namespace dxvk {
   void DxvkDusklightAtmosphere::showImguiSkyShape() {
     RemixGui::DragFloat("Horizon Sharpness##dusklightAtmo", &skyHorizonSharpnessObject(), 0.05f, 0.25f, 16.f, "%.2f");
     RemixGui::DragFloat("Ground Fraction##dusklightAtmo", &skyGroundFractionObject(), 0.01f, 0.f, 1.f, "%.2f");
+
+    // The game's two haze bands, and how they become one horizon colour. The default is the version
+    // that shipped, which was built on a reading of the pair the game contradicts; the corrected one
+    // is opt-in because it changes the look and because neither has been looked at in game.
+    {
+      static const char* kKasumiBlendModes[] = { "Sun-relative (as shipped)", "Fixed composite (front over back)" };
+      static int kasumiMode;
+      kasumiMode = std::clamp(kasumiBlendMode(), 0, 1);
+      if (RemixGui::Combo("Haze Bands##dusklightAtmo", &kasumiMode, kKasumiBlendModes, IM_ARRAYSIZE(kKasumiBlendModes))) {
+        kasumiBlendMode.setDeferred(kasumiMode);
+      }
+      dusklightOptionTip(kasumiBlendModeObject());
+
+      // Disabled unconditionally, not hidden, and not because of the mode: there is no near band
+      // alpha in the feed for it to select, so it cannot do anything in this build. See
+      // kasumiFrontWeightIsFromGame(). A control that vanishes is a control nobody knows is waiting
+      // on something, and this one has to say why it is greyed out - which it does on its own: the
+      // option is bound to the widget, so RtxOptionUxWrapper shows the description on hover from a
+      // rect test that never consults the disabled flag. No dusklightOptionTip here; that helper is
+      // for the static-int combos above, and on a bound widget it lands on the reset circle.
+      ImGui::BeginDisabled(true);
+      RemixGui::Checkbox("Near Band Share From Game##dusklightAtmo", &kasumiFrontWeightUseGameAlphaObject());
+      ImGui::EndDisabled();
+
+      ImGui::BeginDisabled(kasumiMode != 1);
+      RemixGui::DragFloat("Near Band Share##dusklightAtmo", &kasumiFrontWeightObject(), 0.01f, 0.f, 1.f, "%.2f");
+      ImGui::EndDisabled();
+
+      if (kasumiMode == 1) {
+        // Where the share came from, on screen rather than in the tooltip, because it is a live
+        // state and not a description of a control. 0.50 is otherwise ambiguous between a number
+        // the artists chose and the placeholder that stands in because nothing arrived.
+        if (kasumiFrontWeightIsFromGame()) {
+          ImGui::Text("share: %.3f  (the game's near band alpha)", resolvedKasumiFrontWeight());
+        } else {
+          ImGui::Text("share: %.3f  (slider - the game authors this alpha but the bridge does not send it)",
+                      resolvedKasumiFrontWeight());
+        }
+      } else {
+        // A state that rests on a premise the game does not support, so it stays on screen rather
+        // than moving into the tooltip with the rest. Carefully not a recommendation: what is
+        // established is that this mode's premise is wrong, not that the other mode looks better.
+        ImGui::TextWrapped("Haze Bands is on its sun-relative setting: one band at the sun, the other opposite it. "
+                           "The game has no such split - its two bands are front and back, and nothing in it reads "
+                           "sun position to choose between them. Because this image is also the dome light and the "
+                           "colour distance fades towards, the rotation reaches the lighting and the fog tint too. "
+                           "Neither setting has been run in game; a sunrise or sunset is where they disagree most.");
+      }
+    }
+
     RemixGui::Checkbox("Paint Moon##dusklightAtmo", &skyMoonEnableObject());
     ImGui::BeginDisabled(!skyMoonEnable());
     RemixGui::DragFloat("Moon Size##dusklightAtmo", &skyMoonAngularDiameterDegreesObject(), 0.1f, 0.1f, 30.f, "%.1f deg");

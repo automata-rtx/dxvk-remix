@@ -24,6 +24,7 @@
 #include <array>
 #include <vector>
 #include <unordered_map>
+#include <utility>
 #include "../util/rc/util_rc_ptr.h"
 #include "rtx_types.h"
 #include "rtx/utility/shader_types.h"
@@ -72,6 +73,22 @@ public:
 
   const std::unordered_map<XXH64_hash_t, RtLight>& getLightTable() const { return m_lights; }
   const std::unordered_map<uint64_t, RtLight>& getExternallyTrackedLightTable() const { return m_externallyTrackedLights; }
+
+  // The API-submitted lights (remixapi_CreateLight + remixapi_DrawLightInstance) that were drawn
+  // this frame, each paired with the handle the application named it by.
+  //
+  // A snapshot rather than a view of m_externalActiveLightList, because that list is cleared at the
+  // end of prepareSceneData and every consumer that runs later in the frame would find it empty.
+  // GameCapturer is exactly such a consumer - SceneManager::prepareSceneData calls LightManager's
+  // at rtx_scene_manager.cpp:2477 and the capturer's step at :2649 - which is why a capture of this
+  // game used to contain no sun, no moon and none of the effect lights.
+  //
+  // Keyed by handle, not by the light's parameter hash: remixapi_CreateLight takes the handle
+  // straight from the application's own stable hash (rtx_remix_api.cpp:1156), while the parameter
+  // hash moves whenever the application moves or recolours the light. Hash-keying would write one
+  // light per frame into a capture instead of one light that moves.
+  const std::vector<std::pair<uint64_t, RtLight>>& getActiveExternalLights() const { return m_activeExternalLights; }
+
   const Rc<DxvkBuffer> getLightBuffer() const { return m_lightBuffer; }
   const Rc<DxvkBuffer> getPreviousLightBuffer() const { return m_previousLightBuffer.ptr() ? m_previousLightBuffer : m_lightBuffer; }
   const Rc<DxvkBuffer> getLightMappingBuffer() const { return m_lightMappingBuffer; }
@@ -123,6 +140,10 @@ private:
   std::unordered_set<remixapi_LightHandle> m_externalActiveLightList;
   remixapi_LightHandle m_externalActiveDomeLight = nullptr;
   DomeLightArgs m_gpuDomeLightArgs;
+  // This frame's active API lights, snapshotted just before m_externalActiveLightList is cleared so
+  // that later-in-frame consumers can still see them. Rebuilt from scratch every frame; the
+  // capacity is retained, so the steady state allocates nothing. See getActiveExternalLights.
+  std::vector<std::pair<uint64_t, RtLight>> m_activeExternalLights;
 
   Rc<DxvkBuffer> m_lightBuffer;
   Rc<DxvkBuffer> m_previousLightBuffer;

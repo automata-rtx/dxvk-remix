@@ -16,17 +16,24 @@ document — see `aurora-ao/docs/dx9/remix-material-interface.md`, and
 **The game and this DLL are a single protocol.** The game pushes
 `rtx.dusklight.env.protocol`; the fork compares it against `kRequiredProtocol`
 and names the older side in the status strip drawn above the tab bar.
-**Currently 17.**
+**Currently 18.**
 
-**Protocol is at 17** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach` - **retired at 14**, see below, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers`, `colpatPrev`/`colpatBlend`, the three background alphas `bgWaterAlpha`/`bgAuxAlpha`/`bgFakeFogAlpha` **and** the six `roomLights*` readouts, 14 = the effect-light vocabulary rework: `effectLightReachScale`, `effectLightRadiusScale`, `effectLightAuthoredColor`, `effectLightAuthoredRadius`, the four `effectLightLantern*` options and the `effLightsAuthored`/`effLightsClasses` readouts, 15 = the Shadow Insect spark: `effectLightSparks`, `effectLightSparkHold` and the `effLightsSparks` readout, 16 = the Mods tab: `modsRunning`, `modCount` and `modList` outbound, `modsEnabled` inbound, 17 = the local-light mirror **removed** - the four `localLights*` readouts go, and `hideStarBillboards` becomes live after being an inert checkbox since it was added). `kRequiredProtocol`
+**Protocol is at 18** (3 = overlay + warp, 4 = the clock, 5 = per-blade grass, 6 = the Controls tab, 7 = effect lights **and** the HD texture pack readouts - two branches took 7 independently and both landed, so a build reporting 7 may carry either or both, 8 = the effect-light exclusion readout, 9 = `effectLightDerivedReach` - **retired at 14**, see below, 10 = `lanternInfiniteOil`, 11 = `effectLightMassExponent`, 13 = `perBladeFlowers`, `colpatPrev`/`colpatBlend`, the three background alphas `bgWaterAlpha`/`bgAuxAlpha`/`bgFakeFogAlpha` **and** the six `roomLights*` readouts, 14 = the effect-light vocabulary rework: `effectLightReachScale`, `effectLightRadiusScale`, `effectLightAuthoredColor`, `effectLightAuthoredRadius`, the four `effectLightLantern*` options and the `effLightsAuthored`/`effLightsClasses` readouts, 15 = the Shadow Insect spark: `effectLightSparks`, `effectLightSparkHold` and the `effLightsSparks` readout, 16 = the Mods tab: `modsRunning`, `modCount` and `modList` outbound, `modsEnabled` inbound, 17 = the local-light mirror **removed** - the four `localLights*` readouts go, and `hideStarBillboards` becomes live after being an inert checkbox since it was added, 18 = `hideVrkumo`, the game's cloud layer - the companion to `hideVrbox` rather than a sub-switch of it). `kRequiredProtocol`
 is a single `constexpr` in the anonymous namespace at the head of the Dusklight
 block in `dxvk_imgui.cpp` (it lived in `showDusklightRemixTab` until
 2026-08-17); bump it in the same commit as the game side.
 
-**12 is missing on purpose and is not free.** It belongs to the unmerged
-`claude/kasumi-naming-correction-w3e204`. **The next branch to need a number
-takes 18** — and no script can catch reusing 12, because no script can see an
-unmerged branch. Check the live `claude/*` branches before taking one.
+**12 is missing on purpose and is not free.** It was taken by
+`claude/kasumi-naming-correction-w3e204`, and **part of that branch has since
+landed here**: the corrected haze blend, as
+`rtx.dusklight.atmosphere.kasumiBlendMode` — fork-side only, so it needed no
+number of its own — gated, defaulting to the shipped behaviour, and **still never
+run in game**. What did *not* land is the `env.*` band alpha that took 12 in the
+first place; `rtx.dusklight.env.kasumi*` and `kumo*` are still `Vector3`, which is
+why the new option's "from the game" arm is inert. So 12 stays held, and stays a
+hole to route around rather than a merge to go and do. **The next branch to need
+a number takes 19** — and no script can catch reusing 12, because no script can
+see an unmerged branch. Check the live `claude/*` branches before taking one.
 
 **Two rules for taking one.** *(a)* An addition on an already-numbered branch
 takes a **new** number when the game reads a new option, and **joins** the

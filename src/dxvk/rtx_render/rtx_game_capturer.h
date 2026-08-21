@@ -85,6 +85,7 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <optional>
 
 namespace dxvk 
 {
@@ -205,8 +206,14 @@ private:
   void captureFrame(const Rc<DxvkContext> ctx);
   void captureCamera();
   void captureLights();
-  void captureSphereLight(const dxvk::RtSphereLight& rtLight);
-  void captureDistantLight(const RtDistantLight& rtLight);
+  // `keyOverride` names the captured light across frames and across captures. Empty means "use the
+  // light's own parameter hash", which is upstream's behaviour and what the two tables Remix tracks
+  // itself want. API-submitted lights pass the application's handle instead, because their
+  // parameter hash moves whenever the application moves or recolours them - see
+  // LightManager::getActiveExternalLights. The hash lives on the concrete light types rather than
+  // on RtLight, which is why the key is resolved in here rather than by the caller.
+  void captureSphereLight(const dxvk::RtSphereLight& rtLight, const std::optional<XXH64_hash_t> keyOverride);
+  void captureDistantLight(const RtDistantLight& rtLight, const std::optional<XXH64_hash_t> keyOverride);
   void captureInstances(const Rc<DxvkContext> ctx);
   void newInstance(const Rc<DxvkContext> ctx, const RtInstance& rtInstance);
   void captureMaterial(const Rc<DxvkContext> ctx, const LegacyMaterialData& materialData, const bool bEnableOpacity);
@@ -337,6 +344,11 @@ private:
     std::unordered_map<XXH64_hash_t, Material> materials;
     std::unordered_map<XXH64_hash_t, Instance> instances;
     std::unordered_map<XXH64_hash_t, uint8_t> instanceFlags;
+    // How many API-submitted lights the last captured frame saw. Reported by the capture.lights
+    // line so a capture that still comes out dark says which half is at fault: zero here means
+    // LightManager had none to give, non-zero with no sphere/distant lights means the capture
+    // dropped them.
+    size_t numApiLightsLastFrame = 0;
     HWND hwnd;
   };
   std::unique_ptr<Capture> m_pCap;

@@ -34,6 +34,7 @@
 #include "../dxvk_device.h"
 
 #include "../../util/log/log.h"
+#include "../../util/util_once.h"
 #include "../../util/config/config.h"
 #include "../../util/util_filesys.h"
 #include "../../util/util_vector.h"
@@ -309,44 +310,65 @@ namespace dxvk {
   }
 
   void GameCapturer::captureLights() {
-    auto captureLight = [&](const RtLight& rtLight) {
+    auto captureLight = [&](const RtLight& rtLight, const std::optional<XXH64_hash_t> keyOverride) {
       assert(rtLight.getInitialHash() != 0);
       switch (rtLight.getType()) {
       default:
       case RtLightType::Sphere:
-        captureSphereLight(rtLight.getSphereLight());
+        captureSphereLight(rtLight.getSphereLight(), keyOverride);
         break;
       case RtLightType::Rect:
         // Todo: Handle Rect lights
-        Logger::err("[GameCapturer][" + m_pCap->idStr + "] RectLight not implemented");
-        assert(false);
+        // Note: bounded rather than per-frame, and the assert dropped with it. Since the API lights
+        // below reach this lambda on every captured frame, an unimplemented type here could fill a
+        // log on its own - and aborting a debug build mid-capture says no more than the line does.
+        ONCE(Logger::err("[GameCapturer][" + m_pCap->idStr + "] RectLight not implemented"));
         break;
       case RtLightType::Disk:
         // Todo: Handle Disk lights
-        Logger::err("[GameCapturer][" + m_pCap->idStr + "] DiskLight not implemented");
-        assert(false);
+        ONCE(Logger::err("[GameCapturer][" + m_pCap->idStr + "] DiskLight not implemented"));
         break;
       case RtLightType::Cylinder:
         // Todo: Handle Cylinder lights
-        Logger::err("[GameCapturer][" + m_pCap->idStr + "] CylinderLight not implemented");
-        assert(false);
+        ONCE(Logger::err("[GameCapturer][" + m_pCap->idStr + "] CylinderLight not implemented"));
         break;
       case RtLightType::Distant:
-        captureDistantLight(rtLight.getDistantLight());
+        captureDistantLight(rtLight.getDistantLight(), keyOverride);
         break;
       }
     };
 
+    // std::nullopt: these two keep upstream's key, the light's own parameter hash.
     for (auto&& pair : m_sceneManager.getLightManager().getLightTable()) {
-      captureLight(pair.second);
+      captureLight(pair.second, std::nullopt);
     }
     for (auto&& pair : m_sceneManager.getLightManager().getExternallyTrackedLightTable()) {
-      captureLight(pair.second);
+      captureLight(pair.second, std::nullopt);
+    }
+
+    // Lights the application submitted through remixapi_CreateLight/remixapi_DrawLightInstance.
+    // Every light this game has is one of these - the sun, the moon and every effect light - so
+    // before this loop existed a capture of it contained no lights at all and the whole
+    // capture/replace workflow judged replacement assets under nothing but a toolkit viewport light.
+    // Keyed by the application's handle rather than the light's parameter hash; getActiveExternalLights
+    // says why, and why the list is a snapshot rather than the live one.
+    //
+    // Deliberately absent: the dome light. LightManager routes it to m_externalActiveDomeLight
+    // rather than into this list (addExternalLightInstance), and it is a DomeLight - a texture, a
+    // radiance and a transform - not an RtLight, so it has no home in the capture's sphere/distant
+    // light set. It would have to be written as the capture's sky instead, which is a GameExporter
+    // change and not this one. A capture of this game therefore still has no sky; capture.lights
+    // below says so rather than leaving it to be discovered in the toolkit.
+    const auto& apiLights = m_sceneManager.getLightManager().getActiveExternalLights();
+    m_pCap->numApiLightsLastFrame = apiLights.size();
+    for (const auto& [handle, rtLight] : apiLights) {
+      captureLight(rtLight, static_cast<XXH64_hash_t>(handle));
     }
   }
 
-  void GameCapturer::captureSphereLight(const dxvk::RtSphereLight& rtLight) {
-    const auto hash = rtLight.getHash();
+  void GameCapturer::captureSphereLight(const dxvk::RtSphereLight& rtLight,
+                                        const std::optional<XXH64_hash_t> keyOverride) {
+    const auto hash = keyOverride.value_or(rtLight.getHash());
     pxr::GfRotation  rotation;
     rotation.SetIdentity();
     if (m_pCap->sphereLights.count(hash) == 0) {
@@ -379,9 +401,16 @@ namespace dxvk {
     sphereLight.finalTime = m_pCap->currentFrameNum;
   }
 
-  void GameCapturer::captureDistantLight(const RtDistantLight& rtLight) {
-    const auto hash = rtLight.getHash();
-    if (m_pCap->sphereLights.count(hash) == 0) {
+  void GameCapturer::captureDistantLight(const RtDistantLight& rtLight,
+                                         const std::optional<XXH64_hash_t> keyOverride) {
+    const auto hash = keyOverride.value_or(rtLight.getHash());
+    // Upstream defect, byte-identical on origin/main and a carry-back candidate: this asked
+    // `sphereLights`, which can never hold a distant light's key, so the block below re-ran every
+    // frame and `firstTime` ended up holding the *last* captured frame. game_exporter.cpp's
+    // setLightIntensityOnTimeSpan then writes intensity 0 at t=0 and full intensity at that frame,
+    // and USD interpolates float samples linearly, so the exported sun ramped up from black across
+    // the whole capture. Single-frame captures take the isSingleFrame path, which is why it survived.
+    if (m_pCap->distantLights.count(hash) == 0) {
       const std::string name = dxvk::hashToString(hash);
       lss::DistantLight& distantLight = m_pCap->distantLights[hash];
       distantLight.lightName = name;
@@ -1130,6 +1159,19 @@ namespace dxvk {
     for (auto& [hash, distantLight] : cap.distantLights) {
       exportPrep.distantLights.emplace(hash, distantLight);
     }
+
+    // One bounded line, once per capture, saying what lighting the capture actually ended up with.
+    // A capture that opens dark in the toolkit is otherwise indistinguishable from a scene that was
+    // dark, and telling those two apart used to require asking the owner what they saw. apiLights is
+    // the last captured frame's count from LightManager::getActiveExternalLights: zero there means
+    // the game submitted nothing, non-zero with no sphere/distant lights means the capture dropped
+    // them. sky is not counted because a dome light is not captured at all - see captureLights.
+    Logger::info(str::format(
+      "capture.lights sphere=", cap.sphereLights.size(),
+      " distant=", cap.distantLights.size(),
+      " apiLightsLastFrame=", cap.numApiLightsLastFrame,
+      " skyProbe=", cap.bSkyProbeBaked ? 1 : 0,
+      "  (a capture with no distant light and no sky probe is lit by its sphere lights alone)"));
   }
 
   void GameCapturer::flattenExport(const lss::Export& exportPrep) {
