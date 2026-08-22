@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -80,6 +81,97 @@ def check_conflict_markers() -> None:
         for n, line in enumerate(text.splitlines(), 1):
             if line.startswith(starts) or line.startswith(ends):
                 fail("conflict-markers", f"{rel}:{n} leftover merge marker")
+
+
+def check_shader_source_ascii() -> None:
+    """Shader source is ASCII, because on Windows the build reads it as cp1252.
+
+    `scripts-common/compile_shaders.py:491` opens every shader with a bare
+    `open(inputFile, "r")`, so the encoding is whatever the platform defaults to:
+    UTF-8 in this container, cp1252 on the Windows runner. Five byte values are
+    undefined in cp1252, and one character whose UTF-8 encoding contains any of
+    them ends the Windows build before a single shader is compiled, with a
+    UnicodeDecodeError whose traceback names a Python file rather than the
+    shader. It reads as a broken runner rather than as your commit, which is the
+    whole reason this check exists: it turns that into one local line naming the
+    file and the character.
+
+    The five are 0x81, 0x8D, 0x8F, 0x90 and 0x9D. Every kana is in that class
+    (hiragana A is U+3042, UTF-8 e3 81 82). Many kanji are and many are not -
+    U+540D is e5 90 8d and dies, U+74B0 is e7 92 b0 and does not - so "a kanji"
+    is not one answer, and the rule cannot be "avoid the ones that crash".
+
+    Which is also why this does not stop at the crash. Shader comments already
+    carry an em dash, a section sign and an arrow; all three decode as cp1252,
+    into mojibake in a comment nobody reads. So non-ASCII has never broken the
+    shader build here, and that is true and is not evidence about the next one.
+    The rule is ASCII, and the three already in the tree are grandfathered.
+
+    `compile_shaders.py` is upstream's and is deliberately not patched: this fork
+    does not spend rebase surface on a file it can guard from its own side.
+    """
+    global checks_run
+    checks_run += 1
+
+    # Em dash, section sign, rightwards arrow: the three characters shader source
+    # carries today, across 22 files, counted 2026-08-21. A floor to shrink, never
+    # to grow - a fourth is a decision, and this check is where it gets made rather
+    # than noticed later. Written as escapes rather than literally, so that the
+    # one line naming these three cannot itself be mangled by an editor.
+    grandfathered = {"\u2014", "\u00a7", "\u2192"}
+
+    for rel in tracked_files():
+        if not rel.startswith("src/dxvk/shaders/"):
+            continue
+        path = REPO / rel
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        if raw.isascii():
+            continue
+
+        # Decoded permissively, so a file that is not even valid UTF-8 is still
+        # reported rather than throwing out of the check.
+        #
+        # split("\n") rather than splitlines(): splitlines() also breaks on
+        # U+2028, U+0085 and U+000C, so a shader carrying one of those would have
+        # it eaten as a line break instead of reported - a non-ASCII character
+        # this check exists to name, invisible to it - and every line after it
+        # would be numbered one too high. Verified both, 2026-08-21.
+        offender: tuple[int, str] | None = None
+        for n, line in enumerate(raw.decode("utf-8", errors="replace").split("\n"), 1):
+            for ch in line:
+                if not ch.isascii() and ch not in grandfathered:
+                    offender = (n, ch)
+                    break
+            if offender:
+                break
+        if offender is None:
+            continue
+
+        n, ch = offender
+        try:
+            ch.encode("utf-8").decode("cp1252")
+            consequence = (
+                "cp1252 happens to decode this one: CI stays green and the comment quietly "
+                "becomes mojibake instead, which is exactly why the rule looks unenforced"
+            )
+        except UnicodeDecodeError:
+            consequence = (
+                "the build dies before a single shader is compiled, with a UnicodeDecodeError "
+                "naming compile_shaders.py rather than this file"
+            )
+
+        # One report per file: the remedy is the same for every occurrence in it,
+        # and a file pasted full of kana would otherwise bury the other checks.
+        fail(
+            "shader-encoding",
+            f"{rel}:{n} contains U+{ord(ch):04X} "
+            f"{unicodedata.name(ch, 'an unnamed character')} - shader source must be ASCII. "
+            f"scripts-common/compile_shaders.py:491 opens shaders with the platform default "
+            f"encoding, so on the Windows runner {consequence}. Remedy: write it in ASCII - "
+            f"romanize the name and cite the document that carries the original",
+        )
 
 
 def check_protocol() -> None:
@@ -490,6 +582,7 @@ def check_rtx_options_doc() -> None:
 
 def main() -> int:
     check_conflict_markers()
+    check_shader_source_ascii()
     check_protocol()
     check_side_channel_map()
     check_side_channels_hashed()

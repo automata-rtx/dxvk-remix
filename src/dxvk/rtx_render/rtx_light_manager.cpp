@@ -594,6 +594,30 @@ namespace dxvk {
       }
     }
 
+    // Fork change, 2026-08-21. Snapshot the API-submitted lights that were drawn this frame, while
+    // the list saying which those were still exists. The reset below is why this cannot be a view:
+    // SceneManager calls this function at rtx_scene_manager.cpp:2477 and GameCapturer::step at
+    // :2649, so a consumer reading m_externalActiveLightList at capture time can only ever find it
+    // empty - which is exactly why a capture of this game contained no sun, no moon and none of the
+    // effect lights, every one of which is created through remixapi_CreateLight. See
+    // getActiveExternalLights for why the key is the handle and not the light's parameter hash.
+    //
+    // Cost is one RtLight copy (264 bytes, see CheckRtLightSize in rtx_lights.cpp) per active API
+    // light per frame, over a list the game caps in the tens, so this is not gated on a capture
+    // being in progress - LightManager would have to reach into GameCapturer's state to do that.
+    m_activeExternalLights.clear();
+    m_activeExternalLights.reserve(m_externalActiveLightList.size());
+    for (const remixapi_LightHandle handle : m_externalActiveLightList) {
+      const auto found = m_externalLights.find(handle);
+      if (found != m_externalLights.end()) {
+        // Via uintptr_t rather than straight to uint64_t: a pointer-to-integer reinterpret_cast is
+        // only well formed for an integral type wide enough to hold the pointer, and uintptr_t is
+        // that on every configuration by definition.
+        m_activeExternalLights.emplace_back(
+          static_cast<uint64_t>(reinterpret_cast<uintptr_t>(handle)), found->second);
+      }
+    }
+
     // Reset external active light list.
     m_externalActiveDomeLight = nullptr;
     m_externalActiveLightList.clear();

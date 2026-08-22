@@ -3,6 +3,15 @@
 Written up separately from the commits because several of these are **upstream
 dxvk-remix defects, not fork-specific ones**, and are worth carrying back on their own.
 
+**Scope: this is the tone mapping and auto exposure register, not the fork's
+register of upstream defects.** Ones found elsewhere are written at the site that
+carries the fix, and the file is listed in `DusklightRebase.md` —
+`rtx_light_manager.cpp`'s two unguarded RTXDI-index corrections are the
+precedent. Filing one here would make this document's own title false. The
+2026-08-21 candidate — `GameCapturer::captureDistantLight` gating on
+`sphereLights` — is written at its fix site in `rtx_game_capturer.cpp`, and
+belongs in that list rather than here.
+
 Every measurement here comes from a numerical model of the shader maths, run against the
 constants actually in the tree. Where a claim is a mechanism rather than an observation, it says
 so. **Most of this document is still model, not observation** — see the closing section for what
@@ -330,8 +339,13 @@ rule stated in §8: the ruler measures the operator's curve, never the look on t
 - GT7 holds the physically scattered sky "considerably better" than the alternatives — the
   headline claim of §8/§9 and the reason the operator was added.
 - GT7 retains more colour in strong emissives such as lava.
-- `rtx.bloom.dusklightThreshold` at 0.485 under GT7 "noticeably helped", confirming the
-  best-fit figure derived in the bloom analysis.
+- `rtx.bloom.dusklightThreshold` at 0.485 under GT7 "noticeably helped". **What it is a
+  threshold *on* was corrected on 2026-08-21** and is now stated where it is implemented
+  (`bloom_dusklight_downsample.comp.slang:34-42`): one blue-weighted luminance key,
+  `0.25R + 0.25G + 0.5B`, scaling the whole colour — **not** the per-channel subtraction
+  the option help described for months. The observation above stands as an observation;
+  the best-fit reasoning that originally picked 0.485 was written against the old
+  description, and whether it survives the corrected one is unchecked.
 - The GT7 saturation boost (§10) behaves as designed: surfaces lift, sky does not.
 - GT7 in **Local** mode was reported as fine for performance. Treat this as reassurance, not
   measurement: it was an unscientific test with DLSS upscaling and frame generation active, both

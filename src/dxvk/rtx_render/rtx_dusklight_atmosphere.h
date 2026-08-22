@@ -248,6 +248,12 @@ namespace dxvk {
     Derived resolve() const;
     float resolvePhysicalWeight() const;
 
+    // The near haze band's share of the fixed composite, clamped, from whichever source is in
+    // force. Two functions rather than one because the panel has to say which source that was: a
+    // share of 0.50 is otherwise ambiguous between "the game says so" and "nothing arrived".
+    bool kasumiFrontWeightIsFromGame() const;
+    float resolvedKasumiFrontWeight() const;
+
     // Peak amount by which a homogeneous medium of the given extinction is thicker than the game's
     // linear ramp, searched over the whole ramp. Positive means the medium out-fogs the original
     // somewhere - almost always just before fogStartZ, where the original is still perfectly clear
@@ -676,6 +682,53 @@ namespace dxvk {
                     "in a thin band and let the sky colour own most of the dome; lower values bleed it further up.",
                     args.minValue = 0.25f,
                     args.maxValue = 16.0f);
+    // The game hands over two horizon haze bands, and how they became one horizon colour was
+    // implemented from a description of the pair that the game contradicts. The option texts were
+    // corrected on 2026-08-10 (rtx_dusklight_env.h:170-176) and the shader was not, so the
+    // correction reached the descriptions and never reached the code.
+    //
+    // It arrives as an option rather than as an edit for two reasons. It changes the look, and
+    // "the shipped premise is wrong" is not the same claim as "the corrected version looks
+    // better" - only the first is established. And the share the corrected version wants is the
+    // near band's own alpha, which the game authors (d_a_vrbox2.cpp:361) but this build's bridge
+    // does not send, so mode 1 is still an approximation of what the game draws rather than a
+    // translation of it. NEITHER MODE HAS BEEN RUN IN GAME.
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", int, kasumiBlendMode, 0,
+                    "How the game's two horizon haze bands are combined into the sky's horizon colour.\n"
+                    "0: Sun-relative. Places one band at the sun's bearing and the other opposite it, so the horizon palette turns as the sun moves round. "
+                    "The game has no such split: its two bands are front and back, two dome actors paint one band each and both are drawn at every bearing, "
+                    "and nothing in either reads sun position to choose between them. This is still the default, so that changing the look stays a deliberate "
+                    "act rather than a side effect of updating.\n"
+                    "1: Fixed composite. Azimuth independent, which is what the game does. The share of each band is "
+                    "rtx.dusklight.atmosphere.kasumiFrontWeight.\n"
+                    "This reaches past the sky itself. The generated sky is also the dome light and the colour distant geometry fades towards, so under mode 0 "
+                    "the light in the scene and the fog tint turn with the sun's bearing too, on a palette that is not moving.\n"
+                    "Neither mode has been run in game. What is established is that mode 0 rests on a premise the game does not support - not that mode 1 "
+                    "looks better.",
+                    args.minValue = 0,
+                    args.maxValue = 1);
+    // Declared now and inert now, deliberately. The datum exists in the game - both dome actors
+    // paint their band's alpha as well as its colour (d_a_vrbox.cpp:124, d_a_vrbox2.cpp:361) and
+    // the palette CSV exports a column for each - but no rtx.dusklight.env.* readout carries it in
+    // this build, so kasumiFrontWeightIsFromGame() cannot answer yes yet. See its definition for
+    // the single edit that makes it live.
+    RTX_OPTION("rtx.dusklight.atmosphere", bool, kasumiFrontWeightUseGameAlpha, true,
+               "Takes the near haze band's share in the fixed composite from the game instead of from rtx.dusklight.atmosphere.kasumiFrontWeight.\n"
+               "The game authors an alpha on that band and blends it every frame exactly like its colour, and that alpha - not a number any of us picked - is "
+               "what decides how much of the far band the near one hides. Using it is what would turn the fixed composite from an approximation into a "
+               "translation.\n"
+               "HAS NO EFFECT IN THIS BUILD. The bridge does not push the near band's alpha, so there is no rtx.dusklight.env.* readout to read and the "
+               "share always falls back to the slider. The setting is here so that the fallback rule is written down once, in the place that will use it, "
+               "rather than invented later; the Sky panel says which source is actually in force.\n"
+               "Reads nothing unless rtx.dusklight.atmosphere.kasumiBlendMode is 1, which is not the default.");
+    RTX_OPTION_ARGS("rtx.dusklight.atmosphere", float, kasumiFrontWeight, 0.5f,
+                    "Share of the near haze band in the fixed composite, 0..1. Used when kasumiBlendMode is 1; in this build it is always what is used, "
+                    "because the game's own alpha does not reach the fork.\n"
+                    "0 is the far band alone, 1 the near band alone. The 0.5 default is a placeholder rather than a measurement - there is nothing in the "
+                    "feed to derive it from, which is exactly the gap rtx.dusklight.atmosphere.kasumiFrontWeightUseGameAlpha is reserved for.\n"
+                    "Note the two bands are named the other way round from how they read: 'outer' is the near one.",
+                    args.minValue = 0.0f,
+                    args.maxValue = 1.0f);
     RTX_OPTION("rtx.dusklight.atmosphere", bool, physicalSky, false,
                "Computes the sky by simulating how light scatters through air, instead of reading the game's gradient off its palette.\n"
                "What this buys is structure the palette cannot describe: the sky correctly brightening towards the horizon and around the sun and darkening "

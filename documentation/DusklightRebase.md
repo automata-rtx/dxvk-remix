@@ -54,7 +54,7 @@ Each row is one guarded hook unless it says otherwise.
 
 | File | Change | Guard |
 | :-- | :-- | :-- |
-| `rtx_light_manager.cpp` | **two** unguarded corrections, both about the RTXDI buffer index on API lights: `addExternalLight` preserves it across an overwrite, `prepareSceneData` range-checks it. Mechanism at `rtx_light_manager.cpp:824-828`. **A rebase that re-applies one and not the other gets the worse half of each** | none |
+| `rtx_light_manager.cpp` | **three** unguarded changes. Two are corrections about the RTXDI buffer index on API lights: `addExternalLight` preserves it across an overwrite, `prepareSceneData` range-checks it. Mechanism at `rtx_light_manager.cpp:824-828`. **A rebase that re-applies one and not the other gets the worse half of each.** The third: `prepareSceneData` snapshots the frame's active API lights into `m_activeExternalLights` *immediately before* `m_externalActiveLightList.clear()`, which is the only moment they exist — the capturer runs long after. **Dropping it does not fail to build; `GameCapturer` just silently stops seeing every light the game submits** | none |
 | `rtx_dusklight_{game,env}.h` | the `effectLight*` block under the `// Effect lights.` header (`game.h:305`) and the `effLights*` readouts (`env.h:331`). **Do not write a count here** — the invariants script prints the live one | additive |
 | `dxvk_imgui.cpp` | the **Effect Lights** section of the **Lights** tab | own block |
 
@@ -69,7 +69,7 @@ Each row is one guarded hook unless it says otherwise.
 | `d3d9_rtx_utils.cpp` | `isVertexColorBakedLighting` per draw from `Specular.r` | falls back to the option |
 | `d3d9_rtx.cpp` | one matrep call at the tail of `processTextures` | `rtx.dusklight.matrep` |
 
-**API assets, made capturable and replaceable.** These two change upstream
+**API assets, made capturable and replaceable.** These change upstream
 *behaviour* rather than adding a branch, so a rebase re-applies intent, not an
 `if`. **Check them first.**
 
@@ -77,6 +77,8 @@ Each row is one guarded hook unless it says otherwise.
 | :-- | :-- |
 | `rtx_remix_api.cpp` | API mesh hashes derived from the submitted vertex/index data; upstream's `hack_getNextGeomHash` removed |
 | `rtx_scene_manager.cpp` `submitExternalDraw` | consults `getReplacementMaterial` before using the supplied material |
+| `rtx_light_manager.h` | `getActiveExternalLights()` and its `m_activeExternalLights` member. Exists only so the capturer can see API lights |
+| `rtx_game_capturer.{h,cpp}` | `captureLights` walks `getActiveExternalLights()` and keys those lights by the **application's handle**, via the `keyOverride` parameter added to `captureSphereLight`/`captureDistantLight` — a light whose colour or position moves hashes differently every frame, so hash-keying would export a new light per frame. Also one **unguarded upstream correction**: `captureDistantLight`'s new-light gate tests `distantLights`, where upstream tests `sphereLights`. A distant light's key can never be in `sphereLights`, so the gate never went false, `firstTime` held the *last* captured frame, and USD's linear interpolation ramped an exported sun up from black. **A rebase silently restores the upstream word and the ramp comes back.** Single-frame captures take the `isSingleFrame` path and never showed it |
 
 **HD texture packs** (`aurora-ao/docs/dx9/texture-replacements.md`)
 
