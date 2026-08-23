@@ -174,6 +174,9 @@ namespace dxvk {
     OptimalSettings queryOptimalSettings(const uint32_t displaySize[2], NVSDK_NGX_PerfQuality_Value perfQuality) const;
 
     // initialize DLSS context, throws exception on failure
+    // renderPreset is an NGX render preset number (DLSSRenderPreset, rtx_dlss.h); 0 asks for NGX's
+    // own choice. Taken as a plain number rather than NVSDK_NGX_DLSS_Hint_Render_Preset so that a
+    // preset the pinned SDK header does not name is still reachable - the runtime resolves it.
     void initialize(
       Rc<DxvkContext> renderContext,
       uint32_t maxRenderSize[2],
@@ -182,6 +185,7 @@ namespace dxvk {
       bool depthInverted,
       bool autoExposure,
       bool sharpening,
+      uint32_t renderPreset,
       NVSDK_NGX_PerfQuality_Value perfQuality = NVSDK_NGX_PerfQuality_Value_MaxPerf);
 
     /** Release DLSS.

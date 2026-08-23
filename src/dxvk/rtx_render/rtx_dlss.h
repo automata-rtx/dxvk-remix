@@ -54,6 +54,49 @@ namespace dxvk {
     RayReconstruction,
   };
 
+  // DLSS render presets, spelled as the numbers NGX itself gives them.
+  //
+  // WHY NUMBERS RATHER THAN NVSDK_NGX_*_Hint_Render_Preset_* ENUMERATORS. Two
+  // reasons, and the second is the one that would cost a build:
+  //
+  //  - The preset is a number handed to the DLSS runtime at feature creation,
+  //    and it is that runtime - not the header we compile against - that
+  //    decides what the number means. A DLL newer than our SDK can honour a
+  //    preset its header calls unused, and binding to header symbols would put
+  //    that out of reach for no gain.
+  //  - The NGX SDK is not in this tree; packman fetches it at build time
+  //    (`ngx_sdk_dldn`, packman-external.xml). An enumerator missing from the
+  //    pinned copy is therefore a Windows build failure that no Linux check can
+  //    see - and the pinned copy is demonstrably older than NVIDIA's published
+  //    header, because rtx_ray_reconstruction.cpp still compiles
+  //    NVSDK_NGX_RayReconstruction_Hint_Render_Preset_A, which the published
+  //    header has removed. J/K/L/M may well not be in it.
+  //
+  // Letters, numbers and what each one is: NVIDIA/DLSS
+  // `include/nvsdk_ngx_defs.h:72-88` (super resolution) and
+  // `include/nvsdk_ngx_defs_dlssd.h:38-54` (ray reconstruction), read
+  // 2026-08-23. Presets those headers mark "do not use, reverts to default
+  // behavior" are deliberately absent here - offering a letter that silently
+  // does nothing is worse than not offering it.
+
+  // Super resolution presets, used when DLSS is upscaling without Ray Reconstruction.
+  enum class DLSSRenderPreset : uint32_t {
+    Default = 0,  // No override; NGX picks per quality mode, and may change it over the air.
+    E = 5,        // The last CNN-era preset NGX still honours. Marked deprecated rather than "do not use".
+    J = 10,       // Transformer. Slightly less ghosting than K, at the cost of more flicker.
+    K = 11,       // Transformer. NGX's own default for DLAA, Quality and Balanced. Best quality, highest cost.
+    L = 12,       // Transformer. NGX's own default for Ultra Performance.
+    M = 13,       // Transformer. NGX's own default for Performance.
+  };
+
+  // Ray Reconstruction presets, used when DLSS-RR is denoising and upscaling.
+  enum class DLSSRRRenderPreset : uint32_t {
+    Default = 0,  // No override; the CNN/Transformer and Transformer-D settings decide, as they always did.
+    D = 4,        // Transformer. NGX's default RR model.
+    E = 5,        // Later transformer. NGX requires it if a depth-of-field guide is supplied.
+    F = 6,        // NGX's published header calls this unused; newer DLSS runtimes ship it, so it is offered.
+  };
+
   const char* dlssProfileToString(DLSSProfile dlssProfile);
 
   class DxvkDLSS : public CommonDeviceObject, public RtxPass {
@@ -90,6 +133,16 @@ namespace dxvk {
 
     void release();
 
+    // Note: read by DxvkDLSS only. DxvkRayReconstruction derives from this class but takes its
+    // preset from rtx.rayreconstruction.renderPresetOverride instead - the two features have
+    // separate preset spaces, and the same letter does not name the same network in both.
+    RTX_OPTION("rtx.dlss", DLSSRenderPreset, renderPreset, DLSSRenderPreset::Default,
+               "Which DLSS super resolution preset (network) to ask NGX for.\n"
+               "Default leaves the choice to NGX, which picks per quality mode and may change it over the air.\n"
+               "5: preset E, the last CNN-era preset still honoured. 10: J. 11: K. 12: L. 13: M - all transformer.\n"
+               "Only consulted when DLSS is upscaling without Ray Reconstruction; DLSS-RR has its own preset option.\n"
+               "Changing this recreates the DLSS feature, which costs a frame.");
+
   protected:
     virtual bool isEnabled() const override;
 
@@ -109,6 +162,7 @@ namespace dxvk {
     bool                        mInverseDepth = false;
 
     bool                        mRecreate = true;
+    DLSSRenderPreset            mPrevRenderPreset = DLSSRenderPreset::Default;  ///< Preset the live feature was created with.
     uint32_t                    mInputSize[2] = {};            ///< Input size in pixels.
     uint32_t                    mDLSSOutputSize[2] = {};       ///< DLSS output size in pixels.
 

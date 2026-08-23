@@ -111,6 +111,26 @@ resolving a conflict here.
 | `rtx_context.{h,cpp}` | `dispatchDusklightGrade`; bloom stage ordering | `DusklightGrade` enable |
 | `dxvk_objects.h`, `dxvk_device.cpp` | the modules exposed as `metaDusklight*` | additive |
 
+**DLSS render presets.** Nothing here is Dusklight-specific; it is a control upstream does not
+expose. Two options, `rtx.dlss.renderPreset` (super resolution) and
+`rtx.rayreconstruction.renderPresetOverride` (Ray Reconstruction), each offering the presets NGX
+still honours for that feature.
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_dlss.h` | `DLSSRenderPreset` / `DLSSRRRenderPreset`, the `rtx.dlss.renderPreset` option, `mPrevRenderPreset` | additive; `Default` is upstream behaviour |
+| `rtx_dlss.cpp` | passes the preset to `initialize`; `dispatch` rebuilds the feature when it changes | none needed — `Default` sets preset 0 |
+| `rtx_ngx_wrapper.{h,cpp}` | `NGXDLSSContext::initialize` gains a `uint32_t renderPreset` before `perfQuality`, and sets the five `DLSS.Hint.Render.Preset.*` params. **Set unconditionally, including for 0** — `m_parameters` outlives the feature, so a skipped write leaves the previous preset in place and Default stops working | none |
+| `rtx_ray_reconstruction.{h,cpp}` | the override option, `m_prevRenderPresetOverride` in the recreate check, and one `if` after the existing `model()`/`enableTransformerModelD()` ternary at the `dlssdModel` site | `!= Default` |
+| `dxvk_imgui.cpp` | two `ComboWithKey`s beside `dlssProfileCombo`, drawn in the existing RR / DLSS branches; `showRayReconstructionEnable` greys out the model combo while overridden | own lines |
+
+**The values are numbers, not `NVSDK_NGX_*_Hint_Render_Preset_*` enumerators**, and a rebase must
+not "tidy" them into symbols. `rtx_dlss.h` argues it where the enums are defined: the pinned
+packman SDK is older than NVIDIA's published header — it still has
+`RayReconstruction_Hint_Render_Preset_A`, which the published one removed — so the super-resolution
+letters J/K/L/M may have no enumerator to name, and RR preset F exists in runtimes whose header
+calls it unused. The preset is resolved by the installed DLSS runtime, not by the header.
+
 **Tone mapping and auto exposure** (`ToneMappingExposureNotes.md`)
 
 > **A different shape from every block above, and a rebase should expect that.**

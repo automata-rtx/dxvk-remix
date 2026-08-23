@@ -323,6 +323,37 @@ namespace dxvk {
     } }
   };
 
+  // Render presets, one list per feature. The letters are not a shared namespace: super resolution
+  // preset E and Ray Reconstruction preset E are different networks, which is why these are two
+  // combos over two option scopes rather than one list filtered at draw time. What each letter is:
+  // rtx_dlss.h, DLSSRenderPreset / DLSSRRRenderPreset.
+  //
+  // Named "Render Preset" rather than "Preset" on purpose, twice over: rtx_user_menu.cpp already has
+  // a "DLSS Preset" (that one is Disabled/Enabled/Custom), and rtx_ray_reconstruction.cpp already has
+  // a "DLSS-RR Preset" (that one picks a path tracer preset). "Render preset" is NGX's own term for
+  // the thing these two actually select.
+  RemixGui::ComboWithKey<DLSSRenderPreset> dlssRenderPresetCombo {
+    "DLSS Render Preset",
+    RemixGui::ComboWithKey<DLSSRenderPreset>::ComboEntries { {
+        {DLSSRenderPreset::Default, "Default", "Let NGX choose per quality mode. It may also change the choice over the air."},
+        {DLSSRenderPreset::E, "E", "The last CNN-era preset NGX still honours. Softer and more stable than the transformer presets, and cheaper."},
+        {DLSSRenderPreset::J, "J", "Transformer. Close to K - slightly less ghosting, slightly more flicker."},
+        {DLSSRenderPreset::K, "K", "Transformer. NGX's own default for Full Resolution, Quality and Balanced, and its best-looking preset."},
+        {DLSSRenderPreset::L, "L", "Transformer. NGX's own default for Ultra Performance."},
+        {DLSSRenderPreset::M, "M", "Transformer. NGX's own default for Performance."},
+    } }
+  };
+
+  RemixGui::ComboWithKey<DLSSRRRenderPreset> dlssRRRenderPresetCombo {
+    "Ray Reconstruction Render Preset",
+    RemixGui::ComboWithKey<DLSSRRRenderPreset>::ComboEntries { {
+        {DLSSRRRenderPreset::Default, "Default", "Defer to the Ray Reconstruction Model setting above, and to Transformer Model D under Denoising."},
+        {DLSSRRRenderPreset::D, "D", "Transformer. NGX's default Ray Reconstruction model."},
+        {DLSSRRRenderPreset::E, "E", "A later transformer than D. Required if a depth-of-field guide is ever supplied."},
+        {DLSSRRRenderPreset::F, "F", "Present only in newer DLSS runtimes. An installed runtime without it falls back to its own default."},
+    } }
+  };
+
   RemixGui::ComboWithKey<XeSSPreset> xessPresetCombo{
     "XeSS Preset",
     RemixGui::ComboWithKey<XeSSPreset>::ComboEntries{ {
@@ -529,7 +560,19 @@ namespace dxvk {
       changed = RemixGui::Checkbox("Ray Reconstruction", &RtxOptions::enableRayReconstructionObject());
 
       if (RtxOptions::enableRayReconstruction()) {
+        // An explicit render preset supersedes this combo entirely - CNN versus Transformer only
+        // ever picked a preset, and picked nothing else. Grey it out rather than leave a live-looking
+        // control that changes nothing.
+        const bool presetOverridden =
+          DxvkRayReconstruction::renderPresetOverride() != DLSSRRRenderPreset::Default;
+
+        ImGui::BeginDisabled(presetOverridden);
         rayReconstructionModelCombo.getKey(&DxvkRayReconstruction::modelObject());
+        ImGui::EndDisabled();
+
+        if (presetOverridden) {
+          ImGui::TextDisabled("Overridden by the Ray Reconstruction Render Preset.");
+        }
       }
       ImGui::EndDisabled();
     }
@@ -4986,11 +5029,18 @@ namespace dxvk {
         RtxOptions::upscalerType.setDeferred(UpscalerType::TAAU);
       }
 
+      // The render preset dropdown belongs to whichever DLSS feature is actually running, and to
+      // neither of them when none is. These two branches already carry that distinction -
+      // isRayReconstructionEnabled() is itself `upscalerType() == DLSS && enableRayReconstruction()`
+      // - so hanging the combos here is what keeps them out of the NIS, TAA-U, XeSS and None cases
+      // without a second condition that could drift away from this one.
       if (RtxOptions::isRayReconstructionEnabled()) {
         dlssProfileCombo.getKey(&RtxOptions::qualityDLSSObject());
+        dlssRRRenderPresetCombo.getKey(&DxvkRayReconstruction::renderPresetOverrideObject());
         rayReconstruction.showRayReconstructionImguiSettings(false);
       } else if (RtxOptions::upscalerType() == UpscalerType::DLSS) {
         dlssProfileCombo.getKey(&RtxOptions::qualityDLSSObject());
+        dlssRenderPresetCombo.getKey(&DxvkDLSS::renderPresetObject());
         dlss.showImguiSettings();
       } else if (RtxOptions::upscalerType() == UpscalerType::NIS) {
         RemixGui::SliderFloat("Resolution scale", &RtxOptions::resolutionScaleObject(), 0.5f, 1.0f);

@@ -447,6 +447,7 @@ namespace dxvk
                                   bool depthInverted,
                                   bool autoExposure,
                                   bool sharpening,
+                                  uint32_t renderPreset,
                                   NVSDK_NGX_PerfQuality_Value perfQuality) {
     ScopedCpuProfileZone();
 
@@ -474,6 +475,20 @@ namespace dxvk
     createParams.InFeatureCreateFlags = createFlags;
 
     VkCommandBuffer vkCommandBuffer = renderContext->getCommandList()->getCmdBuffer(dxvk::DxvkCmdBuffer::ExecBuffer);
+
+    // Render preset, one hint per quality mode. These are the five NVSDK_NGX_PerfQuality_Value
+    // values DxvkDLSS::profileToQuality can produce, so the set is complete; UltraQuality is
+    // omitted because nothing ever asks for it.
+    //
+    // Set unconditionally, including for preset 0. m_parameters outlives each feature, so a preset
+    // written for a previous creation would otherwise survive a switch back to Default and the
+    // override would look impossible to turn off.
+    const int ngxRenderPreset = static_cast<int>(renderPreset);
+    m_parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, ngxRenderPreset);
+    m_parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, ngxRenderPreset);
+    m_parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, ngxRenderPreset);
+    m_parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, ngxRenderPreset);
+    m_parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance, ngxRenderPreset);
 
     // Release video memory when DLSS is disabled.
     m_parameters->Set(NVSDK_NGX_Parameter_FreeMemOnReleaseFeature, 1);

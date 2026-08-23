@@ -50,6 +50,8 @@ namespace dxvk {
   // Combo boxes shared with dxvk_imgui.cpp
   extern RemixGui::ComboWithKey<DLSSProfile> dlssProfileCombo;
   extern RemixGui::ComboWithKey<XeSSPreset> xessPresetCombo;
+  extern RemixGui::ComboWithKey<DLSSRenderPreset> dlssRenderPresetCombo;
+  extern RemixGui::ComboWithKey<DLSSRRRenderPreset> dlssRRRenderPresetCombo;
 
   // Combo boxes used only by the user menu
   static RemixGui::ComboWithKey<DlssPreset> dlssPresetCombo{
@@ -398,6 +400,15 @@ namespace dxvk {
       switch (RtxOptions::upscalerType()) {
         case UpscalerType::DLSS: {
           dlssProfileCombo.getKey(&RtxOptions::qualityDLSSObject());
+
+          // The render preset, from whichever feature is running. This menu reaches here only for
+          // UpscalerType::DLSS, so isRayReconstructionEnabled() is just the Ray Reconstruction
+          // checkbox drawn above, and no other upscaler can see either combo.
+          if (RtxOptions::isRayReconstructionEnabled()) {
+            dlssRRRenderPresetCombo.getKey(&DxvkRayReconstruction::renderPresetOverrideObject());
+          } else {
+            dlssRenderPresetCombo.getKey(&DxvkDLSS::renderPresetObject());
+          }
 
           // Display DLSS Upscaling Information
 

@@ -94,6 +94,17 @@ namespace dxvk {
                "Normalized Gaussian weight sigma to use for blurring disocclusion mask.\n"
                "The sigma is applied to the normalized blur kernel radius extents (i.e. <0, 1>).")
     RTX_OPTION("rtx.rayreconstruction", bool, enableTransformerModelD, false, "");
+    // Overrides the preset that `model` and `enableTransformerModelD` would otherwise select. Those two
+    // are a two-bit spelling of the same choice and feed nothing else, so while this is set to anything
+    // but Default they have no effect at all - which is why the overlay greys them out rather than
+    // leaving two live-looking controls that do nothing.
+    RTX_OPTION("rtx.rayreconstruction", DLSSRRRenderPreset, renderPresetOverride, DLSSRRRenderPreset::Default,
+               "Which DLSS Ray Reconstruction preset (network) to ask NGX for, overriding the model settings above.\n"
+               "Default defers to `model` and `enableTransformerModelD`, which is how this behaved before the option existed.\n"
+               "4: preset D, NGX's default transformer. 5: E, a later transformer. 6: F.\n"
+               "NGX's published header describes F as unused; it is offered here because newer DLSS runtimes ship it.\n"
+               "A preset the installed runtime does not have falls back to that runtime's default behaviour rather than failing.\n"
+               "Changing this recreates the DLSS-RR feature, which costs a frame.");
 
   private:
     void initializeRayReconstruction(Rc<DxvkContext> pRenderContext);
@@ -101,6 +112,7 @@ namespace dxvk {
     bool                        m_biasCurrentColorEnabled = true;
     RayReconstructionModel      m_prevModel;
     bool                        m_prevEnableTransformerModelD;
+    DLSSRRRenderPreset          m_prevRenderPresetOverride;
 
     Rc<DxvkBuffer> m_constants;
     std::unique_ptr<NGXRayReconstructionContext> m_rayReconstructionContext;
