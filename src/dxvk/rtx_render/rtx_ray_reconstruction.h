@@ -105,6 +105,7 @@ namespace dxvk {
     bool                        m_biasCurrentColorEnabled = true;
     RayReconstructionModel      m_prevModel;
     bool                        m_prevEnableTransformerModelD;
+    DLSSRRRenderPreset          m_prevRenderPresetOverride = DLSSRRRenderPreset::Default;  ///< FORK: dlss-render-preset. Preset the live feature was created with.
 
     Rc<DxvkBuffer> m_constants;
     std::unique_ptr<NGXRayReconstructionContext> m_rayReconstructionContext;

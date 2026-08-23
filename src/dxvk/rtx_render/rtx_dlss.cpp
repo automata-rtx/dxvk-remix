@@ -204,6 +204,12 @@ namespace dxvk {
     mRecreate |= (mAutoExposure != dlssAutoExposure);
     mAutoExposure = dlssAutoExposure;
 
+    // FORK: dlss-render-preset - the preset is a feature-creation hint, so a changed one only reaches
+    // NGX by rebuilding the feature. Without this the dropdown moves and nothing happens until
+    // something else - a resolution change, a quality mode - happens to force a recreate.
+    mRecreate |= (mPrevRenderPreset != DLSSRenderPresetOptions::renderPreset());
+    mPrevRenderPreset = DLSSRenderPresetOptions::renderPreset();
+
     if (mRecreate) {
       initializeDLSS(ctx);
       mRecreate = false;
