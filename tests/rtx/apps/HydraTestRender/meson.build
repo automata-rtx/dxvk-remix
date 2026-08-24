@@ -51,12 +51,18 @@ hdremix_nvusd_bindir = join_paths(meson.current_source_dir(), hdremix_nvusd_dir,
 hdremix_glfw_dir = hdremix_isdebug ? '_external/glfw/debug/' : '_external/glfw/release/'
 hdremix_glfw_libdir = join_paths(meson.current_source_dir(), hdremix_glfw_dir, 'lib')
 
+# Same as the schema plugins: this USD is the Python-enabled stock build, so pxr's headers
+# reach for pyconfig.h and the renderer links the Python-backed USD libraries.
+hdremix_python_dir = '_external/python311_x64/'
+hdremix_python_libdir = join_paths(meson.current_source_dir(), hdremix_python_dir, 'libs')
+
 
 hdremix_includes = include_directories([
   '../../../../src/lssusd',       # because of 'usd_include_begin.h' / 'usd_include_end.h'
   '../../../../src/usd-plugins',  # support for custom usd plugins
   hdremix_remixsdk_dir + 'include',   # Remix SDK
   hdremix_nvusd_dir + 'include',
+  hdremix_python_dir + 'include',
   hdremix_glfw_dir + 'include',
 ])
 
@@ -91,6 +97,7 @@ hdremix_nvusd_deplibs = [
   'usd_usdShade',
   'usd_usdGeom',
   'usd_vt',
+  'usd_python',
 ]
 
 # MaterialX DLLs not available in local nopy USD build.
@@ -105,6 +112,7 @@ foreach ulib : hdremix_nvusd_deplibs
 endforeach
 
 hdremix_linklibs += hdremix_cpp_compiler.find_library(hdremix_isdebug ? 'tbb12_debug' : 'tbb12', dirs: hdremix_nvusd_libdir)
+hdremix_linklibs += hdremix_cpp_compiler.find_library('python311', dirs: hdremix_python_libdir)
 
 hdremix_test_exe_src = files([
   'test_render.cpp',

@@ -24,6 +24,7 @@
 #include "../dxvk_include.h"
 #include "rtx_resources.h"
 #include "dxvk_image.h"
+#include "rtx_dlss_render_preset.h"  // FORK: dlss-render-preset
 
 // this gets included from other modules, so use full path to external --- ugly!
 #ifdef _M_X64
@@ -109,6 +110,7 @@ namespace dxvk {
     bool                        mInverseDepth = false;
 
     bool                        mRecreate = true;
+    DLSSRenderPreset            mPrevRenderPreset = DLSSRenderPreset::Default;  ///< FORK: dlss-render-preset. Preset the live feature was created with.
     uint32_t                    mInputSize[2] = {};            ///< Input size in pixels.
     uint32_t                    mDLSSOutputSize[2] = {};       ///< DLSS output size in pixels.
 

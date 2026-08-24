@@ -49,6 +49,7 @@
 #include "rtx_render/rtx_terrain_baker.h"
 #include "rtx_render/rtx_neural_radiance_cache.h"
 #include "rtx_render/rtx_ray_reconstruction.h"
+#include "rtx_render/rtx_dlss_render_preset.h"  // FORK: dlss-render-preset
 #include "rtx_render/rtx_xess.h"
 #include "rtx_render/rtx_rtxdi_rayquery.h"
 #include "rtx_render/rtx_restir_gi_rayquery.h"
@@ -517,7 +518,17 @@ namespace dxvk {
       changed = RemixGui::Checkbox("Ray Reconstruction", &RtxOptions::enableRayReconstructionObject());
 
       if (RtxOptions::enableRayReconstruction()) {
+        // FORK: dlss-render-preset - CNN versus Transformer only ever picked a preset, and picked
+        // nothing else, so an explicit render preset supersedes this combo entirely.
+        const bool presetOverridden = isRayReconstructionRenderPresetOverridden();
+
+        ImGui::BeginDisabled(presetOverridden);
         rayReconstructionModelCombo.getKey(&DxvkRayReconstruction::modelObject());
+        ImGui::EndDisabled();
+
+        if (presetOverridden) {
+          ImGui::TextDisabled("Overridden by the Ray Reconstruction Render Preset.");
+        }
       }
       ImGui::EndDisabled();
     }
@@ -3539,9 +3550,11 @@ namespace dxvk {
 
       if (RtxOptions::isRayReconstructionEnabled()) {
         dlssProfileCombo.getKey(&RtxOptions::qualityDLSSObject());
+        showDlssRenderPresetCombo();  // FORK: dlss-render-preset
         rayReconstruction.showRayReconstructionImguiSettings(false);
       } else if (RtxOptions::upscalerType() == UpscalerType::DLSS) {
         dlssProfileCombo.getKey(&RtxOptions::qualityDLSSObject());
+        showDlssRenderPresetCombo();  // FORK: dlss-render-preset
         dlss.showImguiSettings();
       } else if (RtxOptions::upscalerType() == UpscalerType::NIS) {
         RemixGui::SliderFloat("Resolution scale", &RtxOptions::resolutionScaleObject(), 0.5f, 1.0f);

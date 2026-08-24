@@ -30,6 +30,7 @@
 
 #include "rtx_ngx_wrapper.h"
 #include "rtx_matrix_helpers.h"
+#include "rtx_dlss_render_preset.h"  // FORK: dlss-render-preset
 
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_vk.h>
@@ -474,6 +475,22 @@ namespace dxvk
     createParams.InFeatureCreateFlags = createFlags;
 
     VkCommandBuffer vkCommandBuffer = renderContext->getCommandList()->getCmdBuffer(dxvk::DxvkCmdBuffer::ExecBuffer);
+
+    // FORK: dlss-render-preset - one render preset hint per quality mode. These are exactly the five
+    // NVSDK_NGX_PerfQuality_Value values DxvkDLSS::profileToQuality can produce, so the set is complete;
+    // UltraQuality is omitted because nothing ever asks for it.
+    //
+    // Written unconditionally, including for preset 0. m_parameters is created once per context and
+    // outlives every feature, so a preset written for a previous creation would otherwise survive a
+    // switch back to Default and the override would look impossible to turn off. Reading the option
+    // here rather than taking it as an argument keeps it bound to feature creation, so a future
+    // caller of initialize() cannot get a feature carrying somebody else's preset.
+    const int ngxRenderPreset = static_cast<int>(DLSSRenderPresetOptions::renderPreset());
+    m_parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, ngxRenderPreset);
+    m_parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, ngxRenderPreset);
+    m_parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, ngxRenderPreset);
+    m_parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, ngxRenderPreset);
+    m_parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance, ngxRenderPreset);
 
     // Release video memory when DLSS is disabled.
     m_parameters->Set(NVSDK_NGX_Parameter_FreeMemOnReleaseFeature, 1);

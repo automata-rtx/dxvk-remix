@@ -407,6 +407,8 @@ namespace dxvk {
         case UpscalerType::DLSS: {
           dlssProfileCombo.getKey(&RtxOptions::qualityDLSSObject());
 
+          showDlssRenderPresetCombo();  // FORK: dlss-render-preset
+
           // Display DLSS Upscaling Information
 
           const auto currentDLSSProfile = RtxOptions::enableRayReconstruction() ? rayReconstruction.getCurrentProfile() : dlss.getCurrentProfile();

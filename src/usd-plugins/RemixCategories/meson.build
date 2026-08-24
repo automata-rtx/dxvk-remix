@@ -4,7 +4,7 @@
 remix_categories_plugin = shared_module(
   'RemixCategories',
   'remixInstanceCategoryAPI.cpp',
-  include_directories: include_directories('../' + usd_schema_plugins_nvusd_dir + '/include'),
+  include_directories: usd_schema_plugins_includes,
   dependencies: usd_schema_plugins_linklibs,
   cpp_args: ['-DNOMINMAX', usd_schema_plugins_isdebug ? '-DTBB_USE_DEBUG=1' : '-DTBB_USE_DEBUG=0', '/Zc:inline-', '/wd4251', '/wd4275', '/wd4305', '/wd4244', '/wd4273'],
   override_options: ['cpp_std=c++17'],

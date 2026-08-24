@@ -1,18 +1,31 @@
 name: Build
 
 on:
+  # Session work happens on claude/** branches and lands on remix-auto-ver, so both are
+  # built on push. Without them a branch gets no build until a pull request is opened
+  # against main, which is exactly when a compile error is most expensive to find.
   push:
-    branches: [ main, 'release/**' ]
+    branches: [ main, 'release/**', 'claude/**', remix-auto-ver ]
   pull_request:
-    branches: [ main, 'release/**' ]
+    branches: [ main, 'release/**', remix-auto-ver ]
+  # Builds any ref on demand, without needing a push to it. Usable from the Actions tab
+  # only once this file is on the repository's default branch.
+  workflow_dispatch:
 
 jobs:
   build-windows:
     runs-on: windows-2022
+    # A push to claude/** already builds that commit, so a pull request opened from one would
+    # build the same SHA a second time. The push run covers it; checks attach to the commit
+    # either way, so the pull request still shows a result.
+    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'claude/')
     env:
       BUILD_SENTRY_ENVIRONMENT: ${{ github.event_name == 'pull_request' && 'github-testing' || 'github-production' }}
 
     strategy:
+      # One flavour failing should not cancel the others: when a compile error is
+      # config-specific, knowing which configs it hits is most of the diagnosis.
+      fail-fast: false
       matrix:
         include:
           - build-flavour: debug
@@ -42,6 +55,40 @@ jobs:
         Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
         . .\build_common.ps1
         PerformBuild -BuildFlavour ${{matrix.build-flavour}} -BuildSubDir ${{matrix.output-subdir}} -Backend ninja -EnableTracy false copy_output
+
+    # When a command meson shells out to fails, meson prints only "A full log can be found at
+    # ...\meson-logs\meson-log.txt" and exits - the actual error text lives in that file and in
+    # whatever log the command itself wrote. Neither survives the runner, so a setup failure is
+    # undiagnosable from the console output alone.
+    - name: Dump build logs on failure
+      if: failure()
+      shell: pwsh
+      run: |
+        $mesonLog = "${{matrix.output-subdir}}\meson-logs\meson-log.txt"
+        if (Test-Path $mesonLog) {
+          Write-Host "::group::$mesonLog (last 60 lines)"
+          Get-Content $mesonLog -Tail 60
+          Write-Host "::endgroup::"
+        } else {
+          Write-Host "No meson log at $mesonLog"
+        }
+        Get-ChildItem -Path . -Filter update-deps.log -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+          ForEach-Object {
+            Write-Host "::group::$($_.FullName)"
+            Get-Content $_.FullName -Tail 100
+            Write-Host "::endgroup::"
+          }
+
+    - name: Upload build logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: build-logs-${{github.run_number}}-${{matrix.build-flavour}}
+        if-no-files-found: ignore
+        path: |
+          ${{matrix.output-subdir}}/meson-logs/*
+          update-deps.log
+          scripts-common/update-deps.log
 
     - name: Copy readme
       run: copy artifacts_readme.txt _output
@@ -96,9 +143,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-windows
     if: ${{ failure() }}
+    # A fork without the webhook secret would otherwise add a second, spurious red
+    # check to every failed build - one that says nothing about the build itself.
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
     - name: Notify Slack
+      if: env.SLACK_WEBHOOK_URL != ''
       uses: slackapi/slack-github-action@v3
       with:
         webhook: ${{ secrets.SLACK_WEBHOOK_URL }}

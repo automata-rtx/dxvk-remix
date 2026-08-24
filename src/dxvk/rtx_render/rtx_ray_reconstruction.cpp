@@ -148,6 +148,11 @@ namespace dxvk {
     m_prevModel = model();
     m_prevEnableTransformerModelD = enableTransformerModelD();
 
+    // FORK: dlss-render-preset - same as DxvkDLSS::dispatch; a feature-creation hint only reaches NGX
+    // by rebuilding the feature.
+    mRecreate |= (m_prevRenderPresetOverride != DLSSRRRenderPresetOptions::renderPresetOverride());
+    m_prevRenderPresetOverride = DLSSRRRenderPresetOptions::renderPresetOverride();
+
     if (mRecreate) {
       initializeRayReconstruction(ctx);
       mRecreate = false;
@@ -377,7 +382,12 @@ namespace dxvk {
       RemixGui::DragFloat("DLSS-RR Roughness Sensitivity", &upscalerRoughnessDemodulationOffsetObject(), 0.01f, 0.0f, 2.0f, "%.3f");
       RemixGui::DragFloat("DLSS-RR Roughness Multiplier", &upscalerRoughnessDemodulationMultiplierObject(), 0.01f, 0.0f, 20.0f, "%.3f");
       RemixGui::Checkbox("Composite Volumetric Light", &compositeVolumetricLightObject());
+
+      // FORK: dlss-render-preset - this checkbox only ever chose between presets D and E, so an
+      // explicit render preset leaves it with nothing to do.
+      ImGui::BeginDisabled(isRayReconstructionRenderPresetOverridden());
       RemixGui::Checkbox("Transformer Model D", &enableTransformerModelDObject());
+      ImGui::EndDisabled();
 
       if (RemixGui::CollapsingHeader("Disocclusion Mask")) {
         ImGui::Indent();
@@ -449,6 +459,17 @@ namespace dxvk {
         : enableTransformerModelD()
           ? /* Transformer D */ NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D
           : /* Transformer E - Truthful Shrimp */ NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E;
+
+      // FORK: dlss-render-preset - an explicit preset wins over the model settings above, which are
+      // only a two-bit spelling of the same choice. The cast deliberately targets a number the pinned
+      // SDK header may not have an enumerator for - preset F is the case that motivated it - because
+      // the installed DLSS runtime resolves the number and falls back to its own default for one it
+      // does not know. Every DLSSRRRenderPreset value is inside the target enum's range, so the cast
+      // is well defined.
+      const DLSSRRRenderPreset renderPresetOverride = DLSSRRRenderPresetOptions::renderPresetOverride();
+      if (renderPresetOverride != DLSSRRRenderPreset::Default) {
+        dlssdModel = static_cast<NVSDK_NGX_RayReconstruction_Hint_Render_Preset>(renderPresetOverride);
+      }
 
       auto optimalSettings = m_rayReconstructionContext->queryOptimalSettings(mInputSize, perfQuality);
 
