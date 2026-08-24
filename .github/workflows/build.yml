@@ -143,9 +143,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-windows
     if: ${{ failure() }}
+    # A fork without the webhook secret would otherwise add a second, spurious red
+    # check to every failed build - one that says nothing about the build itself.
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
     - name: Notify Slack
+      if: env.SLACK_WEBHOOK_URL != ''
       uses: slackapi/slack-github-action@v3
       with:
         webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
