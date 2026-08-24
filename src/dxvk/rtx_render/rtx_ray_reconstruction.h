@@ -94,6 +94,18 @@ namespace dxvk {
                "Normalized Gaussian weight sigma to use for blurring disocclusion mask.\n"
                "The sigma is applied to the normalized blur kernel radius extents (i.e. <0, 1>).")
     RTX_OPTION("rtx.rayreconstruction", bool, enableTransformerModelD, false, "");
+    // Overrides the preset that `model` and `enableTransformerModelD` would otherwise select. Those two
+    // are a two-bit spelling of the same choice and feed nothing else, so while this is set to anything
+    // but Default they have no effect at all - which is why the overlay greys them out rather than
+    // leaving two live-looking controls that do nothing.
+    RTX_OPTION("rtx.rayreconstruction", DLSSRRRenderPreset, renderPresetOverride, DLSSRRRenderPreset::Default,
+               "Which DLSS Ray Reconstruction preset (network) to ask NGX for, overriding the model settings above.\n"
+               "Default defers to `model` and `enableTransformerModelD`, which is how this behaved before the option existed.\n"
+               "4: preset D, NGX's default transformer. 5: E, a later transformer. 6: F.\n"
+               "F needs nvngx_dlssd.dll substituted for a newer one - the NVIDIA App's DLSS Override does this globally.\n"
+               "The dropdown offers letters; which of them do anything is decided by whichever runtime is actually loaded,\n"
+               "and one that runtime does not implement reverts to its default behaviour rather than failing.\n"
+               "Changing this recreates the DLSS-RR feature, which costs a frame.");
 
   private:
     void initializeRayReconstruction(Rc<DxvkContext> pRenderContext);
@@ -101,6 +113,7 @@ namespace dxvk {
     bool                        m_biasCurrentColorEnabled = true;
     RayReconstructionModel      m_prevModel;
     bool                        m_prevEnableTransformerModelD;
+    DLSSRRRenderPreset          m_prevRenderPresetOverride;
 
     Rc<DxvkBuffer> m_constants;
     std::unique_ptr<NGXRayReconstructionContext> m_rayReconstructionContext;

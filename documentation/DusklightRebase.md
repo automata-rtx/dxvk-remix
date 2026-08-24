@@ -111,6 +111,32 @@ resolving a conflict here.
 | `rtx_context.{h,cpp}` | `dispatchDusklightGrade`; bloom stage ordering | `DusklightGrade` enable |
 | `dxvk_objects.h`, `dxvk_device.cpp` | the modules exposed as `metaDusklight*` | additive |
 
+**DLSS render presets.** Nothing here is Dusklight-specific; it is a control upstream does not
+expose. Two options, `rtx.dlss.renderPreset` (super resolution) and
+`rtx.rayreconstruction.renderPresetOverride` (Ray Reconstruction), each offering the presets NGX
+still honours for that feature.
+
+| File | Change | Guard |
+| :-- | :-- | :-- |
+| `rtx_dlss.h` | `DLSSRenderPreset` / `DLSSRRRenderPreset`, the `rtx.dlss.renderPreset` option, `mPrevRenderPreset` | additive; `Default` is upstream behaviour |
+| `rtx_dlss.cpp` | passes the preset to `initialize`; `dispatch` rebuilds the feature when it changes | none needed — `Default` sets preset 0 |
+| `rtx_ngx_wrapper.{h,cpp}` | `NGXDLSSContext::initialize` gains a `uint32_t renderPreset` before `perfQuality`, and sets the five `DLSS.Hint.Render.Preset.*` params. **Set unconditionally, including for 0** — `m_parameters` outlives the feature, so a skipped write leaves the previous preset in place and Default stops working | none |
+| `rtx_ray_reconstruction.{h,cpp}` | the override option, `m_prevRenderPresetOverride` in the recreate check, and one `if` after the existing `model()`/`enableTransformerModelD()` ternary at the `dlssdModel` site | `!= Default` |
+| `dxvk_imgui.cpp` | two `ComboWithKey`s beside `dlssProfileCombo`, drawn in the existing RR / DLSS branches; `showRayReconstructionEnable` greys out the model combo while overridden | own lines |
+
+**The values are numbers, not `NVSDK_NGX_*_Hint_Render_Preset_*` enumerators**, and a rebase must
+not "tidy" them into symbols. `rtx_dlss.h` argues it where the enums are defined: the pinned
+packman SDK is older than NVIDIA's published header — it still has
+`RayReconstruction_Hint_Render_Preset_A`, which the published one removed — so the super-resolution
+letters J/K/L/M may have no enumerator to name.
+
+**The runtime that resolves the number is often not the DLL beside the game.** The NVIDIA App's
+global DLSS Override substitutes a newer one at load, and the dropdown offers whatever *that*
+runtime implements. RR preset F is the case that proves it: NVIDIA's header calls F unused, and
+with the override on it renders visibly differently from D and E (tested 2026-08-24). So a shipped
+DLL that looks old is not evidence a letter cannot work, and a letter doing nothing is the expected
+result of running without the override rather than a defect to chase.
+
 **Tone mapping and auto exposure** (`ToneMappingExposureNotes.md`)
 
 > **A different shape from every block above, and a rebase should expect that.**

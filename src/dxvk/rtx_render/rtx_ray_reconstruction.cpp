@@ -84,7 +84,8 @@ namespace dxvk {
   DxvkRayReconstruction::DxvkRayReconstruction(DxvkDevice* device)
     : DxvkDLSS(device)
     , m_prevModel(model())
-    , m_prevEnableTransformerModelD(enableTransformerModelD()) {
+    , m_prevEnableTransformerModelD(enableTransformerModelD())
+    , m_prevRenderPresetOverride(renderPresetOverride()) {
 
     DxvkBufferCreateInfo info;
     info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -143,10 +144,12 @@ namespace dxvk {
     bool dlssAutoExposure = true;
     mRecreate |= (mAutoExposure != dlssAutoExposure)
       || m_prevModel != model()
-      || m_prevEnableTransformerModelD != enableTransformerModelD();
+      || m_prevEnableTransformerModelD != enableTransformerModelD()
+      || m_prevRenderPresetOverride != renderPresetOverride();
     mAutoExposure = dlssAutoExposure;
     m_prevModel = model();
     m_prevEnableTransformerModelD = enableTransformerModelD();
+    m_prevRenderPresetOverride = renderPresetOverride();
 
     if (mRecreate) {
       initializeRayReconstruction(ctx);
@@ -377,7 +380,13 @@ namespace dxvk {
       RemixGui::DragFloat("DLSS-RR Roughness Sensitivity", &upscalerRoughnessDemodulationOffsetObject(), 0.01f, 0.0f, 2.0f, "%.3f");
       RemixGui::DragFloat("DLSS-RR Roughness Multiplier", &upscalerRoughnessDemodulationMultiplierObject(), 0.01f, 0.0f, 20.0f, "%.3f");
       RemixGui::Checkbox("Composite Volumetric Light", &compositeVolumetricLightObject());
+
+      // Same reason the Ray Reconstruction Model combo is greyed out in the General section: this
+      // checkbox only ever chose between presets D and E, so an explicit render preset leaves it
+      // with nothing to do.
+      ImGui::BeginDisabled(renderPresetOverride() != DLSSRRRenderPreset::Default);
       RemixGui::Checkbox("Transformer Model D", &enableTransformerModelDObject());
+      ImGui::EndDisabled();
 
       if (RemixGui::CollapsingHeader("Disocclusion Mask")) {
         ImGui::Indent();
@@ -448,6 +457,15 @@ namespace dxvk {
         : enableTransformerModelD()
           ? /* Transformer D */ NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D
           : /* Transformer E - Truthful Shrimp */ NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E;
+
+      // An explicit preset wins over the model settings above, which are only a two-bit spelling of
+      // the same choice. The cast is to a number the pinned SDK header may not have an enumerator
+      // for - preset F is the case that motivated this - and that is deliberate: the installed DLSS
+      // runtime resolves the number, and falls back to its own default for one it does not know.
+      // Every value DLSSRRRenderPreset can hold is inside the enum's range, so the cast is well defined.
+      if (renderPresetOverride() != DLSSRRRenderPreset::Default) {
+        dlssdModel = static_cast<NVSDK_NGX_RayReconstruction_Hint_Render_Preset>(renderPresetOverride());
+      }
 
       auto optimalSettings = m_rayReconstructionContext->queryOptimalSettings(mInputSize, perfQuality);
 

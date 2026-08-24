@@ -201,8 +201,12 @@ namespace dxvk {
     ctx->setFramePassStage(RtxFramePassStage::DLSS);
 
     bool dlssAutoExposure = useDlssAutoExposure();
-    mRecreate |= (mAutoExposure != dlssAutoExposure);
+    // The render preset is a feature-creation hint, so a changed preset only reaches NGX by
+    // rebuilding the feature. Without this the dropdown moves and nothing happens until something
+    // else - a resolution change, a quality mode - happens to force a recreate.
+    mRecreate |= (mAutoExposure != dlssAutoExposure) || (mPrevRenderPreset != renderPreset());
     mAutoExposure = dlssAutoExposure;
+    mPrevRenderPreset = renderPreset();
 
     if (mRecreate) {
       initializeDLSS(ctx);
@@ -337,6 +341,7 @@ namespace dxvk {
     // required for initializing DLSS.
     const NVSDK_NGX_PerfQuality_Value perfQuality = profileToQuality(mActualProfile);
 
-    m_dlssContext->initialize(renderContext, mInputSize, mDLSSOutputSize, mIsHDR, mInverseDepth, mAutoExposure, false, perfQuality);
+    m_dlssContext->initialize(renderContext, mInputSize, mDLSSOutputSize, mIsHDR, mInverseDepth, mAutoExposure, false,
+                              static_cast<uint32_t>(renderPreset()), perfQuality);
   }
 }
