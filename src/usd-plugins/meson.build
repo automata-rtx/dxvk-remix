@@ -26,18 +26,35 @@ if usd_schema_plugins_is_woa
 endif
 usd_schema_plugins_nvusd_libdir = join_paths(meson.current_source_dir(), usd_schema_plugins_nvusd_dir, 'lib')
 
+# This USD is the Python-enabled stock build, so its headers reach for Python's own -
+# pxr/external/boost/python/detail/wrap_python.hpp includes pyconfig.h - and the plugins
+# link the Python-backed USD libraries alongside it.
+usd_schema_plugins_python_dir = '_external/python311_x64'
+usd_schema_plugins_python_libdir = join_paths(meson.current_source_dir(), usd_schema_plugins_python_dir, 'libs')
+usd_schema_plugins_includes = include_directories(
+  usd_schema_plugins_nvusd_dir + '/include',
+  usd_schema_plugins_python_dir + '/include',
+)
+if usd_schema_plugins_is_woa
+  # The stock Arm64 USD package already carries the Python headers and libraries.
+  usd_schema_plugins_python_libdir = usd_schema_plugins_nvusd_libdir
+  usd_schema_plugins_includes = include_directories(usd_schema_plugins_nvusd_dir + '/include')
+endif
+
 usd_schema_plugins_deplibs = [
   'usd_arch',
   'usd_tf',
   'usd_usd',
   'usd_sdf',
   'usd_plug',
+  'usd_python',
   get_option('buildtype') == 'debug' ? 'tbb12_debug' : 'tbb12',
 ]
 usd_schema_plugins_linklibs = []
 foreach ulib : usd_schema_plugins_deplibs
   usd_schema_plugins_linklibs += usd_schema_plugins_cpp_compiler.find_library(ulib, dirs: usd_schema_plugins_nvusd_libdir)
 endforeach
+usd_schema_plugins_linklibs += usd_schema_plugins_cpp_compiler.find_library('python311', dirs: usd_schema_plugins_python_libdir)
 
 # Each plugin lives in a subdir; install_usd_plugins.bat walks those subdirs at install time.
 subdir('RemixParticleSystem')

@@ -23,6 +23,9 @@ jobs:
       BUILD_SENTRY_ENVIRONMENT: ${{ github.event_name == 'pull_request' && 'github-testing' || 'github-production' }}
 
     strategy:
+      # One flavour failing should not cancel the others: when a compile error is
+      # config-specific, knowing which configs it hits is most of the diagnosis.
+      fail-fast: false
       matrix:
         include:
           - build-flavour: debug
@@ -63,8 +66,8 @@ jobs:
       run: |
         $mesonLog = "${{matrix.output-subdir}}\meson-logs\meson-log.txt"
         if (Test-Path $mesonLog) {
-          Write-Host "::group::$mesonLog (last 300 lines)"
-          Get-Content $mesonLog -Tail 300
+          Write-Host "::group::$mesonLog (last 60 lines)"
+          Get-Content $mesonLog -Tail 60
           Write-Host "::endgroup::"
         } else {
           Write-Host "No meson log at $mesonLog"
