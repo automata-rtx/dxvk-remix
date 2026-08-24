@@ -1,10 +1,16 @@
 name: Build
 
 on:
+  # Session work happens on claude/** branches and lands on remix-auto-ver, so both are
+  # built on push. Without them a branch gets no build until a pull request is opened
+  # against main, which is exactly when a compile error is most expensive to find.
   push:
-    branches: [ main, 'release/**' ]
+    branches: [ main, 'release/**', 'claude/**', remix-auto-ver ]
   pull_request:
-    branches: [ main, 'release/**' ]
+    branches: [ main, 'release/**', remix-auto-ver ]
+  # Builds any ref on demand, without needing a push to it. Usable from the Actions tab
+  # only once this file is on the repository's default branch.
+  workflow_dispatch:
 
 jobs:
   build-windows:

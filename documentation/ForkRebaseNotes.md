@@ -42,8 +42,14 @@ Practical form of the rule:
   next to its own name rather than at a hot spot. Do not normalise trailing whitespace on the lines
   around it — that turns a pure insertion into a permanent modified-line conflict.
 
-Where a change genuinely cannot be additive, take the conflict knowingly and record it in the feature's
-table below so the next rebase knows what to look for.
+Where a change genuinely cannot be additive, take the conflict knowingly and record it here so the next
+rebase knows what to look for. There is one such place today:
+
+- **`.github/workflows/build.yml` trigger lists.** Adding a branch to a YAML inline list rewrites the
+  line, so this is the fork's one modified-line hook. It is deliberate: this is CI policy the fork
+  owns, and if upstream changes its own triggers we want the conflict rather than a silent merge. The
+  fork's version builds `claude/**` and `remix-auto-ver` on push, so a branch is compiled as soon as
+  it is pushed instead of only once a pull request is opened against `main`.
 
 ## Marking the hooks
 
