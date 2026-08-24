@@ -43,13 +43,49 @@ Practical form of the rule:
   around it — that turns a pure insertion into a permanent modified-line conflict.
 
 Where a change genuinely cannot be additive, take the conflict knowingly and record it here so the next
-rebase knows what to look for. There is one such place today:
+rebase knows what to look for. There are two such places today:
 
 - **`.github/workflows/build.yml` trigger lists.** Adding a branch to a YAML inline list rewrites the
-  line, so this is the fork's one modified-line hook. It is deliberate: this is CI policy the fork
-  owns, and if upstream changes its own triggers we want the conflict rather than a silent merge. The
-  fork's version builds `claude/**` and `remix-auto-ver` on push, so a branch is compiled as soon as
-  it is pushed instead of only once a pull request is opened against `main`.
+  line. It is deliberate: this is CI policy the fork owns, and if upstream changes its own triggers we
+  want the conflict rather than a silent merge. The fork's version builds `claude/**` and
+  `remix-auto-ver` on push, so a branch is compiled as soon as it is pushed instead of only once a
+  pull request is opened against `main`.
+- **The USD packaging, below.** That one is temporary and must be deleted rather than merged.
+
+## USD packaging — DROP THIS, DO NOT MERGE IT
+
+Upstream `673dc2a` moved USD onto `open_usd@25.11+...-nopython`. That package is on neither public
+packman remote, so packman falls through to its third remote, NVGTL, and stops with:
+
+```
+packman(ERROR): The environment variable 'NVM_GTLAPI_TOKEN' must be set to use NVGTL
+```
+
+which is an NVIDIA-internal credential. Dependency fetch is the first thing meson does, so **every**
+build of this fork failed before a single file was compiled, whatever the branch contained.
+
+The fork therefore repoints USD at `usd.py311.windows-x86_64.stock.{release,debug}@0.25.11-gl.18041+...`,
+which a public runner can fetch, keeping USD at 25.11. Verified by probing both against a public
+runner: the `open_usd` packages come back blocked, the stock ones and `python@3.11.10+nv1` come back
+public. The `-gl.` in that version string looks internal and is not.
+
+Because the stock build is Python-enabled, pxr's headers reach for `pyconfig.h`, so the Python include
+and link paths `673dc2a` removed have to come back. **Three subprojects fetch USD independently and
+each needs them** — miss one and it fails on its own:
+
+| Subproject | Its manifest | Where its paths live |
+| :-- | :-- | :-- |
+| root build | `packman-external.xml` | `external-build/meson.build`, `meson.build` |
+| schema plugins | `src/usd-plugins/packman-external.xml` | `src/usd-plugins/meson.build` |
+| Hydra test renderer | `tests/rtx/apps/HydraTestRender/packman-external.xml` | `tests/rtx/apps/HydraTestRender/meson.build` |
+
+**Delete this the moment `open_usd` is published on a public remote** — re-check by pulling those two
+package names on a runner. It is not a fix to keep and merge forward; it is a hold against an upstream
+packaging change that public forks cannot consume. It touches files upstream actively edits, so it will
+conflict on rebase, and that conflict is the reminder to check whether it can go.
+
+Only the packaging half of `673dc2a` is reversed. Its GetRenderStats warmup API, sdrMdl plugin and
+schema/lssusd rework are all still here, because none of them depends on how USD was packaged.
 
 ## Marking the hooks
 
