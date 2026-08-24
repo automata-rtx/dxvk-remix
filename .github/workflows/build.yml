@@ -136,50 +136,6 @@ jobs:
           _output\.trex\*.pdb
           _output\.trex\usd\*
 
-  # TEMPORARY (remove once the answer is recorded): upstream 673dc2a repointed USD at
-  # `open_usd`, which is not on either public packman remote - packman falls through to
-  # NVGTL and demands NVM_GTLAPI_TOKEN, which no public fork has. This job reports which
-  # USD packages from the project's own history a public runner can actually fetch, so
-  # packman-external.xml can be repointed at one that works.
-  usd-package-probe:
-    runs-on: windows-2022
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-
-    - name: Probe USD packages against the public remotes
-      shell: pwsh
-      run: |
-        $candidates = @(
-          @{ n = 'open_usd';                               v = '25.11+07744417-windows-x86_64-release-nopython' }
-          @{ n = 'open_usd';                               v = '25.11+07744417-windows-x86_64-debug-nopython' }
-          @{ n = 'usd.py311.windows-x86_64.stock.release'; v = '0.25.11-gl.18041+v25.11.363a7c8d' }
-          @{ n = 'usd.py311.windows-x86_64.stock.debug';   v = '0.25.11-gl.18041+v25.11.363a7c8d' }
-          @{ n = 'nv-usd';                                 v = '22.11.nv.0.2.8268.07efe1d5-win64_py310_release-dev_omniverse' }
-          @{ n = 'nv-usd';                                 v = '22.11.nv.0.2.8268.07efe1d5-win64_py310_debug-dev_omniverse' }
-          @{ n = 'python';                                 v = '3.11.10+nv1-windows-x86_64' }
-        )
-        $results = @()
-        foreach ($c in $candidates) {
-          $id = "$($c.n)@$($c.v)"
-          Write-Host "::group::$id"
-          $xml = "<project toolsVersion=`"7.20`">`n  <dependency name=`"probe`" linkPath=`"./_probe`">`n    <package name=`"$($c.n)`" version=`"$($c.v)`" />`n  </dependency>`n</project>"
-          Set-Content -Path "$PWD\probe.xml" -Value $xml -Encoding ascii
-          & "$PWD\scripts-common\packman\packman.cmd" pull "$PWD\probe.xml" 2>&1 |
-            Select-Object -Last 8 | ForEach-Object { Write-Host $_ }
-          $results += [pscustomobject]@{ Package = $id; Ok = ($LASTEXITCODE -eq 0) }
-          Remove-Item -Recurse -Force "$PWD\_probe" -ErrorAction SilentlyContinue
-          Write-Host "::endgroup::"
-        }
-        Write-Host ""
-        Write-Host "================== PROBE SUMMARY =================="
-        foreach ($r in $results) {
-          $state = if ($r.Ok) { "PUBLIC " } else { "BLOCKED" }
-          Write-Host "$state  $($r.Package)"
-        }
-        Write-Host "==================================================="
-        exit 0
-
   notify-slack-on-failure:
     runs-on: ubuntu-latest
     needs: build-windows
