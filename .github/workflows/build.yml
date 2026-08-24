@@ -15,6 +15,10 @@ on:
 jobs:
   build-windows:
     runs-on: windows-2022
+    # A push to claude/** already builds that commit, so a pull request opened from one would
+    # build the same SHA a second time. The push run covers it; checks attach to the commit
+    # either way, so the pull request still shows a result.
+    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'claude/')
     env:
       BUILD_SENTRY_ENVIRONMENT: ${{ github.event_name == 'pull_request' && 'github-testing' || 'github-production' }}
 
@@ -48,6 +52,40 @@ jobs:
         Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
         . .\build_common.ps1
         PerformBuild -BuildFlavour ${{matrix.build-flavour}} -BuildSubDir ${{matrix.output-subdir}} -Backend ninja -EnableTracy false copy_output
+
+    # When a command meson shells out to fails, meson prints only "A full log can be found at
+    # ...\meson-logs\meson-log.txt" and exits - the actual error text lives in that file and in
+    # whatever log the command itself wrote. Neither survives the runner, so a setup failure is
+    # undiagnosable from the console output alone.
+    - name: Dump build logs on failure
+      if: failure()
+      shell: pwsh
+      run: |
+        $mesonLog = "${{matrix.output-subdir}}\meson-logs\meson-log.txt"
+        if (Test-Path $mesonLog) {
+          Write-Host "::group::$mesonLog (last 300 lines)"
+          Get-Content $mesonLog -Tail 300
+          Write-Host "::endgroup::"
+        } else {
+          Write-Host "No meson log at $mesonLog"
+        }
+        Get-ChildItem -Path . -Filter update-deps.log -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+          ForEach-Object {
+            Write-Host "::group::$($_.FullName)"
+            Get-Content $_.FullName -Tail 100
+            Write-Host "::endgroup::"
+          }
+
+    - name: Upload build logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: build-logs-${{github.run_number}}-${{matrix.build-flavour}}
+        if-no-files-found: ignore
+        path: |
+          ${{matrix.output-subdir}}/meson-logs/*
+          update-deps.log
+          scripts-common/update-deps.log
 
     - name: Copy readme
       run: copy artifacts_readme.txt _output
