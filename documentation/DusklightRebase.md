@@ -128,8 +128,14 @@ still honours for that feature.
 not "tidy" them into symbols. `rtx_dlss.h` argues it where the enums are defined: the pinned
 packman SDK is older than NVIDIA's published header — it still has
 `RayReconstruction_Hint_Render_Preset_A`, which the published one removed — so the super-resolution
-letters J/K/L/M may have no enumerator to name, and RR preset F exists in runtimes whose header
-calls it unused. The preset is resolved by the installed DLSS runtime, not by the header.
+letters J/K/L/M may have no enumerator to name.
+
+**The runtime that resolves the number is often not the DLL beside the game.** The NVIDIA App's
+global DLSS Override substitutes a newer one at load, and the dropdown offers whatever *that*
+runtime implements. RR preset F is the case that proves it: NVIDIA's header calls F unused, and
+with the override on it renders visibly differently from D and E (tested 2026-08-24). So a shipped
+DLL that looks old is not evidence a letter cannot work, and a letter doing nothing is the expected
+result of running without the override rather than a defect to chase.
 
 **Tone mapping and auto exposure** (`ToneMappingExposureNotes.md`)
 

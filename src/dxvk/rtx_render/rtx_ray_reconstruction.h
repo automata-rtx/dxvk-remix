@@ -102,8 +102,9 @@ namespace dxvk {
                "Which DLSS Ray Reconstruction preset (network) to ask NGX for, overriding the model settings above.\n"
                "Default defers to `model` and `enableTransformerModelD`, which is how this behaved before the option existed.\n"
                "4: preset D, NGX's default transformer. 5: E, a later transformer. 6: F.\n"
-               "NGX's published header describes F as unused; it is offered here because newer DLSS runtimes ship it.\n"
-               "A preset the installed runtime does not have falls back to that runtime's default behaviour rather than failing.\n"
+               "F needs nvngx_dlssd.dll substituted for a newer one - the NVIDIA App's DLSS Override does this globally.\n"
+               "The dropdown offers letters; which of them do anything is decided by whichever runtime is actually loaded,\n"
+               "and one that runtime does not implement reverts to its default behaviour rather than failing.\n"
                "Changing this recreates the DLSS-RR feature, which costs a frame.");
 
   private:

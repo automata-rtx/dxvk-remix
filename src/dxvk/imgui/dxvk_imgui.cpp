@@ -350,7 +350,7 @@ namespace dxvk {
         {DLSSRRRenderPreset::Default, "Default", "Defer to the Ray Reconstruction Model setting above, and to Transformer Model D under Denoising."},
         {DLSSRRRenderPreset::D, "D", "Transformer. NGX's default Ray Reconstruction model."},
         {DLSSRRRenderPreset::E, "E", "A later transformer than D. Required if a depth-of-field guide is ever supplied."},
-        {DLSSRRRenderPreset::F, "F", "Present only in newer DLSS runtimes. An installed runtime without it falls back to its own default."},
+        {DLSSRRRenderPreset::F, "F", "Needs nvngx_dlssd.dll overridden to a newer runtime - the NVIDIA App's DLSS Override does that globally. Without it this reverts to default and will look like D."},
     } }
   };
 

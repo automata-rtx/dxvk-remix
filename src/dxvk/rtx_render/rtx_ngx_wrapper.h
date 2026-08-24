@@ -176,7 +176,8 @@ namespace dxvk {
     // initialize DLSS context, throws exception on failure
     // renderPreset is an NGX render preset number (DLSSRenderPreset, rtx_dlss.h); 0 asks for NGX's
     // own choice. Taken as a plain number rather than NVSDK_NGX_DLSS_Hint_Render_Preset so that a
-    // preset the pinned SDK header does not name is still reachable - the runtime resolves it.
+    // preset the pinned SDK header does not name is still reachable - it is resolved by whichever
+    // runtime is loaded, which the NVIDIA App's DLSS Override may have substituted for a newer one.
     void initialize(
       Rc<DxvkContext> renderContext,
       uint32_t maxRenderSize[2],
